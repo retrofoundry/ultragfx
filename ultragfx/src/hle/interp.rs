@@ -525,6 +525,7 @@ pub(crate) fn interpret_with_bindings<M: Rdram>(
         profiling,
         bindings,
         true,
+        None,
     )
 }
 
@@ -540,10 +541,14 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
     profiling: crate::profiling::Recorder,
     bindings: &[(u64, crate::Microcode)],
     retain_native_policy: bool,
+    annotations: Option<crate::annotation::TaskAnnotations>,
 ) -> InterpResult {
     rdp.tmem_bank.profiling = profiling.clone();
     let mut gbi = crate::hle::gbi::Gbi::<M>::new(ucode, data_format);
     let mut rsp = crate::hle::rsp::Rsp::new(gbi.consts, gbi.data_format);
+    if let Some(annotations) = annotations {
+        rsp.set_annotations(annotations);
+    }
     rsp.set_initial_microcode(ucode);
     rsp.retain_native_policy = retain_native_policy;
     rsp.profiling = profiling;
@@ -749,11 +754,13 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
                     } else {
                         WalkFlow::Branch
                     };
+                    rsp.annotation_call(command_pc, return_stack.len());
                     pc = target;
                     break 'dispatch;
                 }
                 Control::Return => match return_stack.pop() {
                     Some(ret) => {
+                        rsp.annotation_return(return_stack.len());
                         flow = if op == crate::hle::consts::G_CULLDL
                             && matches!(
                                 ucode,
@@ -2596,6 +2603,7 @@ mod coherence_tests {
             Default::default(),
             &[],
             true,
+            None,
         );
         assert_eq!(result.termination, WalkTermination::End);
         assert!(result

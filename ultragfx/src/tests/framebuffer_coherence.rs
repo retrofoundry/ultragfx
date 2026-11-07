@@ -184,6 +184,7 @@ fn guest_dither_selectors_survive_later_othermode_and_split_batches() {
             Default::default(),
             &[],
             false,
+            None,
         );
         assert!(result.diags.is_empty(), "{:?}", result.diags);
         let modes: Vec<_> = result
@@ -639,6 +640,7 @@ mod gpu {
             Default::default(),
             &[],
             true,
+            None,
         )
     }
 
@@ -691,6 +693,7 @@ mod gpu {
             Default::default(),
             &[],
             false,
+            None,
         );
         assert_eq!(result.termination, crate::inspect::WalkTermination::End);
         crate::render::workload::Workload::new(&result.scene)
@@ -1512,6 +1515,7 @@ mod gpu {
             Default::default(),
             &[],
             false,
+            None,
         );
         let mut commands = 0;
         let result = r.process_dl_observed(

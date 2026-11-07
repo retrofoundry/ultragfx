@@ -117,3 +117,65 @@ impl SceneRenderer {
         self.depthbuffers = task.depth;
     }
 }
+
+#[cfg(test)]
+impl StrictTask {
+    pub(crate) fn test_state(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> impl PartialEq + std::fmt::Debug {
+        let framebuffer = self.framebuffer.as_ref().map(|fb| {
+            (
+                super::isolated_tests::texture_bytes(device, queue, &fb.color),
+                fb.presentation
+                    .as_ref()
+                    .map(|p| super::isolated_tests::texture_bytes(device, queue, &p.texture)),
+            )
+        });
+        let depth: HashMap<_, _> = self
+            .depth
+            .iter()
+            .map(|(&id, depth)| {
+                (
+                    id,
+                    std::iter::once(depth)
+                        .chain(depth.presentation.as_deref())
+                        .map(|image| image.test_planes(device, queue))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        (
+            (
+                self.id,
+                framebuffer,
+                depth,
+                self.coherence.test_state(device, queue),
+            ),
+            (
+                self.descriptors.clone(),
+                self.first_touch.clone(),
+                self.depth_first_touch.clone(),
+                self.versions
+                    .iter()
+                    .map(|(&writer, texture)| {
+                        (
+                            writer,
+                            super::isolated_tests::texture_bytes(device, queue, texture),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>(),
+                self.presentation_versions
+                    .iter()
+                    .map(|(&writer, texture)| {
+                        (
+                            writer,
+                            super::isolated_tests::texture_bytes(device, queue, texture),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>(),
+            ),
+        )
+    }
+}

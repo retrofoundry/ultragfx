@@ -33,6 +33,7 @@ pub struct TextureState {
 }
 
 pub struct Rsp {
+    annotations: Option<Box<crate::annotation::AnnotationCapture>>,
     microcode: crate::Microcode,
     pub(crate) obj_render_mode: u32,
     mvp_valid: bool,
@@ -87,6 +88,7 @@ pub struct Rsp {
 impl Default for Rsp {
     fn default() -> Self {
         Rsp {
+            annotations: None,
             microcode: crate::Microcode::F3dex2,
             obj_render_mode: 0,
             mvp_valid: true,
@@ -140,7 +142,32 @@ impl Default for Rsp {
     }
 }
 
+pub(crate) fn fold_direction(model: Mat4, direction: [f32; 3]) -> [f32; 3] {
+    let o = mul_col_vec3(model, direction);
+    let len = (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt();
+    let inv = if len > 0.0 { 1.0 / len } else { 0.0 };
+    [o[0] * inv, o[1] * inv, o[2] * inv]
+}
+
 impl Rsp {
+    pub(crate) fn set_annotations(&mut self, annotations: crate::annotation::TaskAnnotations) {
+        self.annotations = Some(Box::new(crate::annotation::AnnotationCapture::new(
+            annotations,
+        )));
+    }
+
+    pub(crate) fn annotation_call(&mut self, pc: u64, depth: usize) {
+        if let Some(capture) = &mut self.annotations {
+            capture.enter(pc, depth);
+        }
+    }
+
+    pub(crate) fn annotation_return(&mut self, depth: usize) {
+        if let Some(capture) = &mut self.annotations {
+            capture.leave(depth);
+        }
+    }
+
     pub(crate) fn new(
         consts: crate::hle::gbi::GbiConstants,
         data_format: crate::hle::mem::GbiDataFormat,
@@ -236,7 +263,11 @@ impl Rsp {
     /// NOTE: mvp_table/viewport_table/texcoord_table are only copied onto the Scene here. A caller
     /// that drives set_vertex/draw_tri directly (instead of via interpret) must call this before
     /// reading those Scene tables.
-    pub fn finish(&self, scene: &mut Scene) {
+    pub fn finish(&mut self, scene: &mut Scene) {
+        scene.annotations = self
+            .annotations
+            .take()
+            .map(|capture| Box::new(capture.finish()));
         scene.mvp_table = self.mvp_table.clone();
         scene.viewport_table = self.viewport_table.clone();
         scene.texcoord_table = self.texcoord_table.clone();
@@ -276,6 +307,9 @@ impl Rsp {
             } else {
                 mul4(m, self.model_stack[top])
             };
+        }
+        if let Some(capture) = &mut self.annotations {
+            capture.matrix(mem, addr, m, is_proj, is_load, self.model_stack_size - 1);
         }
         self.recompute_mvp();
         Ok(())
@@ -418,12 +452,7 @@ impl Rsp {
                 self.cur_light_index = scene.lights_table.len() as u32;
                 for k in 0..self.num_dir as usize {
                     let (dir, col) = self.lights[k];
-                    let o = mul_col_vec3(mv, dir);
-                    let len = (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt();
-                    let inv = if len > 0.0 { 1.0 / len } else { 0.0 };
-                    scene
-                        .lights_table
-                        .push(([o[0] * inv, o[1] * inv, o[2] * inv], col));
+                    scene.lights_table.push((fold_direction(mv, dir), col));
                 }
                 scene.lights_table.push(([0.0, 0.0, 0.0], self.ambient_col)); // ambient last
                 self.last_light_key = Some(key);
@@ -446,13 +475,8 @@ impl Rsp {
             let key = (self.lookat_version, mv);
             if self.last_lookat_key != Some(key) {
                 self.cur_lookat_index = scene.lookat_table.len() as u32;
-                let nz = |o: [f32; 3]| {
-                    let l = (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt();
-                    let i = if l > 0.0 { 1.0 / l } else { 0.0 };
-                    [o[0] * i, o[1] * i, o[2] * i]
-                };
-                let s = nz(mul_col_vec3(mv, self.lookat_axes[0]));
-                let t = nz(mul_col_vec3(mv, self.lookat_axes[1]));
+                let s = fold_direction(mv, self.lookat_axes[0]);
+                let t = fold_direction(mv, self.lookat_axes[1]);
                 scene.lookat_table.push((s, t));
                 self.last_lookat_key = Some(key);
             }
@@ -468,6 +492,21 @@ impl Rsp {
         } else {
             0
         };
+        if let Some(capture) = &mut self.annotations {
+            capture.load_vertices(
+                self.model_stack[self.model_stack_size - 1],
+                self.viewproj,
+                self.mvp,
+                self.model_stack_size - 1,
+                vertices.len(),
+                lit.then_some(crate::annotation::RawLighting {
+                    lights: self.lights,
+                    ambient_col: self.ambient_col,
+                    num_dir: self.num_dir,
+                    lookat_axes: self.lookat_axes,
+                }),
+            );
+        }
         for (i, v) in vertices.into_iter().enumerate() {
             let slot = dst as usize + i;
             let gi = scene.raw_pos.len() as u32;
@@ -593,20 +632,10 @@ impl Rsp {
         // RT64 copy-on-use: a modify must not edit a vertex row already recorded by a draw.
         // Intentional RT64 divergence: carry modify state into the clone, matching in-place DMEM writes.
         if self.used[slot] {
-            let next = scene.raw_pos.len();
-            scene.raw_pos.push(scene.raw_pos[gi]);
-            scene.raw_st.push(scene.raw_st[gi]);
-            scene.mtx_index.push(scene.mtx_index[gi]);
-            scene.viewport_index.push(scene.viewport_index[gi]);
-            scene.texcoord_index.push(scene.texcoord_index[gi]);
-            scene.cn.push(scene.cn[gi]);
-            scene.light_index.push(scene.light_index[gi]);
-            scene.light_count.push(scene.light_count[gi]);
-            scene.texgen_mode.push(scene.texgen_mode[gi]);
-            scene.fog.push(scene.fog[gi]);
-            scene.lookat_index.push(scene.lookat_index[gi]);
-            scene.modify_flags.push(scene.modify_flags[gi]);
-            scene.modify_screen.push(scene.modify_screen[gi]);
+            let next = scene.duplicate_vertex(gi);
+            if let Some(capture) = &mut self.annotations {
+                capture.clone_vertex(gi);
+            }
             self.cache_global_index[slot] = next as u32;
             self.used[slot] = false;
             gi = next;
@@ -723,6 +752,16 @@ impl Rsp {
         scene.indices.push(self.cache_global_index[a as usize]);
         scene.indices.push(self.cache_global_index[b as usize]);
         scene.indices.push(self.cache_global_index[c as usize]);
+        if let Some(capture) = &mut self.annotations {
+            capture.draw(
+                index_start,
+                [
+                    self.cache_global_index[a as usize],
+                    self.cache_global_index[b as usize],
+                    self.cache_global_index[c as usize],
+                ],
+            );
+        }
     }
 
     /// gsSPTexture: set the texture scaling state.

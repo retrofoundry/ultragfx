@@ -3612,3 +3612,43 @@ impl super::super::SceneRenderer {
         true
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Coherence {
+    pub(in crate::render) fn test_state(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> impl PartialEq + std::fmt::Debug {
+        assert!(self.snapshots.is_empty());
+        assert!(self.pending.is_empty());
+        assert!(self.copy_words.is_empty());
+        let owners: Vec<_> = self
+            .owners
+            .ranges
+            .iter()
+            .map(|(&address, range)| (address, range.writer, range.generation, range.bytes.clone()))
+            .collect();
+        let native = [&self.native_fill_store, &self.native_fill_spare].map(|store| {
+            store.as_ref().map(|store| {
+                (
+                    store.extent,
+                    store.buffer.clone(),
+                    crate::render::isolated_tests::buffer_bytes(device, queue, &store.buffer),
+                )
+            })
+        });
+        (
+            (owners, self.owners.foreign.clone(), self.hidden.clone()),
+            (
+                self.encoding,
+                self.generation,
+                self.first_generation,
+                self.strict_fills,
+                self.imports.clone(),
+                self.imported,
+            ),
+            native,
+        )
+    }
+}

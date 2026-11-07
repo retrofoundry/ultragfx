@@ -118,6 +118,7 @@ pub(crate) struct DrawOrigin {
 /// The flat scene the renderer consumes: vertex buffer + triangle index buffer + per-run materials.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
+    pub(crate) annotations: Option<Box<crate::annotation::CapturedAnnotations>>,
     pub(crate) unsupported_native_policy: bool,
     pub(crate) draw_origins: Vec<DrawOrigin>,
     pub indices: Vec<u32>,
@@ -175,6 +176,24 @@ pub struct Scene {
 }
 
 impl Scene {
+    pub(crate) fn duplicate_vertex(&mut self, index: usize) -> usize {
+        let vertex = self.raw_pos.len();
+        self.raw_pos.push(self.raw_pos[index]);
+        self.modify_flags.push(self.modify_flags[index]);
+        self.modify_screen.push(self.modify_screen[index]);
+        self.mtx_index.push(self.mtx_index[index]);
+        self.viewport_index.push(self.viewport_index[index]);
+        self.raw_st.push(self.raw_st[index]);
+        self.texcoord_index.push(self.texcoord_index[index]);
+        self.cn.push(self.cn[index]);
+        self.light_index.push(self.light_index[index]);
+        self.light_count.push(self.light_count[index]);
+        self.texgen_mode.push(self.texgen_mode[index]);
+        self.fog.push(self.fog[index]);
+        self.lookat_index.push(self.lookat_index[index]);
+        vertex
+    }
+
     pub(crate) fn use_compatibility_policy(&mut self) {
         for mode in &mut self.render_modes {
             mode.key_enabled = false;
