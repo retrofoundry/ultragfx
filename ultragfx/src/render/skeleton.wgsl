@@ -11,7 +11,8 @@ fn shade_fragment(in: VsOut) -> vec4<f32> {
         rgb = blend_fog(rgb, r.alpha, in.color.a);
     }
     alpha_discard(r, in.clip_position.xy);
-    if memory_in_p(framebuffer_mux()) {
+    let mux = framebuffer_mux();
+    if memory_in_p(mux) || (combiner.cycle_type <= 1u && partial_reject(mux, r.alpha) && ((mux >> 14u) & 3u) == 1u) {
         let blend = blend_framebuffer(rgb, r.alpha, in.color.a);
         rgb = blend.rgb;
         r.alpha = blend.weights.x;

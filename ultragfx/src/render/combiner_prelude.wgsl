@@ -777,11 +777,18 @@ fn memory_in_p(mux: u32) -> bool {
         ((mux >> 6u) & 3u) != 1u && ((mux >> 2u) & 3u) == 0u;
 }
 
+fn partial_reject(mux: u32, alpha: f32) -> bool {
+    return ((mux >> 10u) & 3u) == 0u && ((mux >> 2u) & 3u) == 0u && alpha >= 1.0;
+}
+
 fn blend_local(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32, mux: u32, blend_enabled: bool) -> vec3<f32> {
     let p = (mux >> 14u) & 3u;
     let a = (mux >> 10u) & 3u;
     let m = (mux >> 6u) & 3u;
     let b = (mux >> 2u) & 3u;
+    if combiner.cycle_type == 0u && partial_reject(mux, combiner_alpha) {
+        return blend_color(p, rgb);
+    }
     let fog_lerp = (p == 0u && m == 3u) || (p == 3u && m == 0u);
     let local = fog_lerp || (combiner.cycle_type <= 1u && p != 1u && m != 1u && (p >= 2u || m >= 2u));
     if (!local || b == 1u) {
@@ -818,6 +825,9 @@ fn blend_fog(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32) -> vec3<f32>
     let first = blend_local(rgb, combiner_alpha, shade_alpha, combiner.blender_mux,
         two_cycle || (combiner.cycle_type == 0u && combiner.force_blend != 0u));
     let mux = framebuffer_mux();
+    if two_cycle && partial_reject(mux, combiner_alpha) {
+        return blend_color((mux >> 14u) & 3u, first);
+    }
     if two_cycle && ((mux >> 14u) & 3u) != 1u && ((mux >> 6u) & 3u) != 1u && ((mux >> 2u) & 3u) != 1u {
         return blend_local(first, combiner_alpha, shade_alpha, mux, combiner.force_blend != 0u);
     }
@@ -832,6 +842,9 @@ struct FramebufferBlend {
 fn blend_framebuffer(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32) -> FramebufferBlend {
     let mux = framebuffer_mux();
     let p = (mux >> 14u) & 3u;
+    if partial_reject(mux, combiner_alpha) {
+        return FramebufferBlend(blend_color(p, rgb), select(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), p == 1u));
+    }
     let a = blend_a((mux >> 10u) & 3u, combiner_alpha, shade_alpha);
     let b_sel = (mux >> 2u) & 3u;
     var b = 0.0;
