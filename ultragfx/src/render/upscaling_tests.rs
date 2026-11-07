@@ -2018,6 +2018,29 @@ fn loaded_feedback(
 }
 
 #[test]
+fn sampling_cache_keys_mapped_framebuffer_bytes() {
+    let (device, queue, dual) = headless_device();
+    let mut renderer = SceneRenderer::new(&device, FORMAT, 32, 24, dual);
+    renderer.set_test_scale(2, BUDGET);
+    let recorder = crate::profiling::Recorder::new(crate::profiling::Mode::Counters);
+    renderer.profiling = recorder.clone();
+    let (draw, copy) = loaded_feedback(0);
+    renderer
+        .framebuffer_copies
+        .begin(&device, std::iter::once(copy), 2, false);
+    let input = inputs::TextureInputs::from(&draw.materials[0]);
+    renderer.upload_materials(&device, &queue, std::slice::from_ref(&input));
+    assert_eq!(recorder.drain().counters["buffer.uniforms.creations"], 2);
+    assert_eq!(renderer.material_bindings[0].high_resolution_mask, 0);
+    assert_eq!(renderer.presentation_bindings[0].high_resolution_mask, 1);
+    renderer.upload_materials(&device, &queue, &[input]);
+    assert_eq!(
+        recorder.drain().counters.get("buffer.uniforms.creations"),
+        None
+    );
+}
+
+#[test]
 fn loaded_subrectangle_retains_scaled_samples_after_overwrite_and_growth() {
     let (device, queue, dual) = headless_device();
     for scale in [2, 3, 4] {

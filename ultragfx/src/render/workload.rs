@@ -428,18 +428,27 @@ impl SceneRenderer {
         textures: &[TextureInputs],
     ) {
         self.texture_resources.collect(&self.profiling);
-        let previous: Vec<_> = std::mem::take(&mut self.material_bindings)
-            .into_iter()
+        let retained = std::mem::take(&mut self.material_bindings);
+        let previous: Vec<_> = textures
+            .iter()
             .enumerate()
-            .map(|(index, binding)| {
-                textures
+            .map(|(index, input)| {
+                retained
                     .get(index)
-                    .filter(|input| {
+                    .filter(|binding| {
                         binding.may_reuse(input, &self.texture_resources, &self.profiling)
                     })
-                    .map(|_| binding)
+                    .cloned()
+                    .or_else(|| {
+                        self.sampling_cache.previous(
+                            input,
+                            &self.texture_resources,
+                            &self.profiling,
+                        )
+                    })
             })
             .collect();
+        drop(retained);
         let mut previous = previous.into_iter();
         let mut builder = super::texture_bindings::BindingBuilder {
             device,
@@ -448,6 +457,7 @@ impl SceneRenderer {
             samplers: &self.samplers,
             dummy: &self.dummy_view,
             resources: &mut self.texture_resources,
+            sampling_cache: &mut self.sampling_cache,
             copies: &mut self.framebuffer_copies,
             profiling: &self.profiling,
             presentation: false,
@@ -646,6 +656,7 @@ impl SceneRenderer {
                 samplers: &self.samplers,
                 dummy: &self.dummy_view,
                 resources: &mut self.texture_resources,
+                sampling_cache: &mut self.sampling_cache,
                 copies: &mut self.framebuffer_copies,
                 profiling: &self.profiling,
                 presentation: false,
