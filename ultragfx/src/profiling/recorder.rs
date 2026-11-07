@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Mutex},
+    thread::ThreadId,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "profiling", derive(serde::Serialize, serde::Deserialize))]
@@ -35,21 +39,21 @@ pub struct Snapshot {
 struct State {
     mode: Mode,
     snapshot: Snapshot,
-    children: Vec<f64>,
+    children: HashMap<ThreadId, Vec<f64>>,
     command: super::CensusCommand,
     load_serial: u64,
     load_tile: Option<crate::hle::rdp::TileDescriptor>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Recorder(Option<Rc<RefCell<State>>>);
+pub struct Recorder(Option<Arc<Mutex<State>>>);
 
 impl Recorder {
     pub fn new(mode: Mode) -> Self {
-        Self(Some(Rc::new(RefCell::new(State {
+        Self(Some(Arc::new(Mutex::new(State {
             mode,
             snapshot: Snapshot::default(),
-            children: Vec::new(),
+            children: HashMap::new(),
             command: Default::default(),
             load_serial: 0,
             load_tile: None,
@@ -59,14 +63,14 @@ impl Recorder {
     pub fn snapshot(&self) -> Snapshot {
         self.0
             .as_ref()
-            .map(|state| state.borrow().snapshot.clone())
+            .map(|state| state.lock().unwrap().snapshot.clone())
             .unwrap_or_default()
     }
 
     pub fn drain(&self) -> Snapshot {
         self.0
             .as_ref()
-            .map(|state| std::mem::take(&mut state.borrow_mut().snapshot))
+            .map(|state| std::mem::take(&mut state.lock().unwrap().snapshot))
             .unwrap_or_default()
     }
 
@@ -77,18 +81,18 @@ impl Recorder {
     pub fn tracing(&self) -> bool {
         self.0
             .as_ref()
-            .is_some_and(|state| state.borrow().mode == Mode::Trace)
+            .is_some_and(|state| state.lock().unwrap().mode == Mode::Trace)
     }
 
     pub fn censusing(&self) -> bool {
         self.0
             .as_ref()
-            .is_some_and(|state| state.borrow().mode == Mode::Census)
+            .is_some_and(|state| state.lock().unwrap().mode == Mode::Census)
     }
 
     pub(crate) fn census_command(&self, pc: u64, words: [u32; 2], image: (u8, u8, u16, u64)) {
         if self.censusing() {
-            self.0.as_ref().unwrap().borrow_mut().command =
+            self.0.as_ref().unwrap().lock().unwrap().command =
                 super::CensusCommand { pc, words, image };
         }
     }
@@ -99,14 +103,14 @@ impl Recorder {
         image: (u8, u8, u16, u64),
     ) {
         if self.censusing() {
-            let mut state = self.0.as_ref().unwrap().borrow_mut();
+            let mut state = self.0.as_ref().unwrap().lock().unwrap();
             state.load_tile = Some(tile.clone());
             state.command.image = image;
         }
     }
 
     pub(crate) fn census_load(&self, kind: &str, parameters: &[u64], source: &[u8]) -> u64 {
-        let mut state = self.0.as_ref().unwrap().borrow_mut();
+        let mut state = self.0.as_ref().unwrap().lock().unwrap();
         state.load_serial += 1;
         let load = super::CensusLoad {
             id: state.load_serial,
@@ -124,7 +128,7 @@ impl Recorder {
 
     pub(crate) fn census_framebuffer_shortcut(&self, pc: u64, address: u64) {
         if self.censusing() {
-            let mut state = self.0.as_ref().unwrap().borrow_mut();
+            let mut state = self.0.as_ref().unwrap().lock().unwrap();
             if let Some(attempt) = state
                 .snapshot
                 .census_attempts
@@ -145,7 +149,8 @@ impl Recorder {
         self.0
             .as_ref()
             .unwrap()
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .snapshot
             .census_attempts
             .push(attempt);
@@ -154,7 +159,8 @@ impl Recorder {
     pub fn count(&self, name: &'static str, value: u64) {
         if let Some(state) = &self.0 {
             *state
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .snapshot
                 .counters
                 .entry(name.into())
@@ -164,7 +170,7 @@ impl Recorder {
 
     pub fn gauge(&self, name: &'static str, value: u64) {
         if let Some(state) = &self.0 {
-            let mut state = state.borrow_mut();
+            let mut state = state.lock().unwrap();
             state.snapshot.gauges.insert(name.into(), value);
             let peak = state
                 .snapshot
@@ -178,7 +184,8 @@ impl Recorder {
     pub fn target(&self, logical: (u32, u32), output: (u32, u32)) {
         if let Some(state) = &self.0 {
             *state
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .snapshot
                 .counters
                 .entry(format!(
@@ -199,7 +206,7 @@ impl Recorder {
 
     fn resource(&self, kind: &str, class: &str, capacity: u64, uploaded: u64) {
         if let Some(state) = &self.0 {
-            let mut state = state.borrow_mut();
+            let mut state = state.lock().unwrap();
             for (field, n) in [
                 ("creations", 1),
                 ("capacity_bytes", capacity),
@@ -216,7 +223,7 @@ impl Recorder {
 
     pub fn decode(&self, key: String, bytes: Option<usize>) {
         if let Some(state) = &self.0 {
-            let mut state = state.borrow_mut();
+            let mut state = state.lock().unwrap();
             let row = state.snapshot.decodes.entry(key).or_default();
             row.requests += 1;
             if let Some(bytes) = bytes {
@@ -230,7 +237,7 @@ impl Recorder {
 
     pub fn request(&self, request: super::Request) {
         if let Some(state) = &self.0 {
-            state.borrow_mut().snapshot.requests.push(request);
+            state.lock().unwrap().snapshot.requests.push(request);
         }
     }
 
@@ -238,17 +245,26 @@ impl Recorder {
         let active = self
             .0
             .as_ref()
-            .is_some_and(|state| match state.borrow().mode {
+            .is_some_and(|state| match state.lock().unwrap().mode {
                 Mode::Detailed => true,
                 Mode::Coarse => matches!(name, "process_dl" | "begin_frame" | "presentation"),
                 Mode::Counters | Mode::Trace | Mode::Census => false,
             });
         if active {
-            self.0.as_ref().unwrap().borrow_mut().children.push(0.0);
+            let thread = std::thread::current().id();
+            self.0
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .children
+                .entry(thread)
+                .or_default()
+                .push(0.0);
             Span {
                 recorder: self.clone(),
                 name,
-                start: Some(now_ms()),
+                start: Some((now_ms(), thread)),
             }
         } else {
             Span {
@@ -263,17 +279,20 @@ impl Recorder {
 pub struct Span {
     recorder: Recorder,
     name: &'static str,
-    start: Option<f64>,
+    start: Option<(f64, ThreadId)>,
 }
 
 impl Drop for Span {
     fn drop(&mut self) {
-        if let Some(start) = self.start {
+        if let Some((start, thread)) = self.start {
             let elapsed = now_ms() - start;
-            let mut state = self.recorder.0.as_ref().unwrap().borrow_mut();
-            let children = state.children.pop().unwrap();
-            if let Some(parent) = state.children.last_mut() {
+            let mut state = self.recorder.0.as_ref().unwrap().lock().unwrap();
+            let stack = state.children.get_mut(&thread).unwrap();
+            let children = stack.pop().unwrap();
+            if let Some(parent) = stack.last_mut() {
                 *parent += elapsed;
+            } else {
+                state.children.remove(&thread);
             }
             let row = state.snapshot.timings.entry(self.name.into()).or_default();
             row.calls += 1;

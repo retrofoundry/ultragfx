@@ -172,9 +172,12 @@ pub enum PhaseError {
     Render(crate::Diagnostic),
 }
 
-pub(crate) struct PhaseState {
+/// An independent phase renderer sharing its creator's device and queue.
+pub struct PhaseRenderer {
     renderer: IsolatedRenderer,
     pair: Option<Pair>,
+    queue: wgpu::Queue,
+    device: wgpu::Device,
 }
 
 struct Pair {
@@ -786,6 +789,38 @@ fn phase_scene(a: &Scene, b: &Scene, correspondence: &Correspondence, t: f32) ->
 }
 
 impl crate::Renderer {
+    /// Create independent phase state with the current presentation format and reduction factor.
+    pub fn phase_renderer(&self) -> PhaseRenderer {
+        let (width, height) = self.inner.isolated_context().legacy_extent;
+        let mut renderer = IsolatedRenderer::new(
+            &self.device,
+            self.surface_format,
+            width,
+            height,
+            self.device
+                .features()
+                .contains(wgpu::Features::DUAL_SOURCE_BLENDING),
+        );
+        renderer.renderer.reduction_factor = self.reduction_factor();
+        PhaseRenderer {
+            renderer,
+            pair: None,
+            queue: self.queue.clone(),
+            device: self.device.clone(),
+        }
+    }
+}
+
+impl PhaseRenderer {
+    /// Set the integer box reduction used for phase presentation.
+    pub fn set_reduction_factor(&mut self, factor: u32) -> Result<(), crate::ConfigError> {
+        if factor == 0 {
+            return Err(crate::ConfigError::ReductionFactor(factor));
+        }
+        self.renderer.renderer.reduction_factor = factor;
+        Ok(())
+    }
+
     /// Render a source pair into a caller-owned target without advancing canonical state.
     pub fn render_phase(
         &mut self,
@@ -816,33 +851,21 @@ impl crate::Renderer {
             &*source.image
         } else {
             let task = &source.task;
-            let state = self.phases.get_or_insert_with(|| PhaseState {
-                renderer: IsolatedRenderer::new(
-                    &self.device,
-                    self.surface_format,
-                    task.context.legacy_extent.0,
-                    task.context.legacy_extent.1,
-                    self.device
-                        .features()
-                        .contains(wgpu::Features::DUAL_SOURCE_BLENDING),
-                ),
-                pair: None,
-            });
             let intermediate = t != 0.0 && t != 1.0;
             let scene = if intermediate {
                 let atask = &a.data.task;
                 let btask = &b.data.task;
-                if !state.pair.as_ref().is_some_and(|pair| {
+                if !self.pair.as_ref().is_some_and(|pair| {
                     pair.a.ptr_eq(&Arc::downgrade(&a.data))
                         && pair.b.ptr_eq(&Arc::downgrade(&b.data))
                 }) {
-                    state.pair = Some(Pair {
+                    self.pair = Some(Pair {
                         a: Arc::downgrade(&a.data),
                         b: Arc::downgrade(&b.data),
                         correspondence: correspondence(&atask.scene, &btask.scene),
                     });
                 }
-                if let Some(correspondence) = &state.pair.as_ref().unwrap().correspondence {
+                if let Some(correspondence) = &self.pair.as_ref().unwrap().correspondence {
                     result = PhaseResult::Interpolated {
                         restrictions: correspondence.restrictions.clone(),
                     };
@@ -854,7 +877,7 @@ impl crate::Renderer {
             } else {
                 task.scene.clone()
             };
-            rendered = state
+            rendered = self
                 .renderer
                 .render(
                     &self.device,
@@ -867,7 +890,7 @@ impl crate::Renderer {
             &rendered
         };
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.inner.scanout_snapshot(
+        self.renderer.renderer.scanout_snapshot(
             image,
             source.rows.clone(),
             &self.device,
@@ -878,6 +901,14 @@ impl crate::Renderer {
         Ok(result)
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+const _: fn() = || {
+    fn send<T: Send>() {}
+    fn send_sync<T: Send + Sync>() {}
+    send::<PhaseRenderer>();
+    send_sync::<SourceFrame>();
+};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

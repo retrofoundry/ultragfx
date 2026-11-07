@@ -250,15 +250,22 @@ fn pixels(r: &mut Renderer, draw: impl FnOnce(&mut Renderer, &wgpu::TextureView)
     )
 }
 fn phase(
-    r: &mut Renderer,
+    r: &mut PhaseRenderer,
     a: &SourceFrame,
     b: &SourceFrame,
     t: f32,
     expected: PhaseResult,
 ) -> Vec<u8> {
-    pixels(r, |r, view| {
-        assert_eq!(r.render_phase(a, b, t, view).unwrap(), expected);
-    })
+    pixels_from_render(
+        &r.device.clone(),
+        &r.queue.clone(),
+        64,
+        48,
+        wgpu::TextureFormat::Rgba8Unorm,
+        |view| {
+            assert_eq!(r.render_phase(a, b, t, view).unwrap(), expected);
+        },
+    )
 }
 fn canonical(r: &mut Renderer) -> Vec<u8> {
     pixels(r, |r, view| r.present_host_to(Some(0x10000), view))
@@ -267,6 +274,7 @@ fn canonical(r: &mut Renderer) -> Vec<u8> {
 #[test]
 fn held_presents_preserve_scratch_renderer_and_pair_cache() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(&[identity()], identity(), projection()),
@@ -299,8 +307,8 @@ fn held_presents_preserve_scratch_renderer_and_pair_cache() {
         .ineligibility()
         .iter()
         .any(|r| r.reason == Ineligibility::InheritedAttachmentContents));
-    let expected = phase(&mut r, &a, &b, 0.5, INTERPOLATED);
-    let state = r.phases.as_ref().unwrap();
+    let expected = phase(&mut phases, &a, &b, 0.5, INTERPOLATED);
+    let state = &phases;
     let scratch = &state.renderer as *const IsolatedRenderer;
     let draws = state
         .pair
@@ -312,17 +320,12 @@ fn held_presents_preserve_scratch_renderer_and_pair_cache() {
         .draws
         .as_ptr();
     for held in [&a, &cut, &ineligible] {
-        phase(&mut r, &a, held, 0.5, PhaseResult::Held);
-        let state = r
-            .phases
-            .as_ref()
-            .expect("held presents keep the scratch renderer");
+        phase(&mut phases, &a, held, 0.5, PhaseResult::Held);
+        let state = &phases;
         assert_eq!(&state.renderer as *const IsolatedRenderer, scratch);
-        assert_eq!(phase(&mut r, &a, &b, 0.5, INTERPOLATED), expected);
+        assert_eq!(phase(&mut phases, &a, &b, 0.5, INTERPOLATED), expected);
         assert_eq!(
-            r.phases
-                .as_ref()
-                .unwrap()
+            phases
                 .pair
                 .as_ref()
                 .unwrap()
@@ -339,6 +342,7 @@ fn held_presents_preserve_scratch_renderer_and_pair_cache() {
 #[test]
 fn opposite_determinant_signs_hold_the_draw_until_b() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(&[identity()], identity(), projection()),
@@ -362,7 +366,7 @@ fn opposite_determinant_signs_hold_the_draw_until_b() {
     for t in [0.25, 0.5, 0.75] {
         assert_eq!(
             phase(
-                &mut r,
+                &mut phases,
                 &a,
                 &b,
                 t,
@@ -383,7 +387,7 @@ fn opposite_determinant_signs_hold_the_draw_until_b() {
         );
     }
     assert_eq!(
-        phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint),
+        phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint),
         canonical_b
     );
 }
@@ -430,6 +434,7 @@ fn source_commit_rejects_mixed_source_ids_and_epochs() {
 #[test]
 fn rigid_limb_landmarks_and_discrete_endpoint_ownership() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(
@@ -481,7 +486,7 @@ fn rigid_limb_landmarks_and_discrete_endpoint_ownership() {
                 assert!((24.0 - clip[1] * 24.0 - (24.0 - base_y - x * s - y * c)).abs() < 1.0);
             }
         }
-        let image = phase(&mut r, &a, &b, t, INTERPOLATED);
+        let image = phase(&mut phases, &a, &b, t, INTERPOLATED);
         for (x, y) in [(-14.0 + 8.0 * t, -6.0), (10.0 + 8.0 * t, 7.0)] {
             let (px, py) = ((32.0 + x).round() as u32, (24.0f32 - y).round() as u32);
             assert_eq!(
@@ -491,8 +496,8 @@ fn rigid_limb_landmarks_and_discrete_endpoint_ownership() {
             );
         }
     }
-    assert_eq!(phase(&mut r, &a, &b, 0.0, PhaseResult::Endpoint), ca);
-    assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+    assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+    assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
 }
 
 #[test]
@@ -507,6 +512,7 @@ fn camera_orbit_projects_landmarks_within_one_native_pixel() {
         ]
     };
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(&[transform(0.0, 18.0, 5.0)], yaw(-15.0), projection()),
@@ -540,7 +546,7 @@ fn camera_orbit_projects_landmarks_within_one_native_pixel() {
             assert!((32.0 + clip[0] / clip[3] * 32.0 - want_x).abs() <= 1.0);
             assert!((24.0 - clip[1] / clip[3] * 24.0 - want_y).abs() <= 1.0);
         }
-        let image = phase(&mut r, &a, &b, t, INTERPOLATED);
+        let image = phase(&mut phases, &a, &b, t, INTERPOLATED);
         let x = (32.0 + 18.0 * angle.cos()).floor() as u32;
         assert_eq!(pixel(&image, 64, x, 19), [255; 4]);
     }
@@ -549,6 +555,7 @@ fn camera_orbit_projects_landmarks_within_one_native_pixel() {
 #[test]
 fn identity_generation_projection_and_discrete_content_hold() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(
@@ -573,17 +580,17 @@ fn identity_generation_projection_and_discrete_content_hold() {
         true,
     );
     let b = source(&mut r, tb);
-    let image = phase(&mut r, &a, &b, 0.5, INTERPOLATED);
+    let image = phase(&mut phases, &a, &b, 0.5, INTERPOLATED);
     assert_eq!(pixel(&image, 64, 27, 24), [255; 4]);
     assert_eq!(pixel(&image, 64, 37, 24), [255; 4]);
-    let old = phase(&mut r, &a, &b, 0.0, PhaseResult::Endpoint);
+    let old = phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint);
     let mut changed_generation = fixture(&[transform(0.0, 12.0, 0.0)], identity(), projection());
     changed_generation.annotations.draws[0].identity.generation = 2;
     let tc = task(&mut r, changed_generation, 23, 1, true);
     let c = source(&mut r, tc);
     assert_eq!(
         phase(
-            &mut r,
+            &mut phases,
             &a,
             &c,
             0.5,
@@ -614,7 +621,7 @@ fn identity_generation_projection_and_discrete_content_hold() {
         true,
     );
     let d = source(&mut r, td);
-    assert_eq!(phase(&mut r, &a, &d, 0.5, PhaseResult::Held), old);
+    assert_eq!(phase(&mut phases, &a, &d, 0.5, PhaseResult::Held), old);
     let te = task(
         &mut r,
         fixture(&[transform(0.0, 12.0, 0.0)], identity(), projection()),
@@ -623,13 +630,14 @@ fn identity_generation_projection_and_discrete_content_hold() {
         true,
     );
     let e = source(&mut r, te);
-    assert_eq!(phase(&mut r, &a, &e, 0.75, PhaseResult::Held), old);
-    assert_ne!(phase(&mut r, &a, &e, 1.0, PhaseResult::Held), old);
+    assert_eq!(phase(&mut phases, &a, &e, 0.75, PhaseResult::Held), old);
+    assert_ne!(phase(&mut phases, &a, &e, 1.0, PhaseResult::Held), old);
 }
 
 #[test]
 fn endpoints_use_their_own_topology_and_phase_history_is_weak() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(&[transform(0.0, -12.0, 0.0)], identity(), projection()),
@@ -652,10 +660,12 @@ fn endpoints_use_their_own_topology_and_phase_history_is_weak() {
     );
     let cb = canonical(&mut r);
     let b = source(&mut r, tb);
-    assert!(r.phases.is_none());
-    assert_eq!(phase(&mut r, &a, &b, 0.0, PhaseResult::Endpoint), ca);
-    r.phases = None;
-    assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+    assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+    r.reset();
+    assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+    phases = r.phase_renderer();
+    drop(r);
+    assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
     let weak_a = Arc::downgrade(&a.data);
     let weak_b = Arc::downgrade(&b.data);
     drop(a);
@@ -681,6 +691,7 @@ fn native(r: &mut Renderer) -> Vec<u8> {
 #[test]
 fn phases_preserve_native_bytes_writeback_ownership_rdp_and_serials() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     r.set_guest_writeback_with_encoding(true, crate::FramebufferEncoding::BigEndian);
     let mut guest = vec![0; 0x50000];
     let seed = writeback_task(&mut r, dependent_fixture(false), 38, &mut guest);
@@ -732,14 +743,14 @@ fn phases_preserve_native_bytes_writeback_ownership_rdp_and_serials() {
     let writes = r.guest_writes.clone();
     assert!(!writes.is_empty());
     let rdp = r.rdp.clone();
-    let p75 = phase(&mut r, &a, &b, 0.75, INTERPOLATED);
+    let p75 = phase(&mut phases, &a, &b, 0.75, INTERPOLATED);
     for t in [0.25, 0.0, 1.0, 0.5, 0.25, 0.75]
         .into_iter()
         .cycle()
         .take(24)
     {
         phase(
-            &mut r,
+            &mut phases,
             &a,
             &b,
             t,
@@ -750,7 +761,7 @@ fn phases_preserve_native_bytes_writeback_ownership_rdp_and_serials() {
             },
         );
     }
-    assert_eq!(phase(&mut r, &a, &b, 0.75, INTERPOLATED), p75);
+    assert_eq!(phase(&mut phases, &a, &b, 0.75, INTERPOLATED), p75);
     assert_eq!(native(&mut r), before);
     assert_eq!(r.guest_writes, writes);
     assert_eq!(r.rdp, rdp);
@@ -877,6 +888,7 @@ fn omit_clears(f: &mut Fixture) {
 #[test]
 fn framebuffer_load_copy_alias_and_inherited_sources_repeat_frozen_endpoints() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     for load in [false, true] {
         r.reset();
         let ta = task(
@@ -907,8 +919,8 @@ fn framebuffer_load_copy_alias_and_inherited_sources_repeat_frozen_endpoints() {
                 .iter()
                 .any(|r| r.reason == Ineligibility::FramebufferCopy));
         }
-        assert_eq!(phase(&mut r, &a, &b, 0.5, PhaseResult::Held), ca);
-        assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Held), cb);
+        assert_eq!(phase(&mut phases, &a, &b, 0.5, PhaseResult::Held), ca);
+        assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Held), cb);
     }
     r.reset();
     let ta = task(
@@ -928,12 +940,13 @@ fn framebuffer_load_copy_alias_and_inherited_sources_repeat_frozen_endpoints() {
         .ineligibility()
         .iter()
         .any(|r| r.reason == Ineligibility::InheritedAttachmentContents));
-    assert_eq!(phase(&mut r, &a, &b, 0.75, PhaseResult::Held), ca);
+    assert_eq!(phase(&mut phases, &a, &b, 0.75, PhaseResult::Held), ca);
 }
 
 #[test]
 fn cpu_import_and_multitask_sources_hold_and_visibility_uses_exact_cookie() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     r.set_guest_writeback_with_encoding(true, crate::FramebufferEncoding::BigEndian);
     let mut fa = fixture(&[identity()], identity(), projection());
     fa.built.rdram.resize(0x22000, 0);
@@ -954,7 +967,7 @@ fn cpu_import_and_multitask_sources_hold_and_visibility_uses_exact_cookie() {
         .ineligibility()
         .iter()
         .any(|r| r.reason == Ineligibility::CpuImportDependency));
-    assert_eq!(phase(&mut r, &a, &b, 0.5, PhaseResult::Held), ca);
+    assert_eq!(phase(&mut phases, &a, &b, 0.5, PhaseResult::Held), ca);
     tb.info.source = ta.info.source;
     let multi = r
         .commit_source(
@@ -972,13 +985,15 @@ fn cpu_import_and_multitask_sources_hold_and_visibility_uses_exact_cookie() {
         .iter()
         .any(|r| r.reason == Ineligibility::Multitask));
     assert_eq!(multi.visible_at(), 123456);
-    assert_eq!(phase(&mut r, &a, &multi, 0.5, PhaseResult::Held), ca);
+    assert_eq!(phase(&mut phases, &a, &multi, 0.5, PhaseResult::Held), ca);
 }
 
 #[test]
 fn phases_compose_with_scale_reduction_and_crop() {
     let mut r = renderer(2);
+    let mut phases = r.phase_renderer();
     r.set_reduction_factor(2).unwrap();
+    phases.set_reduction_factor(2).unwrap();
     let ta = task(
         &mut r,
         fixture(&[transform(0.0, -8.0, 0.0)], identity(), projection()),
@@ -1028,10 +1043,10 @@ fn phases_compose_with_scale_reduction_and_crop() {
         r.queue.submit([encoder.finish()]);
     });
     assert_eq!(
-        phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint),
+        phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint),
         canonical_crop
     );
-    let middle = phase(&mut r, &a, &b, 0.5, INTERPOLATED);
+    let middle = phase(&mut phases, &a, &b, 0.5, INTERPOLATED);
     assert_eq!(pixel(&middle, 64, 32, 24), [255; 4]);
     assert_eq!(native(&mut r), native_before);
 }
@@ -1073,6 +1088,7 @@ fn canonical_diagnostics_make_a_source_ineligible() {
 #[test]
 fn fractional_scissor_cannot_establish_inherited_presentation_columns() {
     let mut r = renderer(2);
+    let mut phases = r.phase_renderer();
     let mut fa = fixture(&[identity()], identity(), projection());
     for command in fa.built.rdram[fa.built.entry as usize..]
         .as_chunks_mut::<8>()
@@ -1093,7 +1109,7 @@ fn fractional_scissor_cannot_establish_inherited_presentation_columns() {
     let canonical = canonical(&mut r);
     let b = source(&mut r, tb);
     assert!(
-        phase(&mut r, &a, &b, 1.0, PhaseResult::Held) == canonical,
+        phase(&mut phases, &a, &b, 1.0, PhaseResult::Held) == canonical,
         "presentation columns retain the prior target until established"
     );
     assert!(b
@@ -1320,10 +1336,10 @@ fn in_frame_decal_depth_is_eligible_and_uncached_endpoints_match_with_writeback(
                 );
                 assert_eq!(pixel(&expected[index], 64, 5, 5), [0, 255, 0, 255]);
             }
-            r.phases = None;
+            let mut phases = r.phase_renderer();
             assert_eq!(
                 phase(
-                    &mut r,
+                    &mut phases,
                     &frames[0],
                     &frames[1],
                     t,
@@ -1372,6 +1388,7 @@ fn in_frame_decal_depth_is_eligible_and_uncached_endpoints_match_with_writeback(
 #[test]
 fn inherited_decal_depth_holds_but_in_frame_snapshots_do_not() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(&mut r, decal_fixture(-8.0, false), 131, 1, true);
     let ca = canonical(&mut r);
     let a = source(&mut r, ta);
@@ -1387,8 +1404,8 @@ fn inherited_decal_depth_holds_but_in_frame_snapshots_do_not() {
         "{:?}",
         b.ineligibility()
     );
-    assert_eq!(phase(&mut r, &a, &b, 0.5, PhaseResult::Held), ca);
-    assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Held), cb);
+    assert_eq!(phase(&mut phases, &a, &b, 0.5, PhaseResult::Held), ca);
+    assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Held), cb);
 }
 
 fn strict_fixture() -> Fixture {
@@ -1480,6 +1497,7 @@ fn history_fixture(history: History) -> Fixture {
 
 fn assert_history_holds(history: History, reason: Ineligibility) {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let writeback = matches!(
         history,
         History::GuestWords | History::VisCvg | History::Ia16ToI8
@@ -1505,9 +1523,9 @@ fn assert_history_holds(history: History, reason: Ineligibility) {
             .assert_guest_copy(&r.device, &r.queue);
     }
     for t in [0.0, 0.25, 0.75] {
-        assert_eq!(phase(&mut r, &a, &b, t, PhaseResult::Held), ca);
+        assert_eq!(phase(&mut phases, &a, &b, t, PhaseResult::Held), ca);
     }
-    assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Held), cb);
+    assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Held), cb);
     drop(seed);
 }
 
@@ -1550,6 +1568,7 @@ fn hold_model_keeps_a_world_pose_under_the_phase_camera() {
         ]
     };
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let mut held_a = transform(0.0, 12.0, 5.0);
     held_a[3][2] = 8.0;
     let mut held_b = transform(90.0, -18.0, 12.0);
@@ -1602,7 +1621,7 @@ fn hold_model_keeps_a_world_pose_under_the_phase_camera() {
                 assert!((24.0 - clip[1] * 24.0 - expected[1]).abs() <= 1.0);
             }
         }
-        let image = phase(&mut r, &a, &b, t, INTERPOLATED);
+        let image = phase(&mut phases, &a, &b, t, INTERPOLATED);
         assert_eq!(
             pixel(&image, 64, (42.3923 + 8.0 * (t - 0.5)).floor() as u32, 19),
             [255; 4]
@@ -1612,13 +1631,14 @@ fn hold_model_keeps_a_world_pose_under_the_phase_camera() {
             [255; 4]
         );
     }
-    assert_eq!(phase(&mut r, &a, &b, 0.0, PhaseResult::Endpoint), ca);
-    assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+    assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+    assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
 }
 
 #[test]
 fn source_reasons_and_held_primitive_counts_are_committed() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(&[identity()], identity(), projection()),
@@ -1659,8 +1679,8 @@ fn source_reasons_and_held_primitive_counts_are_committed() {
         assert_eq!(b.counts().fills, 2);
         assert_eq!(b.counts().rectangles, 0);
         assert_eq!(
-            phase(&mut r, &a, &b, 0.5, PhaseResult::Held),
-            phase(&mut r, &a, &b, 0.0, PhaseResult::Held)
+            phase(&mut phases, &a, &b, 0.5, PhaseResult::Held),
+            phase(&mut phases, &a, &b, 0.0, PhaseResult::Held)
         );
     }
 }
@@ -1701,6 +1721,7 @@ fn billboard_fixture(
 #[test]
 fn billboard_orbit_and_late_view_rewrite_keep_exact_endpoints() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     for late in [0.0, 7.0] {
         let ta = task(
             &mut r,
@@ -1741,8 +1762,8 @@ fn billboard_orbit_and_late_view_rewrite_keep_exact_endpoints() {
                     .map(|row| row.map(f32::to_bits))
             );
         }
-        assert_eq!(phase(&mut r, &a, &b, 0.0, PhaseResult::Endpoint), ca);
-        assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+        assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+        assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
         for t in [0.25, 0.5, 0.75] {
             let at = &a.data.task.scene;
             let bt = &b.data.task.scene;
@@ -1771,7 +1792,7 @@ fn billboard_orbit_and_late_view_rewrite_keep_exact_endpoints() {
                 assert!((32.0 + clip[0] * 32.0 - want[0]).abs() <= 1.0);
                 assert!((24.0 - clip[1] * 24.0 - want[1]).abs() <= 1.0);
             }
-            let image = phase(&mut r, &a, &b, t, INTERPOLATED);
+            let image = phase(&mut phases, &a, &b, t, INTERPOLATED);
             assert_eq!(
                 pixel(
                     &image,
@@ -1788,6 +1809,7 @@ fn billboard_orbit_and_late_view_rewrite_keep_exact_endpoints() {
 #[test]
 fn billboard_recipe_that_does_not_reconstruct_the_consumed_model_holds() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         billboard_fixture(0.0, 0.0, [8.0, 4.0, 0.0], 1.0, 0.0),
@@ -1811,14 +1833,15 @@ fn billboard_recipe_that_does_not_reconstruct_the_consumed_model_holds() {
         }]
     );
     assert_eq!(
-        phase(&mut r, &a, &b, 0.5, PhaseResult::Held),
-        phase(&mut r, &a, &b, 0.0, PhaseResult::Held)
+        phase(&mut phases, &a, &b, 0.5, PhaseResult::Held),
+        phase(&mut phases, &a, &b, 0.0, PhaseResult::Held)
     );
 }
 
 #[test]
 fn one_unmatched_world_draw_holds_its_model_while_another_interpolates() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(
@@ -1850,7 +1873,7 @@ fn one_unmatched_world_draw_holds_its_model_while_another_interpolates() {
         .draws[1]
         .identity;
     let image = phase(
-        &mut r,
+        &mut phases,
         &a,
         &b,
         0.5,
@@ -1887,6 +1910,7 @@ fn rectangles_fills_and_screen_space_triangles_are_counted_when_eligible() {
 #[test]
 fn world_screen_coordinate_overrides_hold_as_unsupported_topology() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let ta = task(
         &mut r,
         fixture(&[identity()], identity(), projection()),
@@ -1921,7 +1945,7 @@ fn world_screen_coordinate_overrides_hold_as_unsupported_topology() {
                 count: 1
             }]
         );
-        phase(&mut r, &a, &b, 0.5, PhaseResult::Held);
+        phase(&mut phases, &a, &b, 0.5, PhaseResult::Held);
     }
 }
 
@@ -1937,6 +1961,7 @@ fn double_triangle(f: &mut Fixture, scope: usize) {
 fn changing_room_and_held_counts_keep_a_geometry_under_the_phase_camera() {
     for policy in [TransformPolicy::StaticWorld, TransformPolicy::HoldModel] {
         let mut r = renderer(1);
+        let mut phases = r.phase_renderer();
         let model = if policy == TransformPolicy::StaticWorld {
             identity()
         } else {
@@ -1954,7 +1979,7 @@ fn changing_room_and_held_counts_keep_a_geometry_under_the_phase_camera() {
         let cb = canonical(&mut r);
         let b = source(&mut r, tb);
         for t in [0.25, 0.5, 0.75] {
-            let image = phase(&mut r, &a, &b, t, INTERPOLATED);
+            let image = phase(&mut phases, &a, &b, t, INTERPOLATED);
             let x =
                 32 + if policy == TransformPolicy::StaticWorld {
                     0
@@ -1964,8 +1989,8 @@ fn changing_room_and_held_counts_keep_a_geometry_under_the_phase_camera() {
             assert_eq!(pixel(&image, 64, x, 24), [255; 4]);
             assert_ne!(image, ca);
         }
-        assert_eq!(phase(&mut r, &a, &b, 0.0, PhaseResult::Endpoint), ca);
-        assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+        assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+        assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
     }
 }
 
@@ -1977,6 +2002,7 @@ fn despawned_held_scope_follows_camera_until_b() {
         TransformPolicy::ScreenSpace,
     ] {
         let mut r = renderer(1);
+        let mut phases = r.phase_renderer();
         let mut fa = fixture(
             &[identity(), transform(0.0, 14.0, 0.0)],
             identity(),
@@ -1994,14 +2020,14 @@ fn despawned_held_scope_follows_camera_until_b() {
         let tb = task(&mut r, fb, 2, 1, true);
         let cb = canonical(&mut r);
         let b = source(&mut r, tb);
-        let image = phase(&mut r, &a, &b, 0.5, INTERPOLATED);
+        let image = phase(&mut phases, &a, &b, 0.5, INTERPOLATED);
         let x = if matches!(policy, TransformPolicy::ScreenSpace | TransformPolicy::Hold) {
             32
         } else {
             38
         };
         assert_eq!(pixel(&image, 64, x, 24), [255; 4]);
-        assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+        assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
     }
 }
 
@@ -2028,6 +2054,7 @@ fn interpolate_restrictions_keep_only_the_affected_scope_in_a_world_pose() {
     .enumerate()
     {
         let mut r = renderer(1);
+        let mut phases = r.phase_renderer();
         let mut fa = fixture(
             &[transform(0.0, -12.0, 0.0), transform(0.0, 12.0, 0.0)],
             identity(),
@@ -2093,18 +2120,19 @@ fn interpolate_restrictions_keep_only_the_affected_scope_in_a_world_pose() {
         assert!(a.ineligibility().is_empty(), "{:?}", a.ineligibility());
         assert!(b.ineligibility().is_empty());
         for t in [0.25, 0.5, 0.75] {
-            let image = phase(&mut r, &a, &b, t, restricted(reason, &[identity]));
+            let image = phase(&mut phases, &a, &b, t, restricted(reason, &[identity]));
             assert_eq!(pixel(&image, 64, 20 + (4.0 * t) as u32, 24), [255; 4]);
             assert_eq!(pixel(&image, 64, 44 - (4.0 * t) as u32, 24), [255; 4]);
         }
-        assert_eq!(phase(&mut r, &a, &b, 0.0, PhaseResult::Endpoint), ca);
-        assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+        assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+        assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
     }
 }
 
 #[test]
 fn restrictions_count_scopes_and_bound_identity_samples_in_submission_order() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let models = [identity(); 7];
     let mut fa = fixture(&models, identity(), projection());
     double_triangle(&mut fa, 0);
@@ -2134,7 +2162,7 @@ fn restrictions_count_scopes_and_bound_identity_samples_in_submission_order() {
         ],
     };
     for t in [0.75, 0.25, 0.75] {
-        let image = phase(&mut r, &a, &b, t, expected.clone());
+        let image = phase(&mut phases, &a, &b, t, expected.clone());
         assert_eq!(pixel(&image, 64, 32 + (8.0 * t) as u32, 24), [255; 4]);
     }
 }
@@ -2142,6 +2170,7 @@ fn restrictions_count_scopes_and_bound_identity_samples_in_submission_order() {
 #[test]
 fn discrete_scopes_need_no_correspondence_or_world_camera() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let mut fa = fixture(
         &[identity(), transform(0.0, 14.0, 0.0)],
         identity(),
@@ -2161,8 +2190,8 @@ fn discrete_scopes_need_no_correspondence_or_world_camera() {
     let tb = task(&mut r, fb, 2, 1, true);
     let cb = canonical(&mut r);
     let b = source(&mut r, tb);
-    assert_eq!(phase(&mut r, &a, &b, 0.5, INTERPOLATED), ca);
-    assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+    assert_eq!(phase(&mut phases, &a, &b, 0.5, INTERPOLATED), ca);
+    assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
 }
 
 #[test]
@@ -2217,6 +2246,7 @@ fn billboard_fallback_keeps_a_recipe_under_the_phase_camera_per_scope() {
     .enumerate()
     {
         let mut r = renderer(1);
+        let mut phases = r.phase_renderer();
         let recipe = BillboardRecipe {
             anchor: [-12.0, 0.0, 0.0],
             scale: [1.0; 3],
@@ -2261,13 +2291,13 @@ fn billboard_fallback_keeps_a_recipe_under_the_phase_camera_per_scope() {
         assert!(a.ineligibility().is_empty());
         assert!(b.ineligibility().is_empty());
         for t in [0.25, 0.5, 0.75] {
-            let image = phase(&mut r, &a, &b, t, restricted(reason, &[id]));
+            let image = phase(&mut phases, &a, &b, t, restricted(reason, &[id]));
             assert_eq!(pixel(&image, 64, 20 + (4.0 * t) as u32, 24), [255; 4]);
             assert_eq!(pixel(&image, 64, 44 - (4.0 * t) as u32, 24), [255; 4]);
             assert_ne!(image, ca);
         }
-        assert_eq!(phase(&mut r, &a, &b, 0.0, PhaseResult::Endpoint), ca);
-        assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+        assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+        assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
     }
 }
 
@@ -2279,6 +2309,7 @@ fn held_world_generation_changes_do_not_hold_the_pair() {
         TransformPolicy::ScreenSpace,
     ] {
         let mut r = renderer(1);
+        let mut phases = r.phase_renderer();
         let mut fa = fixture(
             &[identity(), transform(0.0, 12.0, 0.0)],
             identity(),
@@ -2296,7 +2327,7 @@ fn held_world_generation_changes_do_not_hold_the_pair() {
         fb.annotations.draws[0].identity.generation += 1;
         let tb = task(&mut r, fb, 2, 1, true);
         let b = source(&mut r, tb);
-        let image = phase(&mut r, &a, &b, 0.5, INTERPOLATED);
+        let image = phase(&mut phases, &a, &b, 0.5, INTERPOLATED);
         let x = if policy == TransformPolicy::ScreenSpace {
             32
         } else {
@@ -2310,6 +2341,7 @@ fn held_world_generation_changes_do_not_hold_the_pair() {
 #[test]
 fn billboard_recipe_matches_an_executed_scope_without_b_triangles() {
     let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
     let recipe = BillboardRecipe {
         anchor: [0.0; 3],
         scale: [1.0; 3],
@@ -2343,7 +2375,123 @@ fn billboard_recipe_matches_an_executed_scope_without_b_triangles() {
     let cb = canonical(&mut r);
     let b = source(&mut r, tb);
     assert!(b.ineligibility().is_empty());
-    let image = phase(&mut r, &a, &b, 0.5, INTERPOLATED);
+    let image = phase(&mut phases, &a, &b, 0.5, INTERPOLATED);
     assert_eq!(pixel(&image, 64, 38, 24), [255; 4]);
-    assert_eq!(phase(&mut r, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+    assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+}
+
+#[test]
+fn phase_thread_matches_serial_phases_and_preserves_canonical_submissions() {
+    use std::sync::{mpsc, Barrier};
+
+    let times = [0.75, 0.25, 0.75, 0.0, 1.0];
+    let mut canonical_reference = Vec::new();
+    let mut phase_reference: Vec<Vec<Vec<u8>>> = Vec::new();
+    for concurrent in [false, true] {
+        let mut r = renderer(1);
+        r.set_guest_writeback_with_encoding(true, crate::FramebufferEncoding::BigEndian);
+        let (tx, rx) = mpsc::sync_channel::<(SourceFrame, SourceFrame, Vec<Vec<u8>>)>(0);
+        let barrier = Arc::new(Barrier::new(2));
+        let worker_barrier = barrier.clone();
+        let worker = concurrent.then(|| {
+            let mut phases = r.phase_renderer();
+            std::thread::spawn(move || {
+                for (a, b, expected) in rx {
+                    worker_barrier.wait();
+                    for (t, expected) in times.into_iter().zip(expected) {
+                        assert_eq!(
+                            phase(
+                                &mut phases,
+                                &a,
+                                &b,
+                                t,
+                                if t == 0.0 || t == 1.0 {
+                                    PhaseResult::Endpoint
+                                } else {
+                                    INTERPOLATED
+                                }
+                            ),
+                            expected,
+                        );
+                    }
+                }
+                phases
+            })
+        });
+        let mut serial_phases = (!concurrent).then(|| r.phase_renderer());
+        let mut guest = vec![0; 0x50000];
+        let mut previous = None;
+        let mut weak_sources = Vec::new();
+        let mut weak_tasks = Vec::new();
+        for i in 0..10 {
+            let f = if i == 0 {
+                dependent_fixture(false)
+            } else if i == 1 {
+                history_fixture(History::GuestWords)
+            } else if i == 9 {
+                guest[0x30002] ^= 0x40;
+                strict_fixture()
+            } else {
+                decal_fixture((i as f32 - 5.0) * 3.0, false)
+            };
+            let task = writeback_task(&mut r, f, i + 1, &mut guest);
+            let state = (
+                native(&mut r),
+                r.guest_writes.clone(),
+                r.inner.isolated_context(),
+                r.rdp.clone(),
+                guest.clone(),
+            );
+            if !concurrent {
+                canonical_reference.push(state);
+            } else {
+                let expected = &canonical_reference[i as usize];
+                assert!(state.0 == expected.0, "native bytes at task {i}");
+                assert!(state.1 == expected.1, "write-back at task {i}");
+                assert_eq!(state.2, expected.2, "serial/dither at task {i}");
+                assert_eq!(state.3, expected.3, "RDP at task {i}");
+                assert!(state.4 == expected.4, "guest bytes at task {i}");
+            }
+            if !(2..9).contains(&i) {
+                continue;
+            }
+            weak_tasks.push(Arc::downgrade(task.retained.as_ref().unwrap()));
+            let current = source(&mut r, task);
+            assert!(current.ineligibility().is_empty());
+            weak_sources.push(Arc::downgrade(&current.data));
+            if let Some(a) = previous.replace(current.clone()) {
+                if concurrent {
+                    tx.send((a, current, phase_reference[i as usize - 3].clone()))
+                        .unwrap();
+                    barrier.wait();
+                } else {
+                    phase_reference.push(
+                        times
+                            .into_iter()
+                            .map(|t| {
+                                phase(
+                                    serial_phases.as_mut().unwrap(),
+                                    &a,
+                                    &current,
+                                    t,
+                                    if t == 0.0 || t == 1.0 {
+                                        PhaseResult::Endpoint
+                                    } else {
+                                        INTERPOLATED
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
+        drop(previous);
+        drop(r);
+        drop(tx);
+        let cached = worker.map(|worker| worker.join().unwrap());
+        assert!(weak_sources.iter().all(|source| source.upgrade().is_none()));
+        assert!(weak_tasks.iter().all(|task| task.upgrade().is_none()));
+        drop(cached);
+    }
 }
