@@ -569,7 +569,37 @@ mod tests {
         assert!(recorder.drain().counters.is_empty());
     }
 
-    fn test_material() -> crate::hle::Material {
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn sampling_cache_reuses_reordered_materials_across_tasks() {
+        let (device, queue, dual) = headless_device();
+        let mut renderer = SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 1, 1, dual);
+        let recorder = crate::profiling::Recorder::new(crate::profiling::Mode::Counters);
+        renderer.profiling = recorder.clone();
+        let mut first = inputs::TextureInputs::from(&test_material());
+        first.framebuffer_only = true;
+        let mut second = first.clone();
+        second.sampling[0].bounds[0] = 4;
+        renderer.upload_materials(&device, &queue, &[first.clone(), second.clone()]);
+        let bindings: Vec<_> = renderer
+            .material_bindings
+            .iter()
+            .map(|binding| binding.bind_group.clone())
+            .collect();
+        assert_eq!(recorder.drain().counters["buffer.uniforms.creations"], 2);
+
+        renderer.upload_materials(&device, &queue, &[second, first]);
+        let snapshot = recorder.drain();
+        assert_eq!(snapshot.counters.get("buffer.uniforms.creations"), None);
+        assert_eq!(
+            snapshot.counters.get("tmem.sampling_bindings_created"),
+            None
+        );
+        assert_eq!(renderer.material_bindings[0].bind_group, bindings[1]);
+        assert_eq!(renderer.material_bindings[1].bind_group, bindings[0]);
+    }
+
+    pub(super) fn test_material() -> crate::hle::Material {
         crate::hle::Material {
             convert: Default::default(),
             key: Default::default(),
@@ -1930,13 +1960,14 @@ pub struct SceneRenderer {
     rsp: RspProcessPipeline,
     samplers: [[wgpu::Sampler; 3]; 3],
     texture_resources: texture_resources::TextureResources,
+    sampling_cache: texture_bindings::SamplingCache,
     pub(crate) framebuffer_copies: framebuffers::copies::Copies,
     pub(crate) color_versions:
         std::collections::HashMap<framebuffers::coherence::Writer, wgpu::Texture>,
     presentation_versions:
         std::collections::HashMap<framebuffers::coherence::Writer, wgpu::Texture>,
-    material_bindings: Vec<texture_bindings::MaterialBinding>,
-    presentation_bindings: Vec<texture_bindings::MaterialBinding>,
+    material_bindings: Vec<std::sync::Arc<texture_bindings::MaterialBinding>>,
+    presentation_bindings: Vec<std::sync::Arc<texture_bindings::MaterialBinding>>,
     /// A 1×1 white `@group(0)` (tex + sampler) bind group used as the texture binding for
     /// `FillRect` draws (which carry no material, but the pipeline layout still requires group 0).
     /// The fill combine has `tex_enable = 0`, so this texture is never actually sampled.
@@ -1982,7 +2013,7 @@ impl SceneRenderer {
             "tmem.rgba_compatibility_gpu_bytes",
             self.material_bindings
                 .iter()
-                .map(texture_bindings::MaterialBinding::rgba_bytes)
+                .map(|binding| binding.rgba_bytes())
                 .sum(),
         );
         self.profiling.gauge(
@@ -2204,6 +2235,7 @@ impl SceneRenderer {
             rsp,
             samplers,
             texture_resources: texture_resources::TextureResources::new(device),
+            sampling_cache: Default::default(),
             framebuffer_copies: Default::default(),
             color_versions: Default::default(),
             presentation_versions: Default::default(),
