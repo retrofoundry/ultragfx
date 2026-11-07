@@ -1723,11 +1723,10 @@ mod tests {
     }
 
     #[test]
-    fn coverage_and_depth_import_shaders_validate_without_a_gpu() {
+    fn replay_and_depth_import_shaders_validate_without_a_gpu() {
         let prelude = include_str!("../combiner_prelude.wgsl");
         for source in [
-            coverage_shader(prelude),
-            coverage_shader(&prelude.replace('\n', "\r\n")),
+            format!("{prelude}\n{}", include_str!("../replay.wgsl")),
             include_str!("../depth.wgsl").to_string(),
         ] {
             let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
@@ -1742,7 +1741,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn reconfigure_keeps_coverage_and_delta_pipelines_warm() {
+    fn reconfigure_keeps_replay_pipelines_warm() {
         let (device, queue, _) = crate::render::headless_device();
         let config = crate::RendererConfig {
             clear_policy: crate::ClearPolicy::Persist,
@@ -1763,221 +1762,14 @@ mod tests {
             config,
         );
         r.set_guest_writeback(true);
-        let warmed = r.inner.coverage.as_ref().map(|c| c.pipelines.len());
-        assert!(warmed.is_some_and(|count| count > 0));
-        let delta_warmed = r.inner.delta_pipeline.pipelines.len();
+        let replay_warmed = r.inner.replay_pipeline.pipeline_count();
         let unclipped = r
             .device
             .features()
             .contains(wgpu::Features::DEPTH_CLIP_CONTROL);
-        assert_eq!(delta_warmed, if unclipped { 16 } else { 8 });
+        assert_eq!(replay_warmed, if unclipped { 40 } else { 20 });
         r.reconfigure(config);
-        assert_eq!(r.inner.coverage.as_ref().map(|c| c.pipelines.len()), warmed);
-        assert_eq!(r.inner.delta_pipeline.pipelines.len(), delta_warmed);
-    }
-}
-
-pub(crate) struct Coverage {
-    delta: bool,
-    shader: wgpu::ShaderModule,
-    pipelines:
-        std::collections::HashMap<(bool, bool, bool, bool, bool, bool), wgpu::RenderPipeline>,
-}
-
-fn coverage_shader(prelude: &str) -> String {
-    let entries = format!(
-        "{}\n{}",
-        include_str!("../skeleton.wgsl"),
-        include_str!("../decal.wgsl")
-    )
-    .replace("-> vec4<f32>", "-> vec2<u32>")
-    .replace("-> @location(0) vec4<f32>", "-> @location(0) vec2<u32>")
-    .replace(
-        "return vec4<f32>(rgb, r.alpha);",
-        "return vec2<u32>(combiner.coverage_slot, combiner.coverage_slot);",
-    );
-    format!("{prelude}\n{entries}")
-        .replace("\r\n", "\n")
-        .replace(
-            "struct DepthOutput {\n    @location(0) color: vec4<f32>",
-            "struct DepthOutput {\n    @location(0) color: vec2<u32>",
-        )
-}
-
-impl Coverage {
-    pub(in crate::render) fn delta(device: &wgpu::Device) -> Self {
-        Self {
-            delta: true,
-            shader: super::super::decal::shader(device),
-            pipelines: Default::default(),
-        }
-    }
-
-    pub fn new(device: &wgpu::Device) -> Self {
-        Self {
-            delta: false,
-            shader: device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("guest-coverage"),
-                source: wgpu::ShaderSource::Wgsl(
-                    coverage_shader(include_str!("../combiner_prelude.wgsl")).into(),
-                ),
-            }),
-            pipelines: Default::default(),
-        }
-    }
-
-    pub(in crate::render) fn pipeline(
-        &mut self,
-        device: &wgpu::Device,
-        textured: &super::super::TexturedPipeline,
-        draw: &super::super::inputs::DrawInputs,
-        any_depth: bool,
-    ) -> &wgpu::RenderPipeline {
-        use super::super::inputs::DrawInputs;
-        let (cull, test, write, decal) = match draw {
-            DrawInputs::Tris { cull, mode, .. } => (
-                *cull == crate::scene::CullKind::Cull,
-                mode.z_test,
-                mode.z_write,
-                mode.read_depth,
-            ),
-            DrawInputs::Rectangle { mode, .. } => {
-                (false, mode.z_test, mode.z_write, mode.read_depth)
-            }
-            _ => (false, false, false, false),
-        };
-        let unclipped_depth = matches!(
-            draw,
-            DrawInputs::Tris {
-                unclipped_depth: true,
-                ..
-            }
-        ) && device
-            .features()
-            .contains(wgpu::Features::DEPTH_CLIP_CONTROL);
-        self.pipeline_for(
-            device,
-            textured,
-            (cull, test, write, decal, any_depth, unclipped_depth),
-        )
-    }
-
-    /// Build every pipeline variant up front: a cold first use compiles one mid-frame, and enough of
-    /// those in one task trip a guest's RCP watchdog.
-    pub(in crate::render) fn warm(
-        &mut self,
-        device: &wgpu::Device,
-        textured: &super::super::TexturedPipeline,
-    ) {
-        let unclipped = device
-            .features()
-            .contains(wgpu::Features::DEPTH_CLIP_CONTROL);
-        for bits in 0..64u8 {
-            let flag = |bit: u8| bits & (1 << bit) != 0;
-            // A depth-writing decal always has a depth attachment; no draw reaches the other case.
-            if (flag(5) && !unclipped)
-                || (flag(3) && flag(2) && !flag(4))
-                || (self.delta && (!flag(2) || !flag(4)))
-            {
-                continue;
-            }
-            self.pipeline_for(
-                device,
-                textured,
-                (flag(0), flag(1), flag(2), flag(3), flag(4), flag(5)),
-            );
-        }
-    }
-
-    fn pipeline_for(
-        &mut self,
-        device: &wgpu::Device,
-        textured: &super::super::TexturedPipeline,
-        key: (bool, bool, bool, bool, bool, bool),
-    ) -> &wgpu::RenderPipeline {
-        let (cull, test, write, decal, any_depth, unclipped_depth) = key;
-        let delta = self.delta;
-        let label = if delta {
-            "depth-delta"
-        } else {
-            "guest-coverage"
-        };
-        self.pipelines.entry(key).or_insert_with(|| {
-            let mut groups = vec![
-                Some(textured.bind_group_layout()),
-                Some(textured.uniform_bind_group_layout()),
-            ];
-            if decal {
-                groups.push(Some(textured.depth_bind_group_layout()));
-            }
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(label),
-                bind_group_layouts: &groups,
-                immediate_size: 0,
-            });
-            let descriptor = wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &self.shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[super::super::OutVertex::layout()],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.shader,
-                    entry_point: Some(if delta {
-                        if decal {
-                            "fs_delta_decal"
-                        } else {
-                            "fs_delta"
-                        }
-                    } else {
-                        match (decal, write, any_depth) {
-                            (true, true, _) => "fs_decal_depth",
-                            (true, false, _) => "fs_decal",
-                            (false, _, true) => "fs_depth",
-                            _ => "fs_main",
-                        }
-                    }),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: if delta {
-                            wgpu::TextureFormat::R8Uint
-                        } else {
-                            wgpu::TextureFormat::Rg32Uint
-                        },
-                        blend: None,
-                        write_mask: if write && !delta {
-                            wgpu::ColorWrites::RED | wgpu::ColorWrites::GREEN
-                        } else {
-                            wgpu::ColorWrites::RED
-                        },
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: cull.then_some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: (any_depth && (!decal || write)).then_some(
-                    wgpu::DepthStencilState {
-                        format: super::super::DEPTH_FORMAT,
-                        depth_write_enabled: Some(delta),
-                        depth_compare: Some(if test && !decal {
-                            wgpu::CompareFunction::Less
-                        } else {
-                            wgpu::CompareFunction::Always
-                        }),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    },
-                ),
-                multisample: Default::default(),
-                multiview_mask: None,
-                cache: None,
-            };
-            super::super::depth_clip_pipeline(device, &descriptor, unclipped_depth)
-        })
+        assert_eq!(r.inner.replay_pipeline.pipeline_count(), replay_warmed);
     }
 }
 
@@ -2559,7 +2351,7 @@ impl Coherence {
             self.native_fill_store = Some(store);
             fills
         });
-        self.snapshots.push(Snapshot {
+        let snapshot = Snapshot {
             coverage: Readback::new(device, encoder, coverage, 8),
             color: color
                 .map(|(writer, texture)| (writer, Readback::new(device, encoder, texture, 4))),
@@ -2573,7 +2365,8 @@ impl Coherence {
             native_fills,
             native_triangles,
             copy_words: std::mem::take(&mut self.copy_words),
-        });
+        };
+        self.snapshots.push(snapshot);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3423,12 +3216,8 @@ impl Coherence {
 }
 
 impl super::super::SceneRenderer {
-    pub(crate) fn warm_coverage(&mut self, device: &wgpu::Device) {
-        self.coverage
-            .get_or_insert_with(|| Coverage::new(device))
-            .warm(device, &self.textured_fb);
-
-        self.delta_pipeline.warm(device, &self.textured_fb);
+    pub(crate) fn warm_replay(&mut self, device: &wgpu::Device) {
+        self.replay_pipeline.warm(device, &self.textured_fb);
     }
 
     pub(crate) fn import_existing(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -3659,3 +3448,7 @@ impl Coherence {
         )
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "replay_tests.rs"]
+mod replay_tests;

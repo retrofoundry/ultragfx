@@ -532,6 +532,7 @@ fn viscvg_render_mode_switch_rebuilds_triangle_texture_dependencies() {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu {
+    mod boundaries;
     mod guest_bytes;
     mod triangles;
     use super::*;

@@ -804,6 +804,7 @@ fn clamp_scissor(s: &crate::hle::Scissor, fb_w: u32, fb_h: u32) -> (u32, u32, u3
 /// Each depth×cull combination has TWO pipeline variants — Replace and AlphaOver — selected
 /// at draw time by `run.render_mode.fallback_class` (B3: fixed-function fallback path).
 pub struct TexturedPipeline {
+    vertex_shader: wgpu::ShaderModule,
     // ── Replace blend (src_factor=One, dst_factor=Zero) ──────────────────────────────────────
     pipeline_no_depth_nocull: [wgpu::RenderPipeline; 2],
     pipeline_no_depth_cull: [wgpu::RenderPipeline; 2],
@@ -1343,7 +1344,7 @@ impl TexturedPipeline {
                     label: Some(label),
                     layout: Some(&layout),
                     vertex: wgpu::VertexState {
-                        module: &dual_shader,
+                        module: &shader,
                         entry_point: Some("vs_main"),
                         buffers: &[OutVertex::layout()],
                         compilation_options: Default::default(),
@@ -1380,7 +1381,7 @@ impl TexturedPipeline {
                     label: Some(label),
                     layout: Some(&decal_layout),
                     vertex: wgpu::VertexState {
-                        module: &dual_shader,
+                        module: &shader,
                         entry_point: Some("vs_main"),
                         buffers: &[OutVertex::layout()],
                         compilation_options: Default::default(),
@@ -1458,6 +1459,7 @@ impl TexturedPipeline {
             dual: decal_dual,
         };
         Self {
+            vertex_shader: shader.clone(),
             pipeline_depth_write_only,
             pipeline_ao_depth_write_only,
             pipeline_no_depth_nocull,
@@ -1991,9 +1993,8 @@ pub struct SceneRenderer {
     pub(crate) depthbuffers: std::collections::HashMap<workload::TargetId, DepthImage>,
     depth_first_touch: std::collections::HashSet<workload::TargetId>,
     pub(crate) coherence: Option<framebuffers::coherence::Coherence>,
-    coverage: Option<framebuffers::coherence::Coverage>,
     depth_pipeline: DepthPipeline,
-    delta_pipeline: framebuffers::coherence::Coverage,
+    replay_pipeline: decal::Replay,
     pub(crate) render_scale: u32,
     attachment_budget: u64,
     pub(crate) reduction_factor: u32,
@@ -2254,9 +2255,8 @@ impl SceneRenderer {
             depthbuffers: std::collections::HashMap::new(),
             depth_first_touch: std::collections::HashSet::new(),
             coherence: None,
-            coverage: None,
             depth_pipeline: DepthPipeline::new(device),
-            delta_pipeline: framebuffers::coherence::Coverage::delta(device),
+            replay_pipeline: decal::Replay::new(device),
             render_scale: 1,
             reduction_factor: 1,
             downsample: Default::default(),

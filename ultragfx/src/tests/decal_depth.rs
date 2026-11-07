@@ -127,17 +127,25 @@ fn depth_replay_batches_writeback_segments_before_readers() {
                 );
                 let counters = recorder.snapshot().counters;
                 assert_eq!(
-                    counters.get("depth_delta.passes"),
-                    Some(&(passes * (1 + u64::from(trailing))))
+                    counters.get("replay.depth_passes"),
+                    Some(
+                        &(passes
+                            * if writeback {
+                                1 + 2 * u64::from(trailing)
+                            } else {
+                                1 + u64::from(trailing)
+                            })
+                    )
                 );
+                if writeback {
+                    assert_eq!(
+                        counters["writeback.replay_passes"],
+                        1 + u64::from(decal) + u64::from(trailing)
+                    );
+                }
                 assert_eq!(
                     counters["workload.segments"],
-                    passes
-                        * if writeback {
-                            4 + u64::from(decal) + u64::from(trailing)
-                        } else {
-                            1 + u64::from(decal) + u64::from(trailing)
-                        }
+                    passes * (1 + u64::from(decal) + u64::from(trailing))
                 );
             }
         }
