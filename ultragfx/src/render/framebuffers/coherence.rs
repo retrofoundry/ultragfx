@@ -2114,12 +2114,19 @@ impl Readback {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("guest write-back GPU wait");
-        rx.recv()
-            .expect("guest write-back callback")
-            .expect("guest write-back mapping");
+        // A blocking poll holds wgpu's device locks for the whole wait, stalling other threads that
+        // submit or present on the same device.
+        let mapped = loop {
+            device
+                .poll(wgpu::PollType::Poll)
+                .expect("guest write-back GPU poll");
+            match rx.try_recv() {
+                Ok(result) => break result,
+                Err(std::sync::mpsc::TryRecvError::Empty) => std::thread::yield_now(),
+                Err(error) => panic!("guest write-back callback: {error}"),
+            }
+        };
+        mapped.expect("guest write-back mapping");
         let data = self.buffer.slice(..).get_mapped_range();
         data.chunks(self.stride)
             .take(self.height)
