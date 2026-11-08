@@ -337,6 +337,7 @@ impl Renderer {
     /// SECONDARY constructor: adopt a device/queue the consumer already created (wafel; headless
     /// tests). Synchronous. Capability probing (`DUAL_SOURCE_BLENDING`) is internal — no
     /// `dual_source` in the public surface (spec §3.1).
+    /// A supplied surface must already be configured by the host; its configuration is preserved.
     pub fn with_device(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -536,6 +537,10 @@ impl Renderer {
             config,
         );
         renderer.instance = Some(instance);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &renderer.presenter {
+            let _ = presenter.resize(w, h);
+        }
         Ok(renderer)
     }
 
@@ -595,10 +600,6 @@ impl Renderer {
     /// Re-applies `present_mode` (and an explicit `format` override) to a `Surface`. A `None` format
     /// keeps the currently picked format (no adapter retained to re-run `pick_surface_format`).
     pub fn reconfigure(&mut self, config: RendererConfig) {
-        if let Some(error) = self.presenter_error() {
-            log::error!("reconfigure failed: {error:?}");
-            return;
-        }
         self.mark_mutation();
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely()); // #[must_use]; no-op on web
         let config = normalize_config(config);
@@ -1260,13 +1261,6 @@ impl Renderer {
     /// Configuration, data format, device and hooks are preserved. For repeatable inspector
     /// images, call this before each prefix, then use the same sequence of `begin_frame` calls.
     pub fn reset(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(presenter) = &self.presenter {
-            if let Err(error) = presenter.reset() {
-                log::error!("reset failed: {error:?}");
-                return;
-            }
-        }
         self.reset_rdp_state();
         self.color_image_epoch = 0;
         self.guest_writes.clear();
@@ -1276,6 +1270,12 @@ impl Renderer {
         self.last_backend_was_image = false;
         self.previous_reference = None;
         self.frame_admission_error = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &self.presenter {
+            if let Err(error) = presenter.barrier() {
+                log::error!("reset failed: {error:?}");
+            }
+        }
     }
 
     /// Explicit frame boundary. Resets per-frame accumulation: the inner store's first-touch clear
@@ -1374,10 +1374,11 @@ impl Drop for Renderer {
 impl Renderer {
     /// Install a synchronous render hook, deinitializing the old hook before initializing this one.
     /// Native owned surfaces reject local hooks; use `set_send_render_hook` there.
-    /// Legacy controls log errors; `presenter_error` exposes a latched failure.
+    /// Rejection logs an error and panics in debug builds. Use `try_set_render_hook` to handle it.
     pub fn set_render_hook(&mut self, hook: Box<dyn RenderHook>) {
         if let Err(error) = self.try_set_render_hook(hook) {
             log::error!("hook registration failed: {error:?}; native Surface hooks require set_send_render_hook");
+            debug_assert!(false, "hook registration failed: {error:?}; native Surface hooks require set_send_render_hook");
         }
     }
 
@@ -1387,8 +1388,8 @@ impl Renderer {
         mut hook: Box<dyn RenderHook>,
     ) -> Result<(), PresentError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(presenter) = &self.presenter {
-            return Err(presenter.error().unwrap_or(PresentError::HookRequiresSend));
+        if self.presenter.is_some() {
+            return Err(PresentError::HookRequiresSend);
         }
         self.mark_mutation();
         if let Some(mut old) = self.hook.take() {
@@ -1462,7 +1463,9 @@ impl Renderer {
     }
 
     /// Convenience for stateless overlays: wrap a draw closure as a `RenderHook`. Note the HRTB —
-    /// `HookFrame` is borrowed; the closure may be `!Send` (it captures `Rc`/`RefCell` freely).
+    /// `HookFrame` is borrowed; synchronous targets accept `!Send` closures, including `Rc`/`RefCell`.
+    /// Native owned surfaces reject this setter with an error log and a debug-build panic;
+    /// use `set_send_render_hook` there, or `try_set_render_hook` for fallible local registration.
     pub fn set_draw_hook(&mut self, draw: impl for<'a> FnMut(HookFrame<'a>) + 'static) {
         self.set_render_hook(Box::new(crate::hooks::FnHook(draw)));
     }
@@ -1653,11 +1656,14 @@ impl Renderer {
         let _span = self.inner.profiling.span("presentation");
         self.mark_mutation();
         #[cfg(not(target_arch = "wasm32"))]
-        if self.presenter.is_some() {
-            if let Err(error) = self.threaded_present(src, Some(target.clone()), native) {
-                log::error!("presentation failed: {error:?}");
+        if self.presenter.is_some() && self.presenter_error().is_none() {
+            match self.threaded_present(src.clone(), Some(target.clone()), native) {
+                Ok(()) => return,
+                Err(error) => log::error!("presentation failed: {error:?}"),
             }
-            return;
+            if self.presenter_error().is_none() {
+                return;
+            }
         }
         // Always create an encoder + run the render hook, even when nothing has been scanned out yet
         // (a UI overlay should still draw — RN). Scanout is recorded only when a source FB exists;

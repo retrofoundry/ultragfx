@@ -162,7 +162,7 @@ impl Presenter {
             device,
             queue,
             format,
-            needs_configure: true,
+            needs_configure: false,
             profiling: Default::default(),
         })
     }
@@ -171,7 +171,9 @@ impl Presenter {
         let worker = Worker::spawn(
             move || {
                 let mut state = state;
-                state.configure();
+                if state.needs_configure {
+                    state.configure();
+                }
                 Some(state)
             },
             |state| {
@@ -181,7 +183,7 @@ impl Presenter {
             },
         );
         let presenter = Self { worker };
-        let _ = presenter.reset();
+        let _ = presenter.barrier();
         presenter
     }
 
@@ -208,7 +210,7 @@ impl Presenter {
     }
 
     #[cfg(feature = "debug-ui")]
-    pub(crate) fn synchronous<R>(
+    pub(crate) fn synchronous<R: Send + 'static>(
         &self,
         operation: impl FnOnce(&mut Presentation) -> R,
     ) -> Result<R, PresentError> {
@@ -219,15 +221,15 @@ impl Presenter {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(&mut state)));
         self.worker.request(move |slot| {
             *slot = Some(state);
+            let result = match result {
+                Ok(result) => result,
+                Err(panic) => std::panic::resume_unwind(panic),
+            };
             if slot.as_ref().unwrap().needs_configure {
                 slot.as_mut().unwrap().configure();
             }
-            Ok(())
-        })?;
-        match result {
-            Ok(result) => Ok(result),
-            Err(panic) => std::panic::resume_unwind(panic),
-        }
+            Ok(result)
+        })
     }
 
     pub(crate) fn resize(&self, width: u32, height: u32) -> Result<(), PresentError> {
@@ -259,7 +261,7 @@ impl Presenter {
         })
     }
 
-    pub(crate) fn reset(&self) -> Result<(), PresentError> {
+    pub(crate) fn barrier(&self) -> Result<(), PresentError> {
         self.request(|_| Ok(()))
     }
 

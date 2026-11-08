@@ -167,3 +167,21 @@ fn resolved_scanout_reads_live_pixels_and_native_bypasses_reduction() {
         assert_eq!(actual, expected);
     }
 }
+
+#[test]
+fn reduction_does_not_rebuild_the_unused_present_extent() {
+    let (device, queue, _) = headless_device();
+    let mut renderer = striped_framebuffer(&device, &queue);
+    let extent = renderer
+        .resolve_scanout(&device, TARGET, None, false)
+        .extent;
+    renderer.reduction_factor = 2;
+    for rows in [1..3, 2..4, 0..3] {
+        let scanout = renderer.resolve_scanout(&device, TARGET, Some(rows.clone()), false);
+        assert_eq!(scanout.extent, extent);
+        assert_eq!(scanout.rows, rows);
+    }
+    renderer.reduction_factor = 1;
+    let scanout = renderer.resolve_scanout(&device, TARGET, Some(0..3), false);
+    assert_ne!(scanout.extent, extent);
+}

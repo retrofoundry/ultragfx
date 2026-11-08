@@ -2401,25 +2401,6 @@ impl SceneRenderer {
         pass.draw((rect_idx * 6)..(rect_idx * 6 + 6), 0..1);
     }
 
-    fn make_present_extent(
-        &self,
-        device: &wgpu::Device,
-        width: u32,
-        rows: std::ops::Range<u32>,
-        attachment_height: u32,
-    ) -> wgpu::BindGroup {
-        self.compositor
-            .make_present_extent(device, width, rows, attachment_height, &self.profiling)
-    }
-
-    fn make_present_bindings(
-        &self,
-        device: &wgpu::Device,
-        sampled: &wgpu::TextureView,
-    ) -> wgpu::BindGroup {
-        self.compositor.make_present_bindings(device, sampled)
-    }
-
     fn make_fb(
         &self,
         device: &wgpu::Device,
@@ -2446,15 +2427,16 @@ impl SceneRenderer {
             );
             framebuffers::presentation::Color::new(device, allocation)
         });
-        let present_bg = self.make_present_bindings(
+        let present_bg = self.compositor.make_present_bindings(
             device,
             presentation.as_ref().map_or(&sampled, |p| &p.attach),
         );
-        let present_extent = self.make_present_extent(
+        let present_extent = self.compositor.make_present_extent(
             device,
             w * self.render_scale,
             0..native_height * self.render_scale,
             h * self.render_scale,
+            &self.profiling,
         );
         let sampling = framebuffers::color_sampling(device, layout.width, native_height, 1);
         let presentation_sampling = (self.render_scale > 1).then(|| {
@@ -2534,23 +2516,25 @@ impl SceneRenderer {
                 texture: fb.color.clone(),
                 height: fb.height,
                 scale: 1,
-                extent: self.make_present_extent(
+                extent: self.compositor.make_present_extent(
                     device,
                     fb.layout.width,
                     rows.clone(),
                     fb.color.height(),
+                    &self.profiling,
                 ),
-                bindings: self.make_present_bindings(device, &fb.sampled),
+                bindings: self.compositor.make_present_bindings(device, &fb.sampled),
                 rows,
                 reduction: 1,
             };
         }
-        if rows != fb.present_rows {
-            let extent = self.make_present_extent(
+        if self.reduction_factor == 1 && rows != fb.present_rows {
+            let extent = self.compositor.make_present_extent(
                 device,
                 fb.layout.width * self.render_scale,
                 rows.start * self.render_scale..rows.end * self.render_scale,
                 fb.color.height() * self.render_scale,
+                &self.profiling,
             );
             let fb = self.framebuffers.get_mut(&src).unwrap();
             fb.present_extent = extent;

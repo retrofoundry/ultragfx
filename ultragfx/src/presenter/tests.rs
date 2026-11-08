@@ -453,6 +453,73 @@ fn failed_reconfigure_finishes_canonical_reset() {
 }
 
 #[test]
+fn reset_clears_canonical_state_after_presenter_failure() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    let (data, entry) = crate::tests::fixtures::fixture("flat-color--vertex-colors");
+    let hw = Image(data.to_vec(), None);
+    h.renderer.begin_frame();
+    h.renderer
+        .process_dl(&hw, entry, Microcode::F3dex2, &mut NopSink);
+    assert_ne!(h.renderer.rdp, Default::default());
+    assert!(!h.renderer.frame_scenes.is_empty());
+    h.renderer.guest_writes.push(crate::GuestWrite {
+        address: 0,
+        bytes: vec![1],
+    });
+    h.renderer.color_image_epoch = 42;
+    h.renderer.inner.dither_seed = 123;
+    h.panic_configure.store(true, Ordering::SeqCst);
+    h.renderer.resize(32, 32);
+    let error = h.renderer.presenter_error().unwrap();
+    h.renderer.reset();
+    assert_eq!(h.renderer.rdp, Default::default());
+    assert!(h.renderer.take_guest_writes().is_empty());
+    assert_eq!(h.renderer.color_image_epoch, 0);
+    assert_eq!(h.renderer.inner.frame_serial, 0);
+    assert_eq!(h.renderer.inner.dither_seed, 0);
+    assert_eq!(h.renderer.inner.scanout_images().count(), 0);
+    assert!(h.renderer.frame_scenes.is_empty());
+    assert!(h.renderer.last_scanout_addr.is_none());
+    assert_eq!(h.renderer.present_last(), Err(error));
+    h.renderer.begin_frame();
+    h.renderer
+        .process_dl(&hw, entry, Microcode::F3dex2, &mut NopSink);
+    assert!(!h.renderer.frame_scenes.is_empty());
+}
+
+#[test]
+fn reconfigure_updates_canonical_state_after_presenter_failure() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    let (data, entry) = crate::tests::fixtures::fixture("flat-color--vertex-colors");
+    let hw = Image(data.to_vec(), None);
+    h.renderer
+        .process_dl(&hw, entry, Microcode::F3dex2, &mut NopSink);
+    h.panic_configure.store(true, Ordering::SeqCst);
+    h.renderer.resize(32, 32);
+    let error = h.renderer.presenter_error().unwrap();
+    let config = RendererConfig {
+        format: Some(wgpu::TextureFormat::Bgra8Unorm),
+        resolution_multiplier: 2,
+        ..renderer_config()
+    };
+    h.renderer.reconfigure(config);
+    assert_eq!(h.renderer.config, config);
+    assert_eq!(h.renderer.surface_format, wgpu::TextureFormat::Bgra8Unorm);
+    assert_eq!(h.renderer.effective_resolution_multiplier(), 2);
+    assert_eq!(
+        h.renderer.requested_scale_policy(),
+        crate::ScalePolicy::Fixed(2)
+    );
+    assert!(h.renderer.last_scanout_addr.is_none());
+    assert!(h.renderer.frame_scenes.is_empty());
+    h.renderer.begin_frame();
+    h.renderer
+        .process_dl(&hw, entry, Microcode::F3dex2, &mut NopSink);
+    assert!(!h.renderer.frame_scenes.is_empty());
+    assert_eq!(h.renderer.present_last(), Err(error));
+}
+
+#[test]
 fn configure_panic_allows_rendering_and_returns_error_before_resolving_scanout() {
     let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
     h.panic_configure.store(true, Ordering::SeqCst);
@@ -477,6 +544,78 @@ fn configure_panic_allows_rendering_and_returns_error_before_resolving_scanout()
         ),
         Err(error),
     );
+}
+
+#[test]
+fn caller_owned_targets_still_scan_out_after_presenter_failure() {
+    for failure_in_hook in [false, true] {
+        let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+        let (data, entry) = crate::tests::fixtures::fixture("flat-color--vertex-colors");
+        let hw = Image(data.to_vec(), None);
+        h.renderer
+            .process_dl(&hw, entry, Microcode::F3dex2, &mut NopSink);
+        h.renderer.present_last().unwrap();
+        let source = h.textures.lock().unwrap()[0].clone();
+        let expected = pixels(&h.renderer, &source);
+        assert!(expected
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[0] != pixel[1]));
+        if failure_in_hook {
+            h.renderer
+                .set_send_render_hook(Box::new(Hook {
+                    events: h.events.clone(),
+                    name: "caller panic",
+                    panic: Some("draw"),
+                }))
+                .unwrap();
+        } else {
+            h.panic_configure.store(true, Ordering::SeqCst);
+            h.renderer.resize(32, 32);
+            assert!(h.renderer.presenter_error().is_some());
+        }
+        for method in 0..4 {
+            let target = h.renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: source.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: source.format(),
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&Default::default());
+            match method {
+                0 => h.renderer.present_to(&hw, &view),
+                1 => h.renderer.present_last_to(&view),
+                2 => h.renderer.present_host_to(None, &view),
+                _ => h.renderer.present_native_to(&hw, &view),
+            }
+            assert_eq!(pixels(&h.renderer, &target), expected);
+        }
+    }
+}
+
+#[test]
+fn startup_preserves_a_host_configured_surface() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    let state = h
+        .renderer
+        .presenter
+        .as_ref()
+        .unwrap()
+        .worker
+        .request(|slot| Ok(slot.take().unwrap()))
+        .unwrap();
+    h.events.lock().unwrap().clear();
+    h.renderer.presenter = Some(Presenter::spawn(state));
+    assert!(h.events.lock().unwrap().is_empty());
+    h.renderer.present_last().unwrap();
+    assert_eq!(h.events.lock().unwrap()[0].0, "acquire");
+    h.renderer.resize(32, 32);
+    assert_eq!(h.events.lock().unwrap()[1].0, "configure");
 }
 
 #[test]
@@ -571,6 +710,58 @@ fn non_send_hook_is_rejected_before_init_on_threaded_targets() {
         Err(PresentError::HookRequiresSend)
     );
     assert_eq!(count.get(), 0);
+    for draw_only in [false, true] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if draw_only {
+                let count = count.clone();
+                h.renderer
+                    .set_draw_hook(move |_| count.set(count.get() + 1));
+            } else {
+                h.renderer
+                    .set_render_hook(Box::new(LocalHook(count.clone())));
+            }
+        }));
+        assert_eq!(result.is_err(), cfg!(debug_assertions));
+        assert_eq!(count.get(), 0);
+    }
+}
+
+#[cfg(feature = "debug-ui")]
+#[test]
+fn debugger_hook_panic_latches_failure_and_deinitializes_on_worker() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    h.renderer
+        .set_send_render_hook(Box::new(Hook {
+            events: h.events.clone(),
+            name: "debug panic",
+            panic: Some("draw"),
+        }))
+        .unwrap();
+    h.renderer.set_debugger_enabled(true);
+    let error = h.renderer.present_last().unwrap_err();
+    assert!(
+        matches!(&error, PresentError::PresenterFailed(message) if message.contains("draw failed"))
+    );
+    assert_eq!(h.renderer.presenter_error(), Some(error.clone()));
+    assert_eq!(h.renderer.present_last(), Err(error.clone()));
+    h.renderer.set_debugger_enabled(false);
+    assert_eq!(h.renderer.present_last(), Err(error));
+    h.renderer.shutdown();
+    let events = h.events.lock().unwrap();
+    let hooks: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name.starts_with("debug panic"))
+        .collect();
+    assert_eq!(
+        hooks
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["debug panic init", "debug panic draw", "debug panic deinit"]
+    );
+    assert_eq!(hooks[1].1, std::thread::current().id());
+    assert_eq!(hooks[0].1, hooks[2].1);
+    assert_ne!(hooks[0].1, std::thread::current().id());
 }
 
 #[cfg(feature = "debug-ui")]
