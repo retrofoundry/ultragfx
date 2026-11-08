@@ -229,11 +229,11 @@ impl Copies {
         if scale > 1 {
             bytes.resize(bytes.len() + 4096 * 8, 0);
         }
-        let mut offsets = HashMap::new();
+        let mut offsets = vec![[0; 2]; request.tags.copies.len() + 1];
         let mut sources = Vec::new();
         let mut after = 0;
         for tag in request.tags.bytes.iter().filter(|tag| tag.copy != 0) {
-            offsets.entry(tag.copy).or_insert_with(|| {
+            if offsets[usize::from(tag.copy)][0] == 0 {
                 let copy = &request.tags.copies[usize::from(tag.copy) - 1];
                 let key = key(copy);
                 after = after.max(self.order.get(&key).copied().unwrap_or(0));
@@ -256,17 +256,22 @@ impl Copies {
                     sources.push((guest.clone(), guest_offset));
                     (guest_offset / 4) as u32
                 });
-                [(offset / 4) as u32, guest_offset]
-            });
+                offsets[usize::from(tag.copy)] = [(offset / 4) as u32, guest_offset];
+            }
         }
         for (index, tag) in request.tags.bytes.iter().enumerate() {
             if tag.copy != 0 {
-                let copy = &request.tags.copies[usize::from(tag.copy) - 1];
-                let image = self.snapshots[&key(copy)]
-                    .image
-                    .as_ref()
-                    .filter(|_| scale > 1);
-                let pointer = if let Some(image) = image {
+                let image = if scale > 1 {
+                    let copy = &request.tags.copies[usize::from(tag.copy) - 1];
+                    self.snapshots[&key(copy)]
+                        .image
+                        .as_ref()
+                        .map(|image| (copy, image))
+                } else {
+                    None
+                };
+                let offset = offsets[usize::from(tag.copy)];
+                let pointer = if let Some((copy, image)) = image {
                     let pixel = tag.pointer / 2;
                     let span_index = copy
                         .spans
@@ -281,15 +286,15 @@ impl Copies {
                     let meta = (metadata + index * 2) * 4;
                     bytes[meta..meta + 4].copy_from_slice(&(span.stride / 4).to_le_bytes());
                     bytes[meta + 4..meta + 8].copy_from_slice(&image.source_scale.to_le_bytes());
-                    (offsets[&tag.copy][0] + (span.offset / 4) as u32 + x * image.source_scale) * 2
+                    (offset[0] + (span.offset / 4) as u32 + x * image.source_scale) * 2
                         + (tag.pointer & 1)
                         + 1
                 } else {
-                    offsets[&tag.copy][0] * 2 + tag.pointer + 1
+                    offset[0] * 2 + tag.pointer + 1
                 };
                 bytes[4096 + index * 4..4100 + index * 4].copy_from_slice(&pointer.to_le_bytes());
-                if offsets[&tag.copy][1] != 0 {
-                    let guest_pointer = offsets[&tag.copy][1] * 2 + tag.pointer + 1;
+                if offset[1] != 0 {
+                    let guest_pointer = offset[1] * 2 + tag.pointer + 1;
                     let start = 4096 + (4096 + index) * 4;
                     bytes[start..start + 4].copy_from_slice(&guest_pointer.to_le_bytes());
                 }
