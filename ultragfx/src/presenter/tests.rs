@@ -77,15 +77,15 @@ fn renderer_config() -> RendererConfig {
     }
 }
 
-struct Harness {
-    renderer: Renderer,
+pub(super) struct Harness {
+    pub(super) renderer: Renderer,
     textures: Arc<Mutex<Vec<wgpu::Texture>>>,
     presented: Arc<AtomicUsize>,
     events: Events,
     panic_configure: Arc<AtomicBool>,
 }
 
-fn harness(
+pub(super) fn harness(
     format: wgpu::TextureFormat,
     faults: Vec<PresentError>,
     acquire: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
@@ -1246,52 +1246,46 @@ fn active_scale_change_breaks_the_pair_at_the_new_scanout() {
 }
 
 #[test]
-fn scheduled_surface_recovery_and_fatal_errors_follow_the_owned_worker_contract() {
-    let mut h = harness(
-        wgpu::TextureFormat::Rgba8Unorm,
-        vec![PresentError::SurfaceLost, PresentError::Timeout],
-        None,
-    );
-    h.renderer
-        .set_refresh_rate(crate::RefreshRate::Display)
-        .unwrap();
-    h.renderer
-        .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
-        .unwrap();
-    wait_images(&h, 2);
-    assert_eq!(h.renderer.presenter_error(), None);
-    assert_eq!(
-        h.events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(name, _)| name == "configure")
-            .count(),
-        3
-    );
-    h.renderer.shutdown();
-
-    let mut h = harness(
-        wgpu::TextureFormat::Rgba8Unorm,
-        vec![PresentError::DeviceLost],
-        None,
-    );
-    h.renderer
-        .set_refresh_rate(crate::RefreshRate::Manual(60.0))
-        .unwrap();
-    h.renderer
-        .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h.renderer.presenter_error().is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(h.renderer.presenter_error(), Some(PresentError::DeviceLost));
-    assert_eq!(
+fn scheduled_acquire_errors_recover_and_allow_switching_to_original() {
+    for mode in [
+        crate::RefreshRate::Display,
+        crate::RefreshRate::Manual(60.0),
+    ] {
+        let mut h = harness(
+            wgpu::TextureFormat::Rgba8Unorm,
+            vec![
+                PresentError::SurfaceLost,
+                PresentError::Timeout,
+                PresentError::DeviceLost,
+            ],
+            None,
+        );
+        h.renderer.set_refresh_rate(mode).unwrap();
         h.renderer
-            .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None),
-        Err(PresentError::DeviceLost)
-    );
+            .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
+            .unwrap();
+        wait_images(&h, 2);
+        assert_eq!(h.renderer.presenter_error(), None);
+        assert_eq!(
+            h.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(name, _)| name == "configure")
+                .count(),
+            3
+        );
+        h.renderer
+            .set_refresh_rate(crate::RefreshRate::Original)
+            .unwrap();
+        h.renderer
+            .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
+            .unwrap();
+        let count = h.presented.load(Ordering::SeqCst);
+        h.renderer.present_host(None).unwrap();
+        assert_eq!(h.presented.load(Ordering::SeqCst), count + 1);
+        h.renderer.shutdown();
+    }
 }
 
 #[test]
@@ -1427,11 +1421,14 @@ fn a_coalesced_missing_source_breaks_the_previous_pair() {
 
 #[test]
 fn scheduled_failure_preserves_canonical_reset_and_reconfigure() {
-    let mut h = harness(
-        wgpu::TextureFormat::Rgba8Unorm,
-        vec![PresentError::DeviceLost],
-        None,
-    );
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    h.renderer
+        .set_send_render_hook(Box::new(Hook {
+            events: h.events.clone(),
+            name: "scheduled failure",
+            panic: Some("draw"),
+        }))
+        .unwrap();
     h.renderer
         .set_refresh_rate(crate::RefreshRate::Manual(60.0))
         .unwrap();
@@ -1448,7 +1445,8 @@ fn scheduled_failure_preserves_canonical_reset_and_reconfigure() {
     while h.renderer.presenter_error().is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(h.renderer.presenter_error(), Some(PresentError::DeviceLost));
+    let error = h.renderer.presenter_error().unwrap();
+    assert!(matches!(error, PresentError::PresenterFailed(_)));
     assert!(!h.renderer.frame_scenes.is_empty());
     h.renderer.reset();
     assert!(h.renderer.frame_scenes.is_empty());
@@ -1468,6 +1466,57 @@ fn scheduled_failure_preserves_canonical_reset_and_reconfigure() {
     assert_eq!(
         h.renderer
             .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None),
-        Err(PresentError::DeviceLost)
+        Err(error)
     );
+}
+
+#[cfg(feature = "capture")]
+#[test]
+fn capture_readback_preserves_scheduled_sources_and_presentation() {
+    for mode in [
+        crate::RefreshRate::Display,
+        crate::RefreshRate::Manual(60.0),
+    ] {
+        let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+        h.renderer.set_refresh_rate(mode).unwrap();
+        activate_pair(&mut h);
+        let texture = h.textures.lock().unwrap().last().unwrap().clone();
+        let expected = pixels(&h.renderer, &texture);
+        let configurations = h
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "configure")
+            .count();
+        for _ in 0..3 {
+            assert_eq!(
+                pollster::block_on(crate::hle::capture::read_rgba8(&h.renderer, &texture)).unwrap(),
+                expected
+            );
+            assert!(h
+                .renderer
+                .presenter
+                .as_ref()
+                .unwrap()
+                .synchronous(|state| {
+                    state.schedule.previous.is_some()
+                        && state.schedule.phase.is_some()
+                        && state.schedule.deadlines.is_some()
+                })
+                .unwrap());
+        }
+        let count = h.textures.lock().unwrap().len();
+        wait_images(&h, count + 2);
+        assert_eq!(
+            h.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(name, _)| name == "configure")
+                .count(),
+            configurations
+        );
+        h.renderer.shutdown();
+    }
 }

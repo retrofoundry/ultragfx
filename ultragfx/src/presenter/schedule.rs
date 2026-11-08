@@ -34,8 +34,8 @@ impl Deadlines {
         self.next - (work + Duration::from_millis(3)).min(self.period / 2)
     }
 
-    pub(super) fn presented(&mut self, at: Instant) {
-        self.next = at + self.period;
+    pub(super) fn presented(&mut self) {
+        self.next += self.period;
     }
 
     pub(super) fn skip_expired(&mut self, now: Instant) -> u64 {
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn deadlines_expire_after_one_target_period_and_reanchor_on_present() {
+    fn deadlines_skip_late_frames_without_a_catch_up_burst() {
         let origin = Instant::now();
         let mut deadlines = Deadlines::new(origin, Duration::from_millis(10));
         assert_eq!(
@@ -175,13 +175,29 @@ mod tests {
             3
         );
         assert_eq!(deadlines.next(), origin + Duration::from_millis(50));
-        deadlines.presented(origin + Duration::from_millis(57));
-        assert_eq!(deadlines.next(), origin + Duration::from_millis(67));
+        deadlines.presented();
+        assert_eq!(deadlines.next(), origin + Duration::from_millis(60));
+        assert!(deadlines.next() > origin + Duration::from_millis(57));
         deadlines = Deadlines::new(
             origin + Duration::from_millis(60),
             Duration::from_millis(20),
         );
         assert_eq!(deadlines.next(), origin + Duration::from_millis(80));
+    }
+
+    #[test]
+    fn present_overhead_does_not_accumulate_over_many_frames() {
+        let origin = Instant::now();
+        let period = Duration::from_nanos(16_666_667);
+        let overhead = Duration::from_micros(300);
+        let mut deadlines = Deadlines::new(origin, period);
+        for n in 1..=36_000 {
+            let presented = deadlines.next() + overhead;
+            assert_eq!(deadlines.skip_expired(presented), 0);
+            assert_eq!(presented, origin + period * n + overhead);
+            deadlines.presented();
+        }
+        assert_eq!(deadlines.next(), origin + period * 36_001);
     }
 
     #[test]
@@ -220,7 +236,7 @@ mod tests {
             let ready = deadlines.acquire_at(work) + work;
             let presented = ready.max(deadlines.next());
             assert_eq!(presented, origin + period * n);
-            deadlines.presented(presented);
+            deadlines.presented();
         }
         assert_eq!(
             deadlines.acquire_at(Duration::from_secs(1)),

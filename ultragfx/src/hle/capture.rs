@@ -9,6 +9,8 @@ mod format;
 mod replay;
 pub use crate::scene::ColorImage;
 pub use format::{Fixture, Frame, Provenance, Sequence};
+#[cfg(test)]
+pub(crate) use replay::read_rgba8;
 pub use replay::{CaptureFrame, ReplayOptions, ReplayOutput, ReplaySource};
 mod sequence;
 pub use sequence::{CaptureSequence, FrameLog, Presentation, SequenceOutput};

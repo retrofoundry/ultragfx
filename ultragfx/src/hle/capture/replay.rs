@@ -868,13 +868,7 @@ fn prime_framebuffers(
     Ok(())
 }
 
-pub(super) async fn read_rgba8(renderer: &Renderer, texture: &wgpu::Texture) -> Result<Vec<u8>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(presenter) = &renderer.presenter {
-        presenter
-            .barrier()
-            .map_err(|error| CaptureError::Gpu(format!("{error:?}")))?;
-    }
+pub(crate) async fn read_rgba8(renderer: &Renderer, texture: &wgpu::Texture) -> Result<Vec<u8>> {
     let unpadded = texture.width() * 4;
     let stride =
         unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;

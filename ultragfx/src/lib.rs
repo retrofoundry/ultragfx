@@ -1037,9 +1037,21 @@ impl Renderer {
             };
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let _completion = self
-            .interpolation_active()
-            .then(|| self.in_flight.begin(&self.device, &self.queue));
+        let _completion = if self.interpolation_active() {
+            match self.in_flight.begin(&self.device, &self.queue) {
+                Ok(completion) => Some(completion),
+                Err(error) => {
+                    log::error!("canonical submission failed: {error:?}");
+                    return DlSummary {
+                        errors: 1,
+                        termination: inspect::WalkTermination::Rejected,
+                        ..Default::default()
+                    };
+                }
+            }
+        } else {
+            None
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let configuration = self.configuration.clone();
         #[cfg(not(target_arch = "wasm32"))]
@@ -1184,6 +1196,12 @@ impl Renderer {
             }
         };
         #[cfg(not(target_arch = "wasm32"))]
+        if recording.is_some() || !self.target_versions.is_empty() {
+            for target in prepared.iter().flat_map(|inputs| inputs.color_targets()) {
+                self.target_versions.insert(target, std::sync::Arc::new(()));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         let staged = native.then(|| {
             let target = workload.as_ref().unwrap().targets[0].id;
             let depth = prepared
@@ -1270,16 +1288,6 @@ impl Renderer {
         result.dropped_runs += self.inner.dropped_runs;
         let summary = result.summary(scanout.is_some());
 
-        #[cfg(not(target_arch = "wasm32"))]
-        for target in workload
-            .unwrap_or_else(|| crate::render::workload::Workload::new(&result.scene))
-            .targets
-        {
-            if !target.depth_clear {
-                self.target_versions
-                    .insert(target.id, std::sync::Arc::new(()));
-            }
-        }
         #[cfg(not(target_arch = "wasm32"))]
         self.inner.retire_snapshots();
         if let Some(recording) = recording {
@@ -1513,11 +1521,11 @@ impl Renderer {
             .take_hook()
     }
 
-    /// Fatal presenter status, retained after a panic or failure to start.
+    /// Fatal presentation status, including a failed canonical device poll.
     pub fn presenter_error(&self) -> Option<PresentError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(presenter) = &self.presenter {
-            return presenter.error();
+            return self.in_flight.error().or_else(|| presenter.error());
         }
         None
     }

@@ -103,15 +103,16 @@ impl Renderer {
             .presenter
             .as_ref()
             .ok_or(PresentError::SurfaceRequired)?;
-        if let Some(error) = presenter.error() {
-            return Err(error);
-        }
-        let mut policy = self.refresh_requested;
+        let policy = self.refresh_requested;
         #[cfg(feature = "debug-ui")]
-        if self.debugger.enabled {
-            policy.requested = crate::RefreshRate::Original;
-        }
-        let _ = &mut policy;
+        let policy = if self.debugger.enabled {
+            crate::refresh::RefreshPolicy {
+                requested: crate::RefreshRate::Original,
+                ..policy
+            }
+        } else {
+            policy
+        };
         let was_active = self.interpolation_active();
         self.refresh_latched = policy;
         if !self.interpolation_active() {
@@ -121,7 +122,7 @@ impl Renderer {
             return self.threaded_present(source, None, false);
         }
         let pending = {
-            let _completion = self.in_flight.begin(&self.device, &self.queue);
+            let _completion = self.in_flight.begin(&self.device, &self.queue)?;
             let configuration = self.configuration.clone();
             let _configuration = configuration
                 .lock()

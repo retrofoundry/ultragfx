@@ -16,7 +16,12 @@ acceptance and present asynchronously; fatal worker errors are latched in
 `presenter_error()` and returned by later calls.
 
 The present thread paces before surface acquisition, using the effective rate
-and the measured previous present. FIFO is a backstop. It drains a bounded batch
+on an ideal deadline grid, skipping expired deadlines after a late frame. Present
+overhead does not extend the period. If the nominal rate exceeds the display's
+actual rate, FIFO occasionally waits as the grid runs ahead; a delay of a full
+period skips expired work instead of producing a catch-up burst. A nominal rate
+below the actual rate still targets the lower rate and can repeat a display frame.
+FIFO is a backstop. It drains a bounded batch
 of messages before serving at most one due presentation and keeps the newest
 sources. Entering Original discards interpolation work and acknowledges the
 boundary. Entering Display or Manual shows plain scanouts until two compatible
@@ -155,12 +160,6 @@ scope counts count unresolved declarations; duplicate identities count each
 additional declaration. Framebuffer counts count admission violations or
 dependent operations; task-wide flags count once per task. Counts accumulate
 across submitted tasks when committing a source. Every reason holds the source.
-
-Source counts track submitted triangles, held triangles
-(all policies except Interpolate and StaticWorld, including unscoped triangles),
-texture rectangles and fills, whether the source is eligible or held. Rectangles
-and fills stay in A's retained content. Counts describe submitted primitives,
-including clipped or transparent geometry, rather than visible pixels.
 
 Framebuffer admission rejects texture loads, copies, live aliases, inherited
 colour/depth contents, CPU imports and multitask sources. It requires explicit

@@ -206,18 +206,11 @@ impl Presentation {
         if self.needs_configure {
             self.configure();
         }
-        self.schedule.deadlines.as_mut().unwrap().presented(
-            result
-                .as_ref()
-                .ok()
-                .copied()
-                .flatten()
-                .unwrap_or_else(Instant::now),
-        );
-        match result {
-            Ok(_) | Err(PresentError::SurfaceLost | PresentError::Timeout) => Ok(()),
-            Err(error) => Err(error),
+        self.schedule.deadlines.as_mut().unwrap().presented();
+        if let Err(error) = result {
+            log::warn!("scheduled presentation: {error:?}");
         }
+        Ok(())
     }
 
     pub(crate) fn present(
@@ -263,7 +256,7 @@ impl Presentation {
                     self.device.clone(),
                     self.queue.clone(),
                     self.format,
-                    (self.config.width, self.config.height),
+                    b.legacy_extent(),
                     source.as_ref().map_or(1, |source| source.reduction),
                 )
             });
@@ -506,9 +499,6 @@ impl Presenter {
     }
 
     pub(crate) fn scanout(&self, pending: PendingScanout) -> Result<(), PresentError> {
-        if let Some(error) = self.error() {
-            return Err(error);
-        }
         let mut mailbox = self.mailbox.lock().unwrap();
         if mailbox.sources.len() == 2 {
             mailbox.sources.pop_front();
@@ -519,6 +509,8 @@ impl Presenter {
             mailbox.queued = true;
             drop(mailbox);
             self.worker.post(Request::Sources(self.mailbox.clone()))?;
+        } else if let Some(error) = self.error() {
+            return Err(error);
         }
         Ok(())
     }

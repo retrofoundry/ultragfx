@@ -114,14 +114,6 @@ impl ReasonCount {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SourceCounts {
-    pub triangles: u64,
-    pub held_triangles: u64,
-    pub rectangles: u64,
-    pub fills: u64,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceError {
     UnrecordedTask,
@@ -143,7 +135,6 @@ struct SourceData {
     target: TargetId,
     rows: Option<Range<u32>>,
     image: Arc<TargetSnapshot>,
-    counts: SourceCounts,
     eligibility: Vec<ReasonCount>,
 }
 
@@ -172,8 +163,9 @@ impl SourceFrame {
     pub fn visible_at(&self) -> std::time::Instant {
         self.data.visible_at
     }
-    pub fn counts(&self) -> SourceCounts {
-        self.data.counts
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn legacy_extent(&self) -> (u32, u32) {
+        self.data.task.context.legacy_extent
     }
     pub fn ineligibility(&self) -> &[ReasonCount] {
         &self.data.eligibility
@@ -413,36 +405,6 @@ fn eligibility(
     reasons
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn source_counts(scene: &Scene) -> SourceCounts {
-    let mut counts = SourceCounts {
-        triangles: (scene.indices.len() / 3) as u64,
-        ..Default::default()
-    };
-    if let Some(records) = &scene.annotations {
-        counts.held_triangles = records
-            .draws
-            .iter()
-            .filter(|d| {
-                d.annotation.is_none_or(|i| {
-                    !matches!(
-                        records.sidecar.draws[i].policy,
-                        TransformPolicy::Interpolate | TransformPolicy::StaticWorld
-                    )
-                })
-            })
-            .count() as u64;
-    }
-    for op in scene.framebuffer_pairs.iter().flat_map(|pair| &pair.ops) {
-        match op {
-            SceneOp::TexRect { .. } => counts.rectangles += 1,
-            SceneOp::FillRect { .. } => counts.fills += 1,
-            _ => {}
-        }
-    }
-    counts
-}
-
 fn covered(bounds: [i32; 4], rectangles: &[[i32; 4]]) -> bool {
     let mut remaining = vec![bounds];
     for &[left, top, right, bottom] in rectangles {
@@ -551,7 +513,6 @@ impl crate::Renderer {
             .ok_or(SourceError::TaskNotFound)?;
         let info = tasks[selected].info;
         let mut reasons = Vec::new();
-        let mut counts = SourceCounts::default();
         for task in tasks {
             if !Arc::ptr_eq(&task.renderer, &self.identity) {
                 return Err(SourceError::SourceMismatch);
@@ -560,11 +521,6 @@ impl crate::Renderer {
                 return Err(SourceError::SourceMismatch);
             }
             let task = task.retained.as_ref().ok_or(SourceError::UnrecordedTask)?;
-            let task_counts = source_counts(&task.scene);
-            counts.triangles += task_counts.triangles;
-            counts.held_triangles += task_counts.held_triangles;
-            counts.rectangles += task_counts.rectangles;
-            counts.fills += task_counts.fills;
             for &reason in &task.eligibility {
                 ReasonCount::add(&mut reasons, reason.reason, reason.count);
             }
@@ -588,7 +544,6 @@ impl crate::Renderer {
                 rows: scanout.rows,
                 image,
                 eligibility: reasons,
-                counts,
             }),
         })
     }

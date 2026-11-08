@@ -1636,7 +1636,7 @@ fn hold_model_keeps_a_world_pose_under_the_phase_camera() {
 }
 
 #[test]
-fn source_reasons_and_held_primitive_counts_are_committed() {
+fn source_reasons_are_committed() {
     let mut r = renderer(1);
     let mut phases = r.phase_renderer();
     let ta = task(
@@ -1675,9 +1675,6 @@ fn source_reasons_and_held_primitive_counts_are_committed() {
             "{:?}",
             b.ineligibility()
         );
-        assert_eq!(b.counts().triangles, 2);
-        assert_eq!(b.counts().fills, 2);
-        assert_eq!(b.counts().rectangles, 0);
         assert_eq!(
             phase(&mut phases, &a, &b, 0.5, PhaseResult::Held),
             phase(&mut phases, &a, &b, 0.0, PhaseResult::Held)
@@ -1885,7 +1882,7 @@ fn one_unmatched_world_draw_holds_its_model_while_another_interpolates() {
 }
 
 #[test]
-fn rectangles_fills_and_screen_space_triangles_are_counted_when_eligible() {
+fn rectangles_fills_and_screen_space_triangles_remain_eligible() {
     let mut r = renderer(1);
     let mut f = fixture(&[identity()], identity(), projection());
     f.annotations.draws[0].policy = TransformPolicy::ScreenSpace;
@@ -1896,15 +1893,6 @@ fn rectangles_fills_and_screen_space_triangles_are_counted_when_eligible() {
     let ta = task(&mut r, f, 1, 1, true);
     let a = source(&mut r, ta);
     assert!(a.ineligibility().is_empty(), "{:?}", a.ineligibility());
-    assert_eq!(
-        a.counts(),
-        SourceCounts {
-            triangles: 1,
-            held_triangles: 1,
-            rectangles: 1,
-            fills: 2
-        }
-    );
 }
 
 #[test]
