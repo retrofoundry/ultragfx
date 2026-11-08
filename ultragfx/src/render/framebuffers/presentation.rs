@@ -223,12 +223,14 @@ impl super::super::SceneRenderer {
         for (id, color) in colors {
             let fb = &self.framebuffers[&id];
             let bindings = self
+                .compositor
                 .make_present_bindings(device, color.as_ref().map_or(&fb.sampled, |p| &p.attach));
-            let extent = self.make_present_extent(
+            let extent = self.compositor.make_present_extent(
                 device,
                 fb.layout.width * scale,
                 0..fb.height * scale,
                 fb.color.height() * scale,
+                &self.profiling,
             );
             let fb = self.framebuffers.get_mut(&id).unwrap();
             fb.presentation_sampling = (scale > 1)

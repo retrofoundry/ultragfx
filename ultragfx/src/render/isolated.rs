@@ -185,10 +185,12 @@ impl SceneRenderer {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
     ) {
-        self.scanout_texture(
+        self.compositor.scanout_texture(
             device,
             encoder,
             target,
+            self.reduction_factor,
+            &self.profiling,
             (&image.texture, image.height, image.scale, rows),
         );
     }
