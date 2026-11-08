@@ -63,6 +63,128 @@ class CaptureCase(unittest.TestCase):
         path.write_text(json.dumps(manifest))
 
 
+class ConfigurationGates(CaptureCase):
+    def test_sections_partition_frozen_and_supplemental_requirements(self):
+        checkout = Path(__file__).resolve().parents[2]
+        original = json.dumps(ci.INVENTORY, sort_keys=True)
+        keys, gpu_configs, replacement_configs = [], [], []
+        for config in ci.COMMANDS:
+            for section in ci.windows_sections(checkout, config):
+                inventory = ci.configuration_inventory(config, section)
+                keys.extend(readbacks.expected_rows(inventory))
+                gpu_configs.extend(inventory["gpu_decode_configurations"])
+                replacement_configs.extend(inventory["replacement_configurations"])
+        self.assertCountEqual(keys, readbacks.expected_rows(ci.INVENTORY))
+        self.assertCountEqual(gpu_configs, ["default", "debug-ui", "all-features"])
+        self.assertEqual(replacement_configs, ["all-features"])
+        self.assertEqual(json.dumps(ci.INVENTORY, sort_keys=True), original)
+
+    def test_section_without_rows_still_rejects_failed_tests(self):
+        inventory = ci.configuration_inventory("default", "guest")
+        for directory in [self.base, self.head]:
+            self.mutate(directory, lambda m: m.update(
+                inventory_sha256=readbacks.json_hash(inventory), rows=[],
+                configurations={"default": {"exit_code": 0}}))
+        self.assertTrue(readbacks.compare(self.base, self.head, inventory, BASE, HEAD, "10", "20")["passed"])
+        self.mutate(self.head, lambda m: m["configurations"]["default"].update(exit_code=101))
+        report = readbacks.compare(self.base, self.head, inventory, BASE, HEAD, "10", "20", allow_incomplete=True)
+        self.assertFalse(report["passed"])
+        self.assertIn("failed configuration: default", report["failures"]["candidate"][0])
+
+    def test_selections_partition_every_frozen_row_without_changing_inventory(self):
+        original = json.dumps(ci.INVENTORY, sort_keys=True)
+        keys = set()
+        for config in ["default", "debug-ui", "all-features"]:
+            inventory = ci.configuration_inventory(config)
+            self.assertEqual(inventory["configurations"], [config])
+            rows = readbacks.expected_rows(inventory)
+            self.assertEqual(len(rows), {"default": 56, "debug-ui": 56, "all-features": 59}[config])
+            self.assertFalse(keys & rows.keys())
+            keys.update(rows)
+        self.assertEqual(keys, readbacks.expected_rows(ci.INVENTORY).keys())
+        self.assertEqual(json.dumps(ci.INVENTORY, sort_keys=True), original)
+
+    def test_selected_gate_downloads_or_bootstraps_only_its_configuration(self):
+        for config in ["default", "debug-ui", "all-features"]:
+            for section, scenario in [(section, scenario) for section in [None, "readbacks", "guest"]
+                                      for scenario in ["download", "bootstrap", "missing-row", "failed-test", "changed-byte", "missing-configuration"]
+                                      if section != "guest" or scenario not in ["missing-row", "changed-byte"]]:
+                with self.subTest(config=config, section=section, scenario=scenario):
+                    output = self.root / f"{config}-{section}-{scenario}"
+                    runner = "windows-latest" if section else "macos-latest"
+                    name = f"readbacks-{runner}-{config}" + (f"-{section}" if section else "")
+                    captured = []
+
+                    def capture(checkout, destination, base_sha, harness_checkout, inventory):
+                        captured.append(checkout)
+                        shutil.copytree(checkout, destination)
+                        manifest = json.loads((destination / "manifest.json").read_text())
+                        manifest["inventory_sha256"] = readbacks.json_hash(inventory)
+                        manifest["configurations"] = {c: manifest["configurations"][c] for c in inventory["configurations"]}
+                        keys = readbacks.expected_rows(inventory)
+                        manifest["rows"] = [r for r in manifest["rows"] if (r["configuration"], r["id"]) in keys]
+                        if section is None:
+                            manifest["runtime"].update(os="Darwin", backend="metal", test_threads="4")
+                            for row in manifest["rows"]:
+                                row["adapter"].update(backend="Metal", device_type="IntegratedGpu")
+                        if checkout == self.head:
+                            if scenario == "missing-row":
+                                manifest["rows"].clear()
+                            elif scenario == "failed-test":
+                                manifest["configurations"][config]["exit_code"] = 101
+                            elif scenario == "missing-configuration":
+                                manifest["configurations"].clear()
+                            elif scenario == "changed-byte":
+                                path = destination / f"{config}.bin"
+                                path.write_bytes(bytes([17, 33, 65, 254]))
+                                manifest["rows"][0]["sha256"] = readbacks.file_hash(path)
+                        (destination / "manifest.json").write_text(json.dumps(manifest))
+                        return manifest
+
+                    def api(endpoint):
+                        self.assertIn(f"head_sha={BASE}", endpoint)
+                        return {"workflow_runs": [{"id": 10, "head_sha": BASE, "conclusion": "success", "event": "push"}]}
+
+                    def download(repository, run_id, name, destination):
+                        expected_name = f"readbacks-{runner}-{config}" + (f"-{section}" if section else "")
+                        self.assertEqual((repository, run_id, name), ("owner/repo", "10", expected_name))
+                        if scenario != "download":
+                            raise ValueError("missing base artifact")
+                        capture(self.base, destination, BASE, self.head, ci.configuration_inventory(config, section))
+
+                    arguments = ["ci.py", "--checkout", str(self.head), "--base-checkout", str(self.base),
+                                 "--output", str(output), "--base-sha", BASE, "--repository", "owner/repo",
+                                 "--artifact-name", name, "--configuration", config]
+                    if section:
+                        arguments.extend(["--section", section])
+                    with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
+                            patch.object(ci, "capture", capture), patch.object(ci, "overlay", return_value={}), \
+                            patch.object(ci, "gh_json", api), patch.object(ci, "download_artifact", download):
+                        result = ci.main()
+                    self.assertEqual(result, 0 if scenario in ["download", "bootstrap"] else 1)
+                    report = json.loads((output / "comparison.json").read_text())
+                    if scenario == "missing-configuration":
+                        self.assertIn("configuration inventory differs", report["error"])
+                    else:
+                        self.assertEqual(report["threshold"], 0)
+                    self.assertEqual(report["passed"], result == 0)
+                    self.assertTrue(all(row["configuration"] == config for row in report.get("rows", [])))
+                    for directory in [output / "candidate", output / ("downloaded-base" if scenario == "download" else "bootstrap-base")]:
+                        manifest = json.loads((directory / "manifest.json").read_text())
+                        self.assertEqual(list(manifest["configurations"]), [] if scenario == "missing-configuration" and directory.name == "candidate" else [config])
+                    if scenario != "download":
+                        self.assertEqual(captured, [self.head, self.base])
+                        self.assertTrue((output / "bootstrap-reason.json").is_file())
+
+    def test_unknown_configuration_is_rejected_before_capture(self):
+        arguments = ["ci.py", "--checkout", str(self.head), "--output", str(self.root / "invalid"),
+                     "--base-sha", BASE, "--artifact-name", "readbacks", "--configuration", "missing"]
+        with patch.object(sys, "argv", arguments), self.assertRaises(SystemExit) as error:
+            ci.main()
+        self.assertEqual(error.exception.code, 2)
+        self.assertFalse((self.root / "invalid").exists())
+
+
 class ExactReadbacks(CaptureCase):
     def test_partial_report_compares_available_rows_but_cannot_pass(self):
         self.mutate(self.head, lambda m: m["configurations"]["all-features"].update(
@@ -100,7 +222,7 @@ class ExactReadbacks(CaptureCase):
                 output = self.root / ("gate-" + failed_side.name)
                 captured = []
 
-                def capture(checkout, destination, base_sha, harness_checkout):
+                def capture(checkout, destination, base_sha, harness_checkout, inventory):
                     captured.append(checkout)
                     shutil.copytree(checkout, destination)
                     return json.loads((destination / "manifest.json").read_text())

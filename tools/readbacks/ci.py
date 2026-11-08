@@ -24,9 +24,78 @@ COMMANDS = {
     "debug-ui": ["cargo", "test", "--locked", "--no-fail-fast", "-p", "ultragfx", "--features", "debug-ui"],
     "all-features": ["cargo", "test", "--locked", "--no-fail-fast", "--workspace", "--all-features"],
 }
+WINDOWS_SECTIONS = {
+    "tests::goldens::": ("readbacks",),
+    "tests::tmem_witnesses::": ("readbacks",),
+    "render::texture_decode::gpu_tests::": ("readbacks",),
+    "tests::framebuffer_coherence::gpu::guest_route_": ("guest",),
+    "tests::framebuffer_coherence::gpu::triangles::guest_route_gpu_triangle": ("triangles",),
+    "tests::framebuffer_coherence::gpu::triangles::batches::guest_route_gpu_batch": ("batches",),
+    "tests::framebuffer_coherence::gpu::compatibility_literal_fill_matches_f4b3240": ("guest",),
+    "tests::framebuffer_coherence::gpu::compatibility_literal_fill_then_invalid_projection_matches_67345dc": ("guest",),
+    "render::upscaling_tests::": ("upscaling-1", "upscaling-2", "upscaling-3"),
+    "render::upscaling_tests::triangle_half_target_pixel_offset_uses_draw_height_after_retained_growth": ("readbacks",),
+    "render::upscaling_tests::native_stream_is_identical_and_presentation_has_new_samples_without_writeback": ("readbacks",),
+    "render::framebuffers::copies::tests::": ("readbacks",),
+    "hle::capture::tests::legacy_scales_are_ignored_and_v3_preserves_effective_scale": ("readbacks",),
+    "hle::capture::replay::state_tests::captures_record_the_effective_fixed_scale": ("readbacks",),
+    "hle::capture::replay::sequence_tests::replay_options_cover_the_prefix_and_selected_crop": ("readbacks",),
+    "tests::fog::": ("fog-1", "fog-2"),
+    "tests::fog_mirror::": ("fog-mirror",),
+    "tmem_fixture_replay": ("integration",),
+    "texture_decode_gpu": ("integration",),
+    "texture_residency": ("residency",),
+    "texture_residency_pressure": ("residency",),
+    "rt64_v5": ("integration",),
+    "upscaling": ("integration",),
+}
 
 
-def test_commands(checkout, config, system):
+def configuration_inventory(configuration, section=None):
+    if configuration is None:
+        if section is not None:
+            raise ValueError("a section requires a configuration")
+        return INVENTORY
+    inventory = dict(INVENTORY, configurations=[configuration],
+                     rows=[dict(row, configurations=[configuration]) for row in INVENTORY["rows"]
+                           if configuration in row["configurations"]])
+    if section is not None:
+        inventory.update(section=section,
+                         gpu_decode_configurations=[configuration] if section == ("integration" if configuration == "all-features" else "readbacks") else [],
+                         replacement_configurations=[configuration] if section == "residency" and configuration == "all-features" else [])
+        inventory["rows"] = [row for row in inventory["rows"]
+                             if section == ("integration" if row["id"].startswith("tmem-") else "readbacks")]
+    return inventory
+
+
+def windows_sections(checkout, config):
+    selections = []
+    for command in test_commands(checkout, config, "Windows"):
+        if "--" in command:
+            selections.extend(command[command.index("--") + 1:])
+        else:
+            selections.extend(command[i + 1] for i, value in enumerate(command) if value == "--test")
+    missing = set(selections) - WINDOWS_SECTIONS.keys()
+    if missing:
+        raise ValueError(f"unassigned Windows selection: {sorted(missing)}")
+    return sorted({section for selection in selections for section in WINDOWS_SECTIONS[selection]})
+
+
+def section_test_names(filters, section, names):
+    selected = []
+    for value in filters:
+        sections = WINDOWS_SECTIONS[value]
+        if section in sections:
+            matches = sorted(name for name in names if value in name)
+            selected.extend(matches[sections.index(section)::len(sections)])
+    if len(selected) != len(set(selected)):
+        raise ValueError("overlapping Windows filters")
+    return selected
+
+
+def test_commands(checkout, config, system, section=None):
+    if section is not None and (system != "Windows" or section not in windows_sections(checkout, config)):
+        raise ValueError(f"unknown Windows section: {config}/{section}")
     command = COMMANDS[config]
     if system != "Windows":
         return [command]
@@ -60,7 +129,21 @@ def test_commands(checkout, config, system):
             if (checkout / "ultragfx/tests" / (target + ".rs")).is_file():
                 targets.extend(["--test", target])
         commands.append(command + targets)
-    return commands
+    if section is None:
+        return commands
+    selected = []
+    for command in commands:
+        if "--" in command:
+            index = command.index("--")
+            filters = [value for value in command[index + 1:] if section in WINDOWS_SECTIONS[value]]
+            if filters:
+                selected.append(command[:index + 1] + filters)
+        else:
+            targets = [command[i + 1] for i, value in enumerate(command)
+                       if value == "--test" and section in WINDOWS_SECTIONS[command[i + 1]]]
+            if targets:
+                selected.append(command[:command.index("--test")] + [value for target in targets for value in ["--test", target]])
+    return selected
 
 
 def command_output(command, checkout):
@@ -121,11 +204,11 @@ def collect_rows(output):
     return rows, errors
 
 
-def gpu_decode_requirement(checkout, system=None):
+def gpu_decode_requirement(checkout, system=None, configurations=COMMANDS):
     source = checkout / GPU_DECODE_TEST
     return {"version": 1, "profile": gpu_decode_profile(system or platform.system()),
             "source_test_sha256": file_hash(source) if source.is_file() else None,
-            "required_configurations": list(COMMANDS) if source.is_file() else []}
+            "required_configurations": list(configurations) if source.is_file() else []}
 
 
 def save_gpu_decode_manifest(output, manifest, inventory=None):
@@ -184,7 +267,8 @@ def test_dependency_graph(metadata, checkout):
     } for node in nodes], key=lambda node: node["id"])
 
 
-def capture(checkout, output, base_sha, harness_checkout):
+def capture(checkout, output, base_sha, harness_checkout, inventory=None):
+    inventory = INVENTORY if inventory is None else inventory
     checkout, output = checkout.resolve(), output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     if "UPDATE_GOLDENS" in os.environ:
@@ -213,7 +297,7 @@ def capture(checkout, output, base_sha, harness_checkout):
         "event": os.environ.get("GITHUB_EVENT_NAME", "local"),
         "harness_source_sha": command_output(["git", "rev-parse", "HEAD"], harness_checkout),
         "harness_sha256": json_hash(harness), "harness_files": harness,
-        "inventory_sha256": json_hash(INVENTORY), "checkout": str(checkout), "output": str(output),
+        "inventory_sha256": json_hash(inventory), "checkout": str(checkout), "output": str(output),
         "goldens": goldens, "full_dependency_graph_sha256": file_hash(output / "dependencies.txt"),
         "runtime": {
             "os": platform.system(), "release": platform.release(), "version": platform.version(),
@@ -227,10 +311,10 @@ def capture(checkout, output, base_sha, harness_checkout):
             "build_environment": {key: os.environ.get(key, "") for key in
                                   ["CARGO_BUILD_JOBS", "CARGO_INCREMENTAL", "CARGO_PROFILE_DEV_DEBUG", "CARGO_PROFILE_TEST_DEBUG"]},
         },
-        "gpu_decode": gpu_decode_requirement(checkout),
-        "replacements": replacements.requirement(checkout),
-        "configurations": {config: {"commands": test_commands(checkout, config, platform.system()), "exit_code": None}
-                           for config in COMMANDS}, "rows": [], "errors": [],
+        "gpu_decode": gpu_decode_requirement(checkout, configurations=inventory.get("gpu_decode_configurations", inventory["configurations"])),
+        "replacements": replacements.requirement(checkout, inventory.get("replacement_configurations", inventory["configurations"])),
+        "configurations": {config: {"commands": test_commands(checkout, config, platform.system(), inventory.get("section")), "exit_code": None}
+                           for config in inventory["configurations"]}, "rows": [], "errors": [],
     }
     if manifest["gpu_decode"]["source_test_sha256"] is not None:
         shutil.copyfile(checkout / GPU_DECODE_TEST, output / "gpu-decode-source.rs")
@@ -253,7 +337,7 @@ def capture(checkout, output, base_sha, harness_checkout):
             executions = []
             with (directory / "build.log").open("w", encoding="utf-8") as build_log, \
                     (directory / "test.log").open("w", encoding="utf-8") as log:
-                for command in configuration["commands"]:
+                for index, command in enumerate(configuration["commands"]):
                     cargo = command[:command.index("--")] if "--" in command else command
                     print(f"{checkout}: {config} build {json.dumps(cargo)}; disk free {shutil.disk_usage(checkout).free}", flush=True)
                     started = time.monotonic()
@@ -269,6 +353,15 @@ def capture(checkout, output, base_sha, harness_checkout):
                                 binaries[str(Path(executable).resolve())] = file_hash(executable)
                         except json.JSONDecodeError:
                             continue
+                    if build.returncode == 0 and inventory.get("section") and "--lib" in command:
+                        listing = subprocess.check_output(cargo + ["--", "--list"], cwd=checkout, env=env,
+                                                          text=True, encoding="utf-8")
+                        names = [line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")]
+                        names = section_test_names(command[command.index("--") + 1:], inventory["section"], names)
+                        if not names:
+                            raise ValueError("Windows section selected no tests")
+                        command = cargo + ["--", "--exact"] + names
+                        configuration["commands"][index] = command
                     print(f"{checkout}: {config} test {json.dumps(command)}", flush=True)
                     result = subprocess.run(command, cwd=checkout, env=env, stdout=log, stderr=subprocess.STDOUT) if build.returncode == 0 else build
                     executions.append({"command": command, "exit_code": result.returncode,
@@ -358,33 +451,35 @@ def download_artifact(repository, run_id, artifact_name, destination):
     archive.unlink()
 
 
-def fetch_base(repository, base_sha, artifact_name, destination):
+def fetch_base(repository, base_sha, artifact_name, destination, inventory=None):
+    inventory = INVENTORY if inventory is None else inventory
     runs = gh_json(f"repos/{repository}/actions/workflows/validate.yml/runs?branch=main&event=push&status=success&head_sha={base_sha}&per_page=100")
     for run in runs["workflow_runs"]:
         if run["head_sha"] != base_sha or run["conclusion"] != "success" or run["event"] != "push":
             continue
         download_artifact(repository, str(run["id"]), artifact_name, destination)
-        load_capture(destination, INVENTORY, base_sha, str(run["id"]))
+        load_capture(destination, inventory, base_sha, str(run["id"]))
         return str(run["id"])
     raise ValueError(f"no complete main artifact for exact base {base_sha}")
 
 
 def gate(args):
+    inventory = configuration_inventory(args.configuration, args.section)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     candidate = output / "candidate"
-    manifest = capture(args.checkout, candidate, args.base_sha, args.checkout)
+    manifest = capture(args.checkout, candidate, args.base_sha, args.checkout, inventory)
     require_gpu_decode = (args.checkout / GPU_DECODE_TEST).is_file()
     require_replacements = (args.checkout / replacements.SOURCE).is_file()
     if not args.base_checkout:
-        load_capture(candidate, INVENTORY, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
+        load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
         return
     history = []
     base = output / "downloaded-base"
     try:
-        load_capture(candidate, INVENTORY, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
-        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base)
-        report = compare(base, candidate, INVENTORY, args.base_sha, manifest["source_sha"], run_id, manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
+        load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
+        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory)
+        report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"], run_id, manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
         if not report["passed"]:
             (output / "cross-run-comparison.json").write_text(json.dumps(report, indent=2) + "\n")
             raise ValueError("cross-run RGBA delta; recapture both revisions on this runner")
@@ -394,9 +489,9 @@ def gate(args):
         overlay_provenance = overlay(args.base_checkout.resolve(), args.checkout.resolve(), args.base_sha)
         (output / "bootstrap-overlay.json").write_text(json.dumps(overlay_provenance, indent=2) + "\n")
         base = output / "bootstrap-base"
-        base_manifest = capture(args.base_checkout, base, args.base_sha, args.checkout)
+        base_manifest = capture(args.base_checkout, base, args.base_sha, args.checkout, inventory)
         try:
-            report = compare(base, candidate, INVENTORY, args.base_sha, manifest["source_sha"],
+            report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"],
                              base_manifest["run_id"], manifest["run_id"], allow_incomplete=True, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
         except (ValueError, KeyError, OSError) as error:
             report = {"passed": False, "complete": False, "error": str(error)}
@@ -417,6 +512,8 @@ def main():
     parser.add_argument("--base-sha", required=True)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY"))
     parser.add_argument("--artifact-name", required=True)
+    parser.add_argument("--configuration", choices=COMMANDS)
+    parser.add_argument("--section")
     args = parser.parse_args()
     try:
         gate(args)
