@@ -1,7 +1,7 @@
 use super::*;
 use crate::{Hardware, Microcode, NopSink, PresentTarget, Rdram, RdramImage, Renderer};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::Duration;
@@ -18,6 +18,7 @@ struct TestSurface {
     device: wgpu::Device,
     config: Mutex<wgpu::SurfaceConfiguration>,
     textures: Arc<Mutex<Vec<wgpu::Texture>>>,
+    presented: Arc<AtomicUsize>,
     events: Events,
     faults: Mutex<VecDeque<PresentError>>,
     panic_configure: Arc<AtomicBool>,
@@ -58,7 +59,10 @@ impl Surface for TestSurface {
             view_formats: &config.view_formats,
         });
         self.textures.lock().unwrap().push(texture.clone());
-        Ok(Some(SurfaceFrame::Offscreen(texture)))
+        Ok(Some(SurfaceFrame::Offscreen(
+            texture,
+            self.presented.clone(),
+        )))
     }
 }
 
@@ -76,6 +80,7 @@ fn renderer_config() -> RendererConfig {
 struct Harness {
     renderer: Renderer,
     textures: Arc<Mutex<Vec<wgpu::Texture>>>,
+    presented: Arc<AtomicUsize>,
     events: Events,
     panic_configure: Arc<AtomicBool>,
 }
@@ -111,12 +116,14 @@ fn harness(
         renderer_config(),
     );
     let textures = Arc::new(Mutex::new(Vec::new()));
+    let presented = Arc::new(AtomicUsize::new(0));
     let events = Arc::new(Mutex::new(Vec::new()));
     let panic_configure = Arc::new(AtomicBool::new(false));
     let surface = TestSurface {
         device: device.clone(),
         config: Mutex::new(config.clone()),
         textures: textures.clone(),
+        presented: presented.clone(),
         events: events.clone(),
         faults: Mutex::new(faults.into()),
         panic_configure: panic_configure.clone(),
@@ -132,10 +139,13 @@ fn harness(
         format: crate::render_format_of(&config),
         needs_configure: true,
         profiling: Default::default(),
+        configuration: renderer.configuration.clone(),
+        schedule: Default::default(),
     }));
     Harness {
         renderer,
         textures,
+        presented,
         events,
         panic_configure,
     }
@@ -548,7 +558,7 @@ fn configure_panic_allows_rendering_and_returns_error_before_resolving_scanout()
 
 #[test]
 fn caller_owned_targets_still_scan_out_after_presenter_failure() {
-    for failure_in_hook in [false, true] {
+    for failure_mode in 0..3 {
         let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
         let (data, entry) = crate::tests::fixtures::fixture("flat-color--vertex-colors");
         let hw = Image(data.to_vec(), None);
@@ -562,7 +572,7 @@ fn caller_owned_targets_still_scan_out_after_presenter_failure() {
             .0
             .iter()
             .any(|pixel| pixel[0] != pixel[1]));
-        if failure_in_hook {
+        if failure_mode != 0 {
             h.renderer
                 .set_send_render_hook(Box::new(Hook {
                     events: h.events.clone(),
@@ -573,6 +583,19 @@ fn caller_owned_targets_still_scan_out_after_presenter_failure() {
         } else {
             h.panic_configure.store(true, Ordering::SeqCst);
             h.renderer.resize(32, 32);
+            assert!(h.renderer.presenter_error().is_some());
+        }
+        if failure_mode == 2 {
+            h.renderer
+                .set_refresh_rate(crate::RefreshRate::Display)
+                .unwrap();
+            h.renderer
+                .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while h.renderer.presenter_error().is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             assert!(h.renderer.presenter_error().is_some());
         }
         for method in 0..4 {
@@ -601,16 +624,19 @@ fn caller_owned_targets_still_scan_out_after_presenter_failure() {
 #[test]
 fn startup_preserves_a_host_configured_surface() {
     let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
-    let state = h
+    let Reply::Presentation(state) = h
         .renderer
         .presenter
         .as_ref()
         .unwrap()
         .worker
-        .request(|slot| Ok(slot.take().unwrap()))
-        .unwrap();
+        .request(Request::Take)
+        .unwrap()
+    else {
+        unreachable!()
+    };
     h.events.lock().unwrap().clear();
-    h.renderer.presenter = Some(Presenter::spawn(state));
+    h.renderer.presenter = Some(Presenter::spawn(*state));
     assert!(h.events.lock().unwrap().is_empty());
     h.renderer.present_last().unwrap();
     assert_eq!(h.events.lock().unwrap()[0].0, "acquire");
@@ -845,4 +871,603 @@ fn format_reconfigure_is_acknowledged_before_the_next_present() {
         .0
         .iter()
         .all(|pixel| *pixel == [255, 0, 0, 255]));
+}
+
+fn wait_images(h: &Harness, count: usize) {
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while h.textures.lock().unwrap().len() < count && std::time::Instant::now() < until {
+        h.renderer.device.poll(wgpu::PollType::Poll).unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        h.textures.lock().unwrap().len() >= count,
+        "scheduled presentation did not progress"
+    );
+}
+
+#[test]
+fn refresh_changes_latch_at_scanout_and_original_stops_scheduled_frames() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Manual(120.0))
+        .unwrap();
+    h.renderer.set_display_refresh_rate(Some(100_000)).unwrap();
+    assert!(!h.renderer.interpolation_active());
+    assert_eq!(h.renderer.effective_refresh_rate(), None);
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(None),
+            std::time::Instant::now(),
+            &[],
+            None,
+        )
+        .unwrap();
+    assert!(h.renderer.interpolation_active());
+    assert_eq!(h.renderer.effective_refresh_rate(), Some(100.0));
+    wait_images(&h, 2);
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Original)
+        .unwrap();
+    assert!(h.renderer.interpolation_active());
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(None),
+            std::time::Instant::now(),
+            &[],
+            None,
+        )
+        .unwrap();
+    assert!(!h.renderer.interpolation_active());
+    let count = h.textures.lock().unwrap().len();
+    std::thread::sleep(Duration::from_millis(40));
+    assert_eq!(h.textures.lock().unwrap().len(), count);
+}
+
+#[test]
+fn canonical_frame_work_waits_for_configuration() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    let configuration = h.renderer.configuration.clone();
+    let finished = Arc::new(AtomicBool::new(false));
+    let observed = finished.clone();
+    let (held, acquired) = mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _guard = configuration.lock().unwrap();
+        held.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        observed.load(Ordering::SeqCst)
+    });
+    acquired.recv().unwrap();
+    h.renderer.begin_frame();
+    finished.store(true, Ordering::SeqCst);
+    assert!(
+        !holder.join().unwrap(),
+        "canonical frame work overlapped configuration"
+    );
+}
+
+fn retained_fill(
+    renderer: &mut Renderer,
+    cookie: u64,
+    address: u32,
+    color: u32,
+) -> crate::interpolation::TaskHandle {
+    use n64_gbi::encode::*;
+    let commands = [
+        gdp_set_color_image(0, 2, 64, address),
+        gdp_set_scissor(0, 0, 0, 256, 256),
+        gdp_set_cycle_type(3),
+        gdp_set_fill_color(color),
+        gdp_fill_rectangle(0, 0, 252, 252),
+        gsp_enddl(),
+    ];
+    let hw = Image(
+        commands
+            .into_iter()
+            .flat_map(|(a, b)| [a.to_be_bytes(), b.to_be_bytes()].concat())
+            .collect(),
+        None,
+    );
+    renderer.begin_frame();
+    renderer.submit_task(
+        &hw,
+        0,
+        Microcode::F3dex2,
+        &mut NopSink,
+        crate::interpolation::TaskSubmission {
+            info: crate::interpolation::TaskInfo {
+                cookie,
+                source: cookie,
+                epoch: 0,
+                producer_sample: cookie,
+            },
+            annotations: Some(&crate::annotation::TaskAnnotations::default()),
+            microcode_bindings: &[],
+        },
+    )
+}
+
+#[test]
+fn scheduled_phases_and_plain_snapshots_preserve_hook_ordering() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    h.renderer
+        .set_send_render_hook(Box::new(Hook {
+            events: h.events.clone(),
+            name: "phase",
+            panic: None,
+        }))
+        .unwrap();
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Display)
+        .unwrap();
+    h.renderer
+        .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
+        .unwrap();
+    let now = Instant::now();
+    for (cookie, visible_at, color) in [
+        (1, now - Duration::from_millis(50), 0xf801_f801),
+        (2, now, 0x07c1_07c1),
+    ] {
+        let task = retained_fill(&mut h.renderer, cookie, 0x1000, color);
+        h.renderer
+            .scanout(
+                crate::ScanoutOrigin::Host(Some(0x1000)),
+                visible_at,
+                std::slice::from_ref(&task),
+                Some(&task),
+            )
+            .unwrap();
+    }
+    wait_images(&h, 3);
+    assert!(h
+        .renderer
+        .presenter
+        .as_ref()
+        .unwrap()
+        .synchronous(|state| state.schedule.phase.is_some())
+        .unwrap());
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(Some(0x1000)),
+            Instant::now(),
+            &[],
+            None,
+        )
+        .unwrap();
+    let plain_start = h.textures.lock().unwrap().len();
+    wait_images(&h, plain_start + 2);
+    h.renderer.presenter.as_ref().unwrap().barrier().unwrap();
+    let textures = h.textures.lock().unwrap().clone();
+    let draws = h
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name == "phase draw")
+        .count();
+    assert_eq!(draws, textures.len());
+    for texture in textures {
+        assert!(pixels(&h.renderer, &texture)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 0, 255, 255]));
+    }
+}
+
+#[test]
+fn deferred_other_target_preserves_selection_and_mixed_or_foreign_tasks_keep_scanout() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    let first = retained_fill(&mut h.renderer, 1, 0x1000, 0xf801_f801);
+    let other = retained_fill(&mut h.renderer, 2, 0x8000, 0x07c1_07c1);
+    let pending = h.renderer.prepare_scanout(
+        h.renderer.host_scanout_source(Some(0x1000)),
+        Instant::now(),
+        std::slice::from_ref(&first),
+        Some(&first),
+    );
+    assert!(
+        pending.source.is_some(),
+        "unrelated framebuffer writes cannot stale the selected image"
+    );
+    let mixed = [first.clone(), other];
+    let mut foreign = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    let foreign_task = retained_fill(&mut foreign.renderer, 1, 0x1000, 0x003f_003f);
+    for (tasks, selected) in [
+        (&mixed[..], &first),
+        (std::slice::from_ref(&foreign_task), &foreign_task),
+        (&[][..], &first),
+    ] {
+        let pending = h.renderer.prepare_scanout(
+            h.renderer.host_scanout_source(Some(0x1000)),
+            Instant::now(),
+            tasks,
+            Some(selected),
+        );
+        assert!(pending.source.is_none());
+        h.renderer
+            .presenter
+            .as_ref()
+            .unwrap()
+            .present(pending.image, None)
+            .unwrap();
+        let texture = h.textures.lock().unwrap().last().unwrap().clone();
+        assert!(pixels(&h.renderer, &texture)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [255, 0, 0, 255]));
+    }
+}
+
+#[test]
+fn asynchronous_acquisition_does_not_hold_configuration_exclusion() {
+    let (entered, acquired) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let mut h = harness(
+        wgpu::TextureFormat::Rgba8Unorm,
+        vec![],
+        Some((entered, wait)),
+    );
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Display)
+        .unwrap();
+    h.renderer
+        .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
+        .unwrap();
+    acquired.recv_timeout(Duration::from_secs(3)).unwrap();
+    let unlocked = h.renderer.configuration.try_lock().is_ok();
+    if unlocked {
+        h.renderer.begin_frame();
+    }
+    release.send(()).unwrap();
+    h.renderer.presenter.as_ref().unwrap().barrier().unwrap();
+    assert!(unlocked);
+}
+
+fn activate_pair(h: &mut Harness) {
+    let count = h.textures.lock().unwrap().len();
+    let now = Instant::now();
+    for (cookie, time) in [(1, now - Duration::from_millis(50)), (2, now)] {
+        let task = retained_fill(&mut h.renderer, cookie, 0x1000, 0xf801_f801);
+        h.renderer
+            .scanout(
+                crate::ScanoutOrigin::Host(Some(0x1000)),
+                time,
+                std::slice::from_ref(&task),
+                Some(&task),
+            )
+            .unwrap();
+    }
+    wait_images(h, count + 2);
+    assert!(h
+        .renderer
+        .presenter
+        .as_ref()
+        .unwrap()
+        .synchronous(|state| state.schedule.previous.is_some())
+        .unwrap());
+}
+
+#[test]
+fn active_reset_reconfigure_and_reduction_discard_old_phases_and_resume() {
+    for mode in [
+        crate::RefreshRate::Display,
+        crate::RefreshRate::Manual(60.0),
+    ] {
+        let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+        h.renderer.set_refresh_rate(mode).unwrap();
+        for boundary in 0..3 {
+            activate_pair(&mut h);
+            match boundary {
+                0 => h.renderer.reset(),
+                1 => h.renderer.reconfigure(RendererConfig {
+                    format: Some(wgpu::TextureFormat::Bgra8Unorm),
+                    ..renderer_config()
+                }),
+                _ => h.renderer.set_reduction_factor(2).unwrap(),
+            }
+            assert!(h
+                .renderer
+                .presenter
+                .as_ref()
+                .unwrap()
+                .synchronous(|state| state.schedule.latest.is_none()
+                    && state.schedule.previous.is_none()
+                    && state.schedule.phase.is_none())
+                .unwrap());
+            let count = h.textures.lock().unwrap().len();
+            std::thread::sleep(Duration::from_millis(30));
+            assert_eq!(h.textures.lock().unwrap().len(), count);
+            let task = retained_fill(&mut h.renderer, 3, 0x1000, 0x07c1_07c1);
+            h.renderer
+                .scanout(
+                    crate::ScanoutOrigin::Host(Some(0x1000)),
+                    Instant::now(),
+                    std::slice::from_ref(&task),
+                    Some(&task),
+                )
+                .unwrap();
+            wait_images(&h, count + 1);
+            h.renderer.presenter.as_ref().unwrap().barrier().unwrap();
+            let texture = h.textures.lock().unwrap().last().unwrap().clone();
+            assert!(pixels(&h.renderer, &texture)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 255, 0, 255]));
+        }
+        activate_pair(&mut h);
+        h.renderer.shutdown();
+        let count = h.textures.lock().unwrap().len();
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(h.textures.lock().unwrap().len(), count);
+    }
+}
+
+#[test]
+fn active_scale_change_breaks_the_pair_at_the_new_scanout() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Display)
+        .unwrap();
+    activate_pair(&mut h);
+    h.renderer
+        .set_scale_policy(crate::ScalePolicy::Fixed(2))
+        .unwrap();
+    h.renderer.begin_frame();
+    let task = retained_fill(&mut h.renderer, 3, 0x1000, 0x07c1_07c1);
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(Some(0x1000)),
+            Instant::now(),
+            std::slice::from_ref(&task),
+            Some(&task),
+        )
+        .unwrap();
+    assert!(h
+        .renderer
+        .presenter
+        .as_ref()
+        .unwrap()
+        .synchronous(|state| state.schedule.previous.is_none()
+            && state
+                .schedule
+                .latest
+                .as_ref()
+                .unwrap()
+                .source
+                .as_ref()
+                .unwrap()
+                .image()
+                .scale
+                == 2)
+        .unwrap());
+    activate_pair(&mut h);
+}
+
+#[test]
+fn scheduled_surface_recovery_and_fatal_errors_follow_the_owned_worker_contract() {
+    let mut h = harness(
+        wgpu::TextureFormat::Rgba8Unorm,
+        vec![PresentError::SurfaceLost, PresentError::Timeout],
+        None,
+    );
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Display)
+        .unwrap();
+    h.renderer
+        .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
+        .unwrap();
+    wait_images(&h, 2);
+    assert_eq!(h.renderer.presenter_error(), None);
+    assert_eq!(
+        h.events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "configure")
+            .count(),
+        3
+    );
+    h.renderer.shutdown();
+
+    let mut h = harness(
+        wgpu::TextureFormat::Rgba8Unorm,
+        vec![PresentError::DeviceLost],
+        None,
+    );
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Manual(60.0))
+        .unwrap();
+    h.renderer
+        .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.renderer.presenter_error().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(h.renderer.presenter_error(), Some(PresentError::DeviceLost));
+    assert_eq!(
+        h.renderer
+            .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None),
+        Err(PresentError::DeviceLost)
+    );
+}
+
+#[test]
+fn preparation_may_present_within_its_period_but_drops_an_expired_frame() {
+    let h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    for period in [Duration::from_millis(100), Duration::from_millis(10)] {
+        h.renderer
+            .presenter
+            .as_ref()
+            .unwrap()
+            .synchronous(move |state| {
+                state
+                    .present_frame(
+                        None,
+                        None,
+                        |_, _| std::thread::sleep(Duration::from_millis(25)),
+                        None,
+                        Some((Instant::now() + Duration::from_millis(5), period)),
+                    )
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(h.presented.load(Ordering::SeqCst), 1);
+    }
+    assert_eq!(h.textures.lock().unwrap().len(), 2);
+}
+
+#[cfg(feature = "debug-ui")]
+#[test]
+fn enabling_debugger_stops_scheduled_frames_before_returning() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Display)
+        .unwrap();
+    activate_pair(&mut h);
+    h.renderer.set_debugger_enabled(true);
+    let count = h.presented.load(Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(h.presented.load(Ordering::SeqCst), count);
+    h.renderer
+        .set_send_render_hook(Box::new(Hook {
+            events: h.events.clone(),
+            name: "scheduled debug panic",
+            panic: Some("draw"),
+        }))
+        .unwrap();
+    let error = h
+        .renderer
+        .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
+        .unwrap_err();
+    assert!(matches!(error, PresentError::PresenterFailed(_)));
+    assert_eq!(h.renderer.presenter_error(), Some(error.clone()));
+    h.renderer.set_debugger_enabled(false);
+    assert_eq!(
+        h.renderer
+            .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None),
+        Err(error)
+    );
+}
+
+#[test]
+fn a_coalesced_missing_source_breaks_the_previous_pair() {
+    let (entered, acquired) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    let mut h = harness(
+        wgpu::TextureFormat::Rgba8Unorm,
+        vec![],
+        Some((entered, wait)),
+    );
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Display)
+        .unwrap();
+    let now = Instant::now();
+    let a = retained_fill(&mut h.renderer, 1, 0x1000, 0xf801_f801);
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(Some(0x1000)),
+            now,
+            std::slice::from_ref(&a),
+            Some(&a),
+        )
+        .unwrap();
+    acquired.recv_timeout(Duration::from_secs(3)).unwrap();
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(Some(0x1000)),
+            now + Duration::from_millis(50),
+            &[],
+            None,
+        )
+        .unwrap();
+    for cookie in [3, 4] {
+        let task = retained_fill(&mut h.renderer, cookie, 0x1000, 0x07c1_07c1);
+        h.renderer
+            .scanout(
+                crate::ScanoutOrigin::Host(Some(0x1000)),
+                now + Duration::from_millis((cookie - 1) * 50),
+                std::slice::from_ref(&task),
+                Some(&task),
+            )
+            .unwrap();
+    }
+    release.send(()).unwrap();
+    let chain = h
+        .renderer
+        .presenter
+        .as_ref()
+        .unwrap()
+        .synchronous(|state| {
+            state.schedule.deadlines = None;
+            (
+                state
+                    .schedule
+                    .older
+                    .as_ref()
+                    .map(|source| source.info().cookie),
+                state
+                    .schedule
+                    .previous
+                    .as_ref()
+                    .map(|source| source.info().cookie),
+                state
+                    .schedule
+                    .latest
+                    .as_ref()
+                    .and_then(|last| last.source.as_ref())
+                    .map(|source| source.info().cookie),
+            )
+        })
+        .unwrap();
+    assert_eq!(chain, (None, Some(3), Some(4)));
+}
+
+#[test]
+fn scheduled_failure_preserves_canonical_reset_and_reconfigure() {
+    let mut h = harness(
+        wgpu::TextureFormat::Rgba8Unorm,
+        vec![PresentError::DeviceLost],
+        None,
+    );
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Manual(60.0))
+        .unwrap();
+    let task = retained_fill(&mut h.renderer, 1, 0x1000, 0xf801_f801);
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(Some(0x1000)),
+            Instant::now(),
+            std::slice::from_ref(&task),
+            Some(&task),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.renderer.presenter_error().is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(h.renderer.presenter_error(), Some(PresentError::DeviceLost));
+    assert!(!h.renderer.frame_scenes.is_empty());
+    h.renderer.reset();
+    assert!(h.renderer.frame_scenes.is_empty());
+    assert!(h.renderer.last_scanout_addr.is_none());
+    assert!(h.renderer.target_versions.is_empty());
+    let config = RendererConfig {
+        format: Some(wgpu::TextureFormat::Bgra8Unorm),
+        resolution_multiplier: 2,
+        ..renderer_config()
+    };
+    h.renderer.reconfigure(config);
+    assert_eq!(h.renderer.config, config);
+    assert_eq!(h.renderer.surface_format, wgpu::TextureFormat::Bgra8Unorm);
+    h.renderer.begin_frame();
+    retained_fill(&mut h.renderer, 2, 0x1000, 0x07c1_07c1);
+    assert!(!h.renderer.frame_scenes.is_empty());
+    assert_eq!(
+        h.renderer
+            .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None),
+        Err(PresentError::DeviceLost)
+    );
 }

@@ -869,6 +869,12 @@ fn prime_framebuffers(
 }
 
 pub(super) async fn read_rgba8(renderer: &Renderer, texture: &wgpu::Texture) -> Result<Vec<u8>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(presenter) = &renderer.presenter {
+        presenter
+            .barrier()
+            .map_err(|error| CaptureError::Gpu(format!("{error:?}")))?;
+    }
     let unpadded = texture.width() * 4;
     let stride =
         unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -901,7 +907,14 @@ pub(super) async fn read_rgba8(renderer: &Renderer, texture: &wgpu::Texture) -> 
         },
         texture.size(),
     );
-    renderer.queue().submit([encoder.finish()]);
+    {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _configuration = renderer
+            .configuration
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        renderer.queue().submit([encoder.finish()]);
+    }
     let (sender, receiver) = futures_channel::oneshot::channel();
     buffer
         .slice(..)

@@ -234,7 +234,7 @@ fn source(r: &mut Renderer, task: TaskHandle) -> SourceFrame {
             task_cookie: task.info.cookie,
             address: 0x10000,
             rows: None,
-            visible_at: task.info.cookie * 100,
+            visible_at: instant(task.info.cookie * 100),
         },
     )
     .unwrap()
@@ -423,7 +423,7 @@ fn source_commit_rejects_mixed_source_ids_and_epochs() {
                     task_cookie: 2,
                     address: 0x10000,
                     rows: None,
-                    visible_at: 200,
+                    visible_at: instant(200),
                 }
             ),
             Err(SourceError::SourceMismatch)
@@ -799,7 +799,7 @@ fn optional_sidecar_records_nothing_and_preserves_all_canonical_readbacks() {
                 task_cookie: 51,
                 address: 0x10000,
                 rows: None,
-                visible_at: 50
+                visible_at: instant(50)
             }
         ),
         Err(SourceError::UnrecordedTask)
@@ -976,7 +976,7 @@ fn cpu_import_and_multitask_sources_hold_and_visibility_uses_exact_cookie() {
                 task_cookie: 82,
                 address: 0x10000,
                 rows: Some(0..48),
-                visible_at: 123456,
+                visible_at: instant(123456),
             },
         )
         .unwrap();
@@ -984,7 +984,7 @@ fn cpu_import_and_multitask_sources_hold_and_visibility_uses_exact_cookie() {
         .ineligibility()
         .iter()
         .any(|r| r.reason == Ineligibility::Multitask));
-    assert_eq!(multi.visible_at(), 123456);
+    assert_eq!(multi.visible_at(), instant(123456));
     assert_eq!(phase(&mut phases, &a, &multi, 0.5, PhaseResult::Held), ca);
 }
 
@@ -1008,7 +1008,7 @@ fn phases_compose_with_scale_reduction_and_crop() {
                 task_cookie: 91,
                 address: 0x10000,
                 rows: Some(4..44),
-                visible_at: 900,
+                visible_at: instant(900),
             },
         )
         .unwrap();
@@ -1026,7 +1026,7 @@ fn phases_compose_with_scale_reduction_and_crop() {
                 task_cookie: 92,
                 address: 0x10000,
                 rows: Some(4..44),
-                visible_at: 901,
+                visible_at: instant(901),
             },
         )
         .unwrap();
@@ -2493,5 +2493,111 @@ fn phase_thread_matches_serial_phases_and_preserves_canonical_submissions() {
         assert!(weak_sources.iter().all(|source| source.upgrade().is_none()));
         assert!(weak_tasks.iter().all(|task| task.upgrade().is_none()));
         drop(cached);
+    }
+}
+
+#[test]
+fn foreign_renderer_cannot_commit_a_retained_task() {
+    let mut first = renderer(1);
+    let mut second = renderer(1);
+    let retained = task(
+        &mut first,
+        fixture(&[identity()], identity(), projection()),
+        1,
+        0,
+        true,
+    );
+    assert!(matches!(
+        second.commit_source(
+            &[retained],
+            SourceScanout {
+                task_cookie: 1,
+                address: 0x10000,
+                rows: None,
+                visible_at: instant(100),
+            }
+        ),
+        Err(SourceError::SourceMismatch)
+    ));
+}
+
+#[test]
+fn selected_target_version_changes_after_an_unretained_overwrite() {
+    let mut r = renderer(1);
+    let retained = task(
+        &mut r,
+        fixture(&[identity()], identity(), projection()),
+        1,
+        0,
+        true,
+    );
+    let source = source(&mut r, retained);
+    assert!(r.source_is_current(&source));
+    task(
+        &mut r,
+        fixture(&[transform(0.0, 10.0, 0.0)], identity(), projection()),
+        2,
+        0,
+        false,
+    );
+    assert!(!r.source_is_current(&source));
+    r.reset();
+    assert!(!r.source_is_current(&source));
+}
+
+fn instant(nanos: u64) -> std::time::Instant {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *ORIGIN.get_or_init(std::time::Instant::now) + std::time::Duration::from_nanos(nanos)
+}
+
+#[test]
+fn deferred_scanout_reuses_only_the_matching_version_and_missing_tasks_keep_the_image() {
+    let mut r = renderer(1);
+    let retained = task(
+        &mut r,
+        fixture(&[identity()], identity(), projection()),
+        1,
+        0,
+        true,
+    );
+    let pending = r.prepare_scanout(
+        r.host_scanout_source(Some(0x10000)),
+        instant(100),
+        std::slice::from_ref(&retained),
+        Some(&retained),
+    );
+    assert!(pending.source.is_some());
+    assert!(Arc::ptr_eq(
+        pending.image.as_ref().unwrap().lease.as_ref().unwrap(),
+        &retained.retained.as_ref().unwrap().targets[&TargetId::Guest(0x10000)].texture
+    ));
+    task(
+        &mut r,
+        fixture(&[transform(0.0, 14.0, 0.0)], identity(), projection()),
+        2,
+        0,
+        false,
+    );
+    let expected = pixels(&mut r, |r, view| r.present_last_to(view));
+    for tasks in [std::slice::from_ref(&retained), &[]] {
+        let pending = r.prepare_scanout(
+            r.host_scanout_source(Some(0x10000)),
+            instant(200),
+            tasks,
+            Some(&retained),
+        );
+        assert!(pending.source.is_none());
+        let actual = pixels(&mut r, |r, view| {
+            let mut encoder = r.device.create_command_encoder(&Default::default());
+            r.inner.compositor().scanout_profiled(
+                &r.device,
+                &mut encoder,
+                view,
+                pending.image.as_ref().unwrap(),
+                &Default::default(),
+            );
+            r.queue.submit([encoder.finish()]);
+        });
+        assert_eq!(actual, expected);
     }
 }

@@ -14,14 +14,17 @@ pub(crate) struct Compositor {
     downsample: Arc<OnceLock<downsample::BoxFilter>>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Scanout {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) lease: Option<Arc<wgpu::Texture>>,
     pub(super) texture: wgpu::Texture,
     pub(super) height: u32,
     pub(super) scale: u32,
     pub(super) rows: Range<u32>,
     pub(super) bindings: wgpu::BindGroup,
     pub(super) extent: wgpu::BindGroup,
-    pub(super) reduction: u32,
+    pub(crate) reduction: u32,
 }
 
 impl Compositor {
@@ -41,6 +44,47 @@ impl Compositor {
             dummy_view,
             image_sampling,
             downsample: Default::default(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn replace_texture(
+        &self,
+        device: &wgpu::Device,
+        image: &mut Scanout,
+        texture: Arc<wgpu::Texture>,
+    ) {
+        image.texture = (*texture).clone();
+        image.bindings =
+            self.make_present_bindings(device, &texture.create_view(&Default::default()));
+        image.lease = Some(texture);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn snapshot(
+        &self,
+        device: &wgpu::Device,
+        image: &super::isolated::TargetSnapshot,
+        rows: Option<Range<u32>>,
+        reduction: u32,
+    ) -> Scanout {
+        let rows = rows.unwrap_or(0..image.height);
+        Scanout {
+            texture: (*image.texture).clone(),
+            lease: Some(image.texture.clone()),
+            height: image.height,
+            scale: image.scale,
+            extent: self.make_present_extent(
+                device,
+                image.texture.width(),
+                rows.start * image.scale..rows.end * image.scale,
+                image.texture.height(),
+                &Default::default(),
+            ),
+            bindings: self
+                .make_present_bindings(device, &image.texture.create_view(&Default::default())),
+            rows,
+            reduction,
         }
     }
 
