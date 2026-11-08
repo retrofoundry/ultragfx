@@ -6,11 +6,13 @@ pub mod profiling;
 mod profiling;
 #[cfg(feature = "capture")]
 pub use hle::capture;
+pub mod annotation;
 pub mod diag;
 pub mod hardware;
 pub(crate) mod hle;
 pub mod hooks;
 pub mod inspect;
+pub mod interpolation;
 pub mod microcode;
 pub(crate) mod render;
 pub mod replacement;
@@ -258,6 +260,7 @@ pub struct GuestWrite {
 pub struct Renderer {
     target: PresentTarget,
     inner: SceneRenderer,
+    phases: Option<interpolation::PhaseState>,
     rdp: crate::hle::rdp::Rdp,
     color_image_epoch: u64,
     guest_writeback: bool,
@@ -414,6 +417,7 @@ impl Renderer {
         Self {
             target,
             inner,
+            phases: None,
             rdp: Default::default(),
             color_image_epoch: 0,
             guest_writeback: false,
@@ -502,6 +506,7 @@ impl Renderer {
                 config: surface_config,
             },
             inner,
+            phases: None,
             rdp: Default::default(),
             color_image_epoch: 0,
             guest_writeback: false,
@@ -886,6 +891,7 @@ impl Renderer {
             observer,
             submission,
             bindings,
+            None,
         )
     }
 
@@ -905,6 +911,7 @@ impl Renderer {
             None,
             Submission::DiscardOnStop,
             bindings,
+            None,
         )
     }
 
@@ -929,6 +936,7 @@ impl Renderer {
         observer: Option<&mut dyn inspect::WalkObserver>,
         submission: Submission,
         bindings: &[(u64, Microcode)],
+        recording: Option<&mut interpolation::Recording<'_>>,
     ) -> DlSummary {
         if let Some(mut diagnostic) = self.frame_admission_error {
             diagnostic.at = entry;
@@ -953,6 +961,12 @@ impl Renderer {
         }
         // Released bytes are already foreign, so import them even if this task is rejected.
         self.inner.import_existing(&self.device, &self.queue);
+        let cpu_imported = recording.is_some()
+            && self
+                .inner
+                .coherence
+                .as_ref()
+                .is_some_and(|coherence| coherence.imported);
         let is_image = mem.is_rdram_image();
         let rdp = if submission == Submission::RasterizePrefix {
             Default::default()
@@ -976,6 +990,9 @@ impl Renderer {
             self.inner.profiling.clone(),
             bindings,
             false,
+            recording
+                .as_ref()
+                .map(|recording| recording.annotations.clone()),
         );
         drop(interpretation);
         self.inner.profiling.count("tasks", 1);
@@ -1151,6 +1168,21 @@ impl Renderer {
         result.dropped_runs += self.inner.dropped_runs;
         let summary = result.summary(scanout.is_some());
 
+        if let Some(recording) = recording {
+            let annotations = result.scene.annotations.take();
+            let mut retained_scene = result.scene.clone();
+            retained_scene.annotations = annotations;
+            recording.task = Some(std::sync::Arc::new(interpolation::RetainedTask::new(
+                retained_scene,
+                self.inner.isolated_context(),
+                self.inner
+                    .snapshot_targets(&self.device, &self.queue, &result.scene),
+                cpu_imported,
+                self.inner.has_replacement_provider(),
+                summary,
+            )));
+        }
+
         // Retained for the frame (P4 debugger reads all of them; cleared at begin_frame).
         self.frame_scenes.push(result.scene);
         let mut memory = hle::texture_request::TextureMemory::default();
@@ -1190,6 +1222,7 @@ impl Renderer {
         self.color_image_epoch = 0;
         self.guest_writes.clear();
         self.inner.reset();
+        self.phases = None;
         self.frame_scenes.clear();
         self.last_scanout_addr = None;
         self.last_backend_was_image = false;

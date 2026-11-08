@@ -14,6 +14,9 @@ mod downsample;
 mod extents;
 pub(crate) mod framebuffers;
 pub(crate) mod inputs;
+pub(crate) mod isolated;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod isolated_tests;
 mod replacement_resources;
 #[cfg(not(target_arch = "wasm32"))]
 mod strict;
@@ -2598,25 +2601,12 @@ impl SceneRenderer {
         let rows = rows.unwrap_or(0..fb.height);
         if self.reduction_factor > 1 {
             let source = fb.presentation.as_ref().map_or(&fb.color, |p| &p.texture);
-            let reduced = self
-                .downsample
-                .get_or_init(|| downsample::BoxFilter::new(device))
-                .reduce(
-                    device,
-                    encoder,
-                    source,
-                    rows.start * self.render_scale..rows.end.min(fb.height) * self.render_scale,
-                    self.reduction_factor,
-                );
-            let bindings =
-                self.make_present_bindings(device, &reduced.create_view(&Default::default()));
-            let extent = self.make_present_extent(
+            self.scanout_texture(
                 device,
-                reduced.width(),
-                0..reduced.height(),
-                reduced.height(),
+                encoder,
+                target,
+                (source, fb.height, self.render_scale, Some(rows)),
             );
-            self.blit_to(encoder, target, &bindings, &extent);
             return;
         }
         if rows != fb.present_rows {
@@ -2632,6 +2622,37 @@ impl SceneRenderer {
         }
         let fb = &self.framebuffers[&src_addr];
         self.blit_to(encoder, target, &fb.present_bg, &fb.present_extent);
+    }
+
+    fn scanout_texture(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        (texture, height, scale, rows): (&wgpu::Texture, u32, u32, Option<std::ops::Range<u32>>),
+    ) {
+        let rows = rows.unwrap_or(0..height);
+        let rows = rows.start * scale..rows.end.min(height) * scale;
+        let reduced = (self.reduction_factor > 1).then(|| {
+            self.downsample
+                .get_or_init(|| downsample::BoxFilter::new(device))
+                .reduce(
+                    device,
+                    encoder,
+                    texture,
+                    rows.clone(),
+                    self.reduction_factor,
+                )
+        });
+        let source = reduced.as_ref().unwrap_or(texture);
+        let rows = if reduced.is_some() {
+            0..source.height()
+        } else {
+            rows
+        };
+        let bindings = self.make_present_bindings(device, &source.create_view(&Default::default()));
+        let extent = self.make_present_extent(device, source.width(), rows, source.height());
+        self.blit_to(encoder, target, &bindings, &extent);
     }
 
     pub(crate) fn scanout_native(

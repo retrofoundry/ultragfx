@@ -537,3 +537,53 @@ impl Copies {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "copies_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Copies {
+    pub(in crate::render) fn test_state(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> impl PartialEq + std::fmt::Debug {
+        self.snapshots
+            .iter()
+            .map(|(&key, snapshot)| {
+                let read = |buffer: &wgpu::Buffer| {
+                    crate::render::isolated_tests::buffer_bytes(device, queue, buffer)
+                };
+                (
+                    key,
+                    (
+                        snapshot.owner.upgrade(),
+                        read(&snapshot.native),
+                        snapshot.guest.as_ref().map(read),
+                    ),
+                )
+            })
+            .collect::<HashMap<_, _>>()
+    }
+
+    pub(crate) fn assert_guest_copy(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let snapshots: Vec<_> = self
+            .snapshots
+            .values()
+            .filter(|s| s.guest.is_some())
+            .collect();
+        assert!(!snapshots.is_empty());
+        for snapshot in snapshots {
+            let owner = snapshot.owner.upgrade().unwrap();
+            assert!(owner.spans.len() > 1);
+            assert!(owner
+                .spans
+                .iter()
+                .all(|span| span.origin[0] != 0 && span.origin[1] != 0));
+            assert!(crate::render::isolated_tests::buffer_bytes(
+                device,
+                queue,
+                snapshot.guest.as_ref().unwrap()
+            )
+            .iter()
+            .any(|&byte| byte != 0));
+        }
+    }
+}
