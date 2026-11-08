@@ -790,6 +790,7 @@ fn phase_scene(a: &Scene, b: &Scene, correspondence: &Correspondence, t: f32) ->
 
 impl crate::Renderer {
     /// Create independent phase state with the current presentation format and reduction factor.
+    /// The caller must exclude phase rendering while the originating renderer configures its surface.
     pub fn phase_renderer(&self) -> PhaseRenderer {
         let (width, height) = self.inner.isolated_context().legacy_extent;
         let mut renderer = IsolatedRenderer::new(
@@ -822,6 +823,7 @@ impl PhaseRenderer {
     }
 
     /// Render a source pair into a caller-owned target without advancing canonical state.
+    /// This must not overlap surface configuration on the originating renderer.
     pub fn render_phase(
         &mut self,
         a: &SourceFrame,

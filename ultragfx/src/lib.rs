@@ -14,6 +14,8 @@ pub mod hooks;
 pub mod inspect;
 pub mod interpolation;
 pub mod microcode;
+#[cfg(not(target_arch = "wasm32"))]
+mod presenter;
 pub(crate) mod render;
 pub mod replacement;
 pub(crate) mod scene;
@@ -123,6 +125,8 @@ impl RendererConfig {
 /// Where a `Renderer` scans out. `Surface` is an owned swapchain (built by `Renderer::new`, or
 /// supplied to `with_device` by a host app that owns its window — wafel); `Headless` is a bare
 /// format+size for render-to-texture / golden capture.
+/// Native surfaces use an acknowledged present thread. Keep the window/layer alive until the
+/// renderer is dropped: Metal drawable acquisition cannot be interrupted during shutdown.
 pub enum PresentTarget {
     Surface {
         surface: wgpu::Surface<'static>,
@@ -183,15 +187,22 @@ impl From<wgpu::CreateSurfaceError> for InitError {
     }
 }
 
-/// Per-frame surface fault from `present` (synchronous, from `get_current_texture`). DL-content
-/// problems are diagnostics, never this (spec §3.6).
-#[derive(Debug)]
+/// Surface presentation or presenter-control failure. Presents acknowledge completion,
+/// including the same call's acquisition error. Display-list problems remain diagnostics.
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PresentError {
     /// Surface was Outdated/Lost; `present` reconfigured from the stored config — retry next frame.
     SurfaceLost,
     Timeout,
     DeviceLost,
+    /// The present thread panicked or could not start. Latched for every later request.
+    PresenterFailed(String),
+    /// The renderer no longer accepts presentation work.
+    PresenterStopped,
+    /// Native owned surfaces require `set_send_render_hook`.
+    HookRequiresSend,
+    SurfaceRequired,
 }
 
 /// The render format for a `Surface` target — the non-sRGB `view_format` when one was configured,
@@ -258,6 +269,8 @@ pub struct GuestWrite {
 ///
 /// Field declaration order == drop order: `target`/`inner` release BEFORE `queue`/`device`/`instance`.
 pub struct Renderer {
+    #[cfg(not(target_arch = "wasm32"))]
+    presenter: Option<presenter::Presenter>,
     target: PresentTarget,
     inner: SceneRenderer,
     rdp: crate::hle::rdp::Rdp,
@@ -413,7 +426,28 @@ impl Renderer {
         let mut inner =
             SceneRenderer::new_profiled(&device, render_fmt, w, h, dual_source, profiling);
         inner.render_scale = config.resolution_multiplier;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (target, presenter) = match target {
+            PresentTarget::Surface { surface, config } => {
+                let target = PresentTarget::Headless {
+                    format: render_format_of(&config),
+                    width: config.width,
+                    height: config.height,
+                };
+                let presenter = presenter::Presenter::new(
+                    surface,
+                    config,
+                    inner.compositor(),
+                    device.clone(),
+                    queue.clone(),
+                );
+                (target, Some(presenter))
+            }
+            target => (target, None),
+        };
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            presenter,
             target,
             inner,
             rdp: Default::default(),
@@ -462,9 +496,6 @@ impl Renderer {
                 compatible_surface: Some(&surface),
             })
             .await?;
-        let dual_source = adapter
-            .features()
-            .contains(wgpu::Features::DUAL_SOURCE_BLENDING);
         let required_features = adapter.features()
             & (wgpu::Features::DUAL_SOURCE_BLENDING | wgpu::Features::DEPTH_CLIP_CONTROL);
         let (device, queue) = adapter
@@ -480,7 +511,6 @@ impl Renderer {
 
         let caps = surface.get_capabilities(&adapter);
         let (surface_fmt, view_fmt) = pick_surface_format(&caps.formats, config.format);
-        let render_fmt = view_fmt.unwrap_or(surface_fmt);
         let (w, h) = (width.max(1), height.max(1));
         let config = normalize_config(config);
 
@@ -494,45 +524,24 @@ impl Renderer {
             view_formats: view_fmt.into_iter().collect(),
             desired_maximum_frame_latency: 2,
         };
+        #[cfg(target_arch = "wasm32")]
         surface.configure(&device, &surface_config);
-
-        let mut inner = SceneRenderer::new(&device, render_fmt, w, h, dual_source);
-        inner.render_scale = config.resolution_multiplier;
-        Ok(Self {
-            target: PresentTarget::Surface {
+        let mut renderer = Self::with_device(
+            device,
+            queue,
+            PresentTarget::Surface {
                 surface,
                 config: surface_config,
             },
-            inner,
-            rdp: Default::default(),
-            color_image_epoch: 0,
-            guest_writeback: false,
-            guest_writeback_encoding: FramebufferEncoding::Native,
-            guest_writes: Vec::new(),
-            #[cfg(feature = "capture")]
-            capture_generation: std::rc::Rc::new(()),
-            frame_scenes: Vec::new(),
-            last_scanout_addr: None,
-            last_backend_was_image: false,
-            surface_format: render_fmt,
-            data_format: DataFormat::Fixed,
-            hook: None,
-            #[cfg(feature = "debug-ui")]
-            debugger: crate::debug::Debugger::new(),
-            scale_policy: ScalePolicy::Fixed(config.resolution_multiplier),
-            content_height: 0,
-            auto_reference: None,
-            previous_reference: None,
-            frame_admission_error: None,
             config,
-            queue,
-            device,
-            instance: Some(instance),
-            _not_send: std::marker::PhantomData,
-        })
+        );
+        renderer.instance = Some(instance);
+        Ok(renderer)
     }
 
     /// Live handles for consumers that upload their own GPU resources (helix HUD textures, wafel).
+    /// A host submitting through cloned handles must exclude those submissions while calling
+    /// resize/reconfigure or a present that can recover a Lost/Outdated surface.
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
@@ -552,6 +561,18 @@ impl Renderer {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.mark_mutation();
         let (w, h) = (width.max(1), height.max(1));
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &self.presenter {
+            if let Err(error) = presenter.resize(w, h) {
+                log::error!("resize failed: {error:?}");
+                return;
+            }
+            if let PresentTarget::Headless { width, height, .. } = &mut self.target {
+                *width = w;
+                *height = h;
+            }
+            return;
+        }
         if let PresentTarget::Surface { surface, config } = &mut self.target {
             config.width = w;
             config.height = h;
@@ -574,10 +595,22 @@ impl Renderer {
     /// Re-applies `present_mode` (and an explicit `format` override) to a `Surface`. A `None` format
     /// keeps the currently picked format (no adapter retained to re-run `pick_surface_format`).
     pub fn reconfigure(&mut self, config: RendererConfig) {
+        if let Some(error) = self.presenter_error() {
+            log::error!("reconfigure failed: {error:?}");
+            return;
+        }
         self.mark_mutation();
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely()); // #[must_use]; no-op on web
         let config = normalize_config(config);
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.presenter.is_some() {
+            if let (PresentTarget::Headless { format, .. }, Some(replacement)) =
+                (&mut self.target, config.format)
+            {
+                *format = replacement;
+            }
+        }
         let (render_fmt, w, h) = match &mut self.target {
             PresentTarget::Surface {
                 surface,
@@ -631,15 +664,27 @@ impl Renderer {
         // The store was just dropped with the old `inner`; drop dangling scanout state too.
         self.last_scanout_addr = None;
         self.frame_scenes.clear();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &self.presenter {
+            if let Err(error) = presenter.reconfigure(&config, self.inner.compositor()) {
+                log::error!("reconfigure failed: {error:?}");
+            }
+        }
     }
 
     /// Deterministic teardown: drain the queue so GPU work finishes before resources release, then
     /// drop in field order. Consumes self. **Web consumers MUST call this** — on web `Drop`'s `poll`
     /// is a no-op. (P4 fires the render hook's `deinit` HERE, before the device drops.)
     pub fn shutdown(mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &mut self.presenter {
+            presenter.shutdown();
+        }
         // P4: fire the render hook's `deinit` before the device drops (N64 fidelity). Takes the hook
         // so `Drop` below sees `None` and does not double-fire.
-        self.take_render_hook();
+        if let Some(mut hook) = self.hook.take() {
+            hook.deinit();
+        }
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
     }
 
@@ -1215,6 +1260,13 @@ impl Renderer {
     /// Configuration, data format, device and hooks are preserved. For repeatable inspector
     /// images, call this before each prefix, then use the same sequence of `begin_frame` calls.
     pub fn reset(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &self.presenter {
+            if let Err(error) = presenter.reset() {
+                log::error!("reset failed: {error:?}");
+                return;
+            }
+        }
         self.reset_rdp_state();
         self.color_image_epoch = 0;
         self.guest_writes.clear();
@@ -1284,6 +1336,18 @@ impl Renderer {
         self.inner.profiling = recorder;
     }
 
+    /// Record presentation work separately from canonical rendering counters.
+    #[cfg(all(feature = "profiling", not(target_arch = "wasm32")))]
+    pub fn set_present_profiling(
+        &mut self,
+        recorder: profiling::Recorder,
+    ) -> Result<(), PresentError> {
+        self.presenter
+            .as_ref()
+            .ok_or(PresentError::SurfaceRequired)?
+            .set_profiling(recorder)
+    }
+
     #[cfg(feature = "capture")]
     pub fn set_depth_reset_policy(&mut self, policy: DepthResetPolicy) {
         self.mark_mutation();
@@ -1293,6 +1357,10 @@ impl Renderer {
 
 impl Drop for Renderer {
     fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &mut self.presenter {
+            presenter.shutdown();
+        }
         // P4: for the no-`shutdown` drop path, fire the hook's `deinit` before `self.device` drops.
         if let Some(hook) = self.hook.as_mut() {
             hook.deinit();
@@ -1304,23 +1372,93 @@ impl Drop for Renderer {
 }
 
 impl Renderer {
-    /// Install a render hook, firing its `init` SYNCHRONOUSLY (the device already exists). Replacing
-    /// an existing hook fires the old hook's `deinit` FIRST, then the new hook's `init`.
-    pub fn set_render_hook(&mut self, mut hook: Box<dyn RenderHook>) {
+    /// Install a synchronous render hook, deinitializing the old hook before initializing this one.
+    /// Native owned surfaces reject local hooks; use `set_send_render_hook` there.
+    /// Legacy controls log errors; `presenter_error` exposes a latched failure.
+    pub fn set_render_hook(&mut self, hook: Box<dyn RenderHook>) {
+        if let Err(error) = self.try_set_render_hook(hook) {
+            log::error!("hook registration failed: {error:?}; native Surface hooks require set_send_render_hook");
+        }
+    }
+
+    /// Register a local hook, rejecting native threaded surfaces before running its lifecycle.
+    pub fn try_set_render_hook(
+        &mut self,
+        mut hook: Box<dyn RenderHook>,
+    ) -> Result<(), PresentError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &self.presenter {
+            return Err(presenter.error().unwrap_or(PresentError::HookRequiresSend));
+        }
         self.mark_mutation();
         if let Some(mut old) = self.hook.take() {
             old.deinit();
         }
         hook.init(&self.device, &self.queue, self.surface_format);
         self.hook = Some(hook);
+        Ok(())
+    }
+
+    /// Install a Send hook on a native owned surface. Lifecycle callbacks run on the present
+    /// thread; replacement deinitializes the previous hook before initializing this one.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_send_render_hook(
+        &mut self,
+        hook: Box<dyn RenderHook + Send>,
+    ) -> Result<(), PresentError> {
+        self.mark_mutation();
+        self.presenter
+            .as_ref()
+            .ok_or(PresentError::SurfaceRequired)?
+            .set_hook(hook)
+    }
+
+    /// Remove and deinitialize a threaded hook before returning ownership.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn take_send_render_hook(
+        &mut self,
+    ) -> Result<Option<Box<dyn RenderHook + Send>>, PresentError> {
+        self.mark_mutation();
+        self.presenter
+            .as_ref()
+            .ok_or(PresentError::SurfaceRequired)?
+            .take_hook()
+    }
+
+    /// Fatal presenter status, retained after a panic or failure to start.
+    pub fn presenter_error(&self) -> Option<PresentError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &self.presenter {
+            return presenter.error();
+        }
+        None
     }
 
     /// Remove the render hook (if any), firing its `deinit` before returning it to the caller.
     pub fn take_render_hook(&mut self) -> Option<Box<dyn RenderHook>> {
+        match self.try_take_render_hook() {
+            Ok(hook) => hook,
+            Err(error) => {
+                log::error!("take hook failed: {error:?}");
+                None
+            }
+        }
+    }
+
+    /// Remove a hook with acknowledgement, preserving a present-thread failure as an error.
+    pub fn try_take_render_hook(&mut self) -> Result<Option<Box<dyn RenderHook>>, PresentError> {
         self.mark_mutation();
-        let mut hook = self.hook.take()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &self.presenter {
+            return presenter
+                .take_hook()
+                .map(|hook| hook.map(|hook| hook as Box<dyn RenderHook>));
+        }
+        let Some(mut hook) = self.hook.take() else {
+            return Ok(None);
+        };
         hook.deinit();
-        Some(hook)
+        Ok(Some(hook))
     }
 
     /// Convenience for stateless overlays: wrap a draw closure as a `RenderHook`. Note the HRTB —
@@ -1444,38 +1582,33 @@ impl Renderer {
     /// frame `encoder`. `HookFrame.format` is `self.surface_format` (the non-sRGB render/view format),
     /// NOT `view.texture().format()` (the swapchain texture's possibly-sRGB format). Width/height come
     /// from the view's full-texture dimensions. Shared by `present` and `present_to`.
-    fn record_and_submit(&mut self, mut encoder: wgpu::CommandEncoder, view: &wgpu::TextureView) {
-        let width = view.texture().width();
-        let height = view.texture().height();
-        let mut extra = Vec::new();
-        if let Some(hook) = self.hook.as_mut() {
-            extra = hook.draw(HookFrame {
-                device: &self.device,
-                queue: &self.queue,
-                encoder: &mut encoder,
-                view,
-                format: self.surface_format,
-                width,
-                height,
-            });
-        }
-        #[cfg(feature = "debug-ui")]
-        if self.debugger.enabled {
-            self.debugger.draw(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                view,
-                self.surface_format,
-                &self.frame_scenes,
-            );
-        }
-        let command = encoder.finish();
-        let _submission = self.inner.profiling.span("submission");
-        self.queue
-            .submit(extra.into_iter().chain(std::iter::once(command)));
-        self.inner.profiling.count("submissions", 1);
-        self.inner.profiling.count("presentation.submissions", 1);
+    fn record_and_submit(&mut self, encoder: wgpu::CommandEncoder, view: &wgpu::TextureView) {
+        crate::hooks::record_and_submit(
+            &self.device,
+            &self.queue,
+            encoder,
+            view,
+            self.surface_format,
+            self.hook
+                .as_mut()
+                .map(|hook| &mut **hook as &mut dyn RenderHook),
+            |encoder| {
+                #[cfg(feature = "debug-ui")]
+                if self.debugger.enabled {
+                    self.debugger.draw(
+                        &self.device,
+                        &self.queue,
+                        encoder,
+                        view,
+                        self.surface_format,
+                        &self.frame_scenes,
+                    );
+                }
+                #[cfg(not(feature = "debug-ui"))]
+                let _ = encoder;
+            },
+            &self.inner.profiling,
+        );
     }
 
     /// VI scanout into a CALLER-OWNED view (wafel embeds the N64 image in its own UI; headless
@@ -1519,6 +1652,13 @@ impl Renderer {
     ) {
         let _span = self.inner.profiling.span("presentation");
         self.mark_mutation();
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.presenter.is_some() {
+            if let Err(error) = self.threaded_present(src, Some(target.clone()), native) {
+                log::error!("presentation failed: {error:?}");
+            }
+            return;
+        }
         // Always create an encoder + run the render hook, even when nothing has been scanned out yet
         // (a UI overlay should still draw — RN). Scanout is recorded only when a source FB exists;
         // with no hook and no scanout the submit is an empty no-op, so `target` is left as-is.
@@ -1557,9 +1697,47 @@ impl Renderer {
         self.present_source(self.host_scanout_source(address))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn threaded_present(
+        &mut self,
+        source: Option<ScanoutSource>,
+        target: Option<wgpu::TextureView>,
+        native: bool,
+    ) -> Result<(), PresentError> {
+        let presenter = self.presenter.as_ref().unwrap();
+        if let Some(error) = presenter.error() {
+            return Err(error);
+        }
+        let source = source.map(|source| {
+            self.inner
+                .resolve_scanout(&self.device, source.target, source.rows, native)
+        });
+        #[cfg(feature = "debug-ui")]
+        if self.debugger.enabled {
+            return presenter.synchronous(|state| {
+                state.present(source, target, |encoder, view| {
+                    self.debugger.draw(
+                        &self.device,
+                        &self.queue,
+                        encoder,
+                        view,
+                        self.surface_format,
+                        &self.frame_scenes,
+                    );
+                })
+            })?;
+        }
+        presenter.present(source, target)
+    }
+
     fn present_source(&mut self, src: Option<ScanoutSource>) -> Result<(), PresentError> {
         let _span = self.inner.profiling.span("presentation");
         self.mark_mutation();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.presenter.is_some() {
+            return self.threaded_present(src, None, false);
+        }
 
         // RO: acquire in a scope so the `&self.target` borrow (surface/config) ENDS before
         // `record_and_submit` needs `&mut self` (it borrows `self.hook`). `frame` is owned.

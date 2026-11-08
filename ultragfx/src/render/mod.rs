@@ -9,6 +9,10 @@ mod tmem_sampling_tests;
 mod upscaling_tests;
 
 mod admission;
+mod composition;
+pub(crate) use composition::{Compositor, Scanout};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod composition_tests;
 mod decal;
 mod downsample;
 mod extents;
@@ -1958,10 +1962,7 @@ pub struct SceneRenderer {
     pub(crate) dither_seed: u32,
     textured: TexturedPipeline,
     textured_fb: TexturedPipeline,
-    /// Fullscreen-triangle blit pipeline built at the surface `color_format`. Reads from an
-    /// `Rgba8Unorm` intermediate FB (produced by `textured_fb` passes) via `group0_bgl`.
-    present: wgpu::RenderPipeline,
-    present_extent_layout: wgpu::BindGroupLayout,
+    compositor: Compositor,
     rsp: RspProcessPipeline,
     samplers: [[wgpu::Sampler; 3]; 3],
     texture_resources: texture_resources::TextureResources,
@@ -1998,7 +1999,6 @@ pub struct SceneRenderer {
     pub(crate) render_scale: u32,
     attachment_budget: u64,
     pub(crate) reduction_factor: u32,
-    downsample: std::sync::OnceLock<downsample::BoxFilter>,
     presentation_transfers: std::sync::OnceLock<framebuffers::presentation::Transfers>,
     pub(crate) diagnostics: Vec<crate::Diagnostic>,
     pub(crate) dropped_runs: u32,
@@ -2006,8 +2006,6 @@ pub struct SceneRenderer {
     pub(crate) depth_reset_policy: crate::DepthResetPolicy,
     #[cfg(feature = "capture")]
     depth_color_epoch: Option<u64>,
-    /// Descriptor array for bind groups that sample plain images (fill, scanout, FB alias).
-    image_sampling: wgpu::Buffer,
 }
 
 impl SceneRenderer {
@@ -2230,12 +2228,19 @@ impl SceneRenderer {
             .chain([sampling_entry(&image_sampling)])
             .collect::<Vec<_>>(),
         });
+        let compositor = Compositor::new(
+            present,
+            present_extent_layout,
+            textured.bind_group_layout().clone(),
+            samplers[2][2].clone(),
+            dummy_view.clone(),
+            image_sampling,
+        );
         Self {
             profiling,
             textured,
             textured_fb,
-            present,
-            present_extent_layout,
+            compositor,
             rsp,
             samplers,
             texture_resources: texture_resources::TextureResources::new(device),
@@ -2259,7 +2264,6 @@ impl SceneRenderer {
             replay_pipeline: decal::Replay::new(device),
             render_scale: 1,
             reduction_factor: 1,
-            downsample: Default::default(),
             attachment_budget: 256 * 1024 * 1024,
             presentation_transfers: Default::default(),
             diagnostics: Vec::new(),
@@ -2270,7 +2274,6 @@ impl SceneRenderer {
             depth_color_epoch: None,
             frame_serial: 0,
             dither_seed: 0,
-            image_sampling,
         }
     }
 
@@ -2278,38 +2281,6 @@ impl SceneRenderer {
     pub fn resize(&mut self, _device: &wgpu::Device, w: u32, h: u32) {
         self.fb_w = w;
         self.fb_h = h;
-    }
-
-    /// Blit `src_bg` (an `@group(0)` bind group: texture + sampler) to `dst_view` via the
-    /// fullscreen-triangle present pipeline. The pass uses `LoadOp::Load` (the triangle covers
-    /// every pixel, so clearing first would waste a tile-flush).
-    fn blit_to(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        dst_view: &wgpu::TextureView,
-        src_bg: &wgpu::BindGroup,
-        extent_bg: &wgpu::BindGroup,
-    ) {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("present-pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: dst_view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.present);
-        pass.set_bind_group(0, src_bg, &[]);
-        pass.set_bind_group(1, extent_bg, &[]);
-        pass.draw(0..3, 0..1);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2437,29 +2408,8 @@ impl SceneRenderer {
         rows: std::ops::Range<u32>,
         attachment_height: u32,
     ) -> wgpu::BindGroup {
-        let buffer = buffer_init(
-            device,
-            &self.profiling,
-            "presentation",
-            &wgpu::util::BufferInitDescriptor {
-                label: Some("present-extent"),
-                contents: bytemuck::cast_slice(&[
-                    (rows.end - rows.start) as f32 / attachment_height as f32,
-                    rows.start as f32 / attachment_height as f32,
-                    (width as f32 - 0.5) / width as f32,
-                    (rows.end as f32 - 0.5) / attachment_height as f32,
-                ]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            },
-        );
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("present-extent"),
-            layout: &self.present_extent_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        })
+        self.compositor
+            .make_present_extent(device, width, rows, attachment_height, &self.profiling)
     }
 
     fn make_present_bindings(
@@ -2467,43 +2417,7 @@ impl SceneRenderer {
         device: &wgpu::Device,
         sampled: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("fb-store-present-bg"),
-            layout: self.textured.bind_group_layout(),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(sampled),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.samplers[2][2]), // Clamp/Linear
-                },
-                // TEXEL1 slot: the present pipeline never samples it (present.wgsl uses only
-                // bindings 0/1) — bind the shared dummy to satisfy the shared group(0) layout.
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.dummy_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.samplers[2][2]),
-                },
-                // DETAIL slot (4/5): the present pipeline never samples it; shared dummy.
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&self.dummy_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::Sampler(&self.samplers[2][2]),
-                },
-            ]
-            .into_iter()
-            .chain(lod_level_entries(&self.dummy_view))
-            .chain([sampling_entry(&self.image_sampling)])
-            .collect::<Vec<_>>(),
-        })
+        self.compositor.make_present_bindings(device, sampled)
     }
 
     fn make_fb(
@@ -2593,21 +2507,43 @@ impl SceneRenderer {
         src_addr: impl Into<workload::TargetId>,
         rows: Option<std::ops::Range<u32>>,
     ) {
-        let src_addr = src_addr.into();
+        let image = self.resolve_scanout(device, src_addr.into(), rows, false);
+        self.compositor
+            .scanout_profiled(device, encoder, target, &image, &self.profiling);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn compositor(&self) -> Compositor {
+        self.compositor.clone()
+    }
+
+    pub(crate) fn resolve_scanout(
+        &mut self,
+        device: &wgpu::Device,
+        src: workload::TargetId,
+        rows: Option<std::ops::Range<u32>>,
+        native: bool,
+    ) -> Scanout {
         let fb = self
             .framebuffers
-            .get(&src_addr)
+            .get(&src)
             .expect("scanout: src_addr not in the store");
         let rows = rows.unwrap_or(0..fb.height);
-        if self.reduction_factor > 1 {
-            let source = fb.presentation.as_ref().map_or(&fb.color, |p| &p.texture);
-            self.scanout_texture(
-                device,
-                encoder,
-                target,
-                (source, fb.height, self.render_scale, Some(rows)),
-            );
-            return;
+        if native && (self.render_scale != 1 || self.reduction_factor != 1) {
+            return Scanout {
+                texture: fb.color.clone(),
+                height: fb.height,
+                scale: 1,
+                extent: self.make_present_extent(
+                    device,
+                    fb.layout.width,
+                    rows.clone(),
+                    fb.color.height(),
+                ),
+                bindings: self.make_present_bindings(device, &fb.sampled),
+                rows,
+                reduction: 1,
+            };
         }
         if rows != fb.present_rows {
             let extent = self.make_present_extent(
@@ -2616,43 +2552,24 @@ impl SceneRenderer {
                 rows.start * self.render_scale..rows.end * self.render_scale,
                 fb.color.height() * self.render_scale,
             );
-            let fb = self.framebuffers.get_mut(&src_addr).unwrap();
+            let fb = self.framebuffers.get_mut(&src).unwrap();
             fb.present_extent = extent;
-            fb.present_rows = rows;
+            fb.present_rows = rows.clone();
         }
-        let fb = &self.framebuffers[&src_addr];
-        self.blit_to(encoder, target, &fb.present_bg, &fb.present_extent);
-    }
-
-    fn scanout_texture(
-        &self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        (texture, height, scale, rows): (&wgpu::Texture, u32, u32, Option<std::ops::Range<u32>>),
-    ) {
-        let rows = rows.unwrap_or(0..height);
-        let rows = rows.start * scale..rows.end.min(height) * scale;
-        let reduced = (self.reduction_factor > 1).then(|| {
-            self.downsample
-                .get_or_init(|| downsample::BoxFilter::new(device))
-                .reduce(
-                    device,
-                    encoder,
-                    texture,
-                    rows.clone(),
-                    self.reduction_factor,
-                )
-        });
-        let source = reduced.as_ref().unwrap_or(texture);
-        let rows = if reduced.is_some() {
-            0..source.height()
-        } else {
-            rows
-        };
-        let bindings = self.make_present_bindings(device, &source.create_view(&Default::default()));
-        let extent = self.make_present_extent(device, source.width(), rows, source.height());
-        self.blit_to(encoder, target, &bindings, &extent);
+        let fb = &self.framebuffers[&src];
+        Scanout {
+            texture: fb
+                .presentation
+                .as_ref()
+                .map_or(&fb.color, |p| &p.texture)
+                .clone(),
+            height: fb.height,
+            scale: self.render_scale,
+            rows,
+            bindings: fb.present_bg.clone(),
+            extent: fb.present_extent.clone(),
+            reduction: if native { 1 } else { self.reduction_factor },
+        }
     }
 
     pub(crate) fn scanout_native(
@@ -2663,19 +2580,9 @@ impl SceneRenderer {
         src: workload::TargetId,
         rows: Option<std::ops::Range<u32>>,
     ) {
-        if self.render_scale == 1 && self.reduction_factor == 1 {
-            self.scanout(device, encoder, target, src, rows);
-            return;
-        }
-        let fb = &self.framebuffers[&src];
-        let extent = self.make_present_extent(
-            device,
-            fb.layout.width,
-            rows.unwrap_or(0..fb.height),
-            fb.color.height(),
-        );
-        let bindings = self.make_present_bindings(device, &fb.sampled);
-        self.blit_to(encoder, target, &bindings, &extent);
+        let image = self.resolve_scanout(device, src, rows, true);
+        self.compositor
+            .scanout_profiled(device, encoder, target, &image, &self.profiling);
     }
 
     pub(crate) fn reset(&mut self) {
