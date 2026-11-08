@@ -260,7 +260,6 @@ pub struct GuestWrite {
 pub struct Renderer {
     target: PresentTarget,
     inner: SceneRenderer,
-    phases: Option<interpolation::PhaseState>,
     rdp: crate::hle::rdp::Rdp,
     color_image_epoch: u64,
     guest_writeback: bool,
@@ -417,7 +416,6 @@ impl Renderer {
         Self {
             target,
             inner,
-            phases: None,
             rdp: Default::default(),
             color_image_epoch: 0,
             guest_writeback: false,
@@ -506,7 +504,6 @@ impl Renderer {
                 config: surface_config,
             },
             inner,
-            phases: None,
             rdp: Default::default(),
             color_image_epoch: 0,
             guest_writeback: false,
@@ -1222,7 +1219,6 @@ impl Renderer {
         self.color_image_epoch = 0;
         self.guest_writes.clear();
         self.inner.reset();
-        self.phases = None;
         self.frame_scenes.clear();
         self.last_scanout_addr = None;
         self.last_backend_was_image = false;

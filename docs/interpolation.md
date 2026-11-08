@@ -136,9 +136,18 @@ texture replacement providers and canonical tasks with diagnostics, dropped draw
 or incomplete termination also hold. Multitask sources retain the selected
 endpoint rather than replaying task history.
 
-`render_phase(&a, &b, t, target)` accepts finite `0..=1` phases and renders to a
-caller-owned texture view in the renderer's presentation format. The host derives
-t from the visibility timestamps: interior phases precede B; `t == 1` switches
+`Renderer::phase_renderer() -> interpolation::PhaseRenderer` creates independent
+phase state on the same device and queue. Move it to the presentation thread;
+`PhaseRenderer` is `Send` and `SourceFrame` is `Send + Sync` on native targets.
+The canonical `Renderer` remains `!Send + !Sync`. On wasm32, wgpu's device and
+resource handles keep their platform thread restrictions.
+
+`PhaseRenderer::render_phase(&a, &b, t, target)` accepts finite `0..=1` phases
+and renders to a caller-owned texture view on that device in the creator's
+presentation format.
+Creation copies the current reduction factor; subsequent changes use
+`PhaseRenderer::set_reduction_factor` independently of the canonical renderer.
+The host derives t from the visibility timestamps: interior phases precede B; `t == 1` switches
 to B's discrete scene. Matching uses draw identity. M follows the scope's policy;
 V blends entrywise. World camera validation is independent of draw matching:
 matching world scopes pair their consumed cameras, including distinct camera
@@ -169,12 +178,22 @@ the retained Scene/Workload/RenderInputs pipeline, and the source's saved dither
 context. Attachments are cleared per phase and reused while their layout, size
 and scale match; phases blit directly from scratch without snapshot copies.
 It runs at 1x as well as higher presentation scales. Scanout uses the
-saved source scale, native crop and current reduction factor through the normal
+saved source scale, native crop and phase reduction factor through the normal
 box-reduction/blit path. It does not invoke render hooks or advance canonical
 state, ownership, write-back, frame serials or dither seeds.
 
-The renderer caches correspondence for one pair with weak source references.
-Source handles own their selected task and endpoint; dropping them releases that
-history. Epoch breaks hold the source pair; renderer reset discards scratch state.
-Callers retain only the source pair they need; the renderer does not keep a queue
-of sources.
+Each phase renderer owns its scratch targets, pipeline variants, texture residency,
+scanout resources and correspondence for one pair with weak source references.
+Device and queue handles are cloned; source scenes, texture bytes and frozen
+endpoint textures are immutable and reference-counted. There are no shared mutable
+caches, profiling counters, serials or dither seeds. Queue submissions can interleave:
+phases read only source resources and write only their own scratch and caller targets.
+Canonical snapshots are submitted before their handles are returned.
+
+Source handles own their selected task and endpoint; dropping them on either
+thread releases that history, even while the phase renderer survives. Scratch
+attachments are limited to the current retained scene's targets, and texture
+residency uses its own bounded cache. Epoch breaks hold the source pair. Canonical
+reset or destruction does not invalidate retained sources or phase renderers;
+dropping a phase renderer discards its scratch state. Callers retain only the
+source pair they need; the phase renderer does not keep a queue of sources.

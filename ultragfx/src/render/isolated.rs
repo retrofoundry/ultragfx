@@ -23,7 +23,7 @@ pub(crate) struct IsolatedContext {
 }
 
 pub(crate) struct IsolatedRenderer {
-    pub(super) renderer: SceneRenderer,
+    pub(crate) renderer: SceneRenderer,
 }
 
 impl IsolatedRenderer {

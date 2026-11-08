@@ -244,3 +244,28 @@ fn diagnostic_tile_extent_must_match_its_descriptor() {
     assert!(request.analyze().is_err());
     assert!(request.encoded_identity().is_err());
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn concurrent_spans_do_not_subtract_other_threads() {
+    let recorder = Recorder::new(Mode::Detailed);
+    let main = recorder.span("main");
+    let other = recorder.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _span = other.span("worker");
+        started_tx.send(()).unwrap();
+        finish_rx.recv().unwrap();
+    });
+    started_rx.recv().unwrap();
+    drop(main);
+    finish_tx.send(()).unwrap();
+    worker.join().unwrap();
+    let snapshot = recorder.snapshot();
+    for name in ["main", "worker"] {
+        let timing = &snapshot.timings[name];
+        assert_eq!(timing.calls, 1);
+        assert_eq!(timing.exclusive_ms, timing.inclusive_ms);
+    }
+}
