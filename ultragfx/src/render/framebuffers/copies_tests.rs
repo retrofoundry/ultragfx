@@ -245,6 +245,181 @@ fn framebuffer_decode_multiple_copies_and_cross_copy_pair() {
 }
 
 #[test]
+fn framebuffer_decode_uploads_preserve_interleaved_copy_bytes_and_source_order() {
+    use crate::hle::{framebuffer_load::Tags, texture_request::EncodedTextureRequest};
+
+    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let mut rdp = Rdp::default();
+    copy(&mut rdp, 0, 1);
+    let recipe = request(&rdp, &tile(0, 2, 4, 1), 0).encoded.recipe().clone();
+    let sources: Vec<_> = (0..3)
+        .map(|index| {
+            let source = ImageDescriptor {
+                address: 0x10000 + index * 0x1000,
+                layout: ImageLayout {
+                    width: 4,
+                    fmt: 0,
+                    siz: 2,
+                },
+                height: 2,
+                generation: 1,
+                depth: false,
+            };
+            Arc::new(FramebufferCopy::new(
+                index + 1,
+                source,
+                source.address,
+                8,
+                8,
+                2,
+            ))
+        })
+        .collect();
+
+    for scale in [1, 2] {
+        for guest in [false, true] {
+            for (presentation, materialize) in [(true, false), (false, false), (true, true)] {
+                let mut tags = Tags {
+                    copies: sources.clone(),
+                    ..Default::default()
+                };
+                for (index, (copy, pointer)) in [
+                    (3, 130),
+                    (3, 131),
+                    (1, 0),
+                    (1, 1),
+                    (3, 0),
+                    (3, 1),
+                    (1, 132),
+                    (1, 133),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    tags.bytes[index] = Tag { copy, pointer };
+                }
+                let request = Arc::new(FramebufferTexture {
+                    encoded: EncodedTextureRequest::from_test_parts(
+                        EncodedInput::Tmem(Arc::new([0x5a; 4096])),
+                        recipe.clone(),
+                    ),
+                    tags,
+                    materialize,
+                });
+                let mut copies = Copies::default();
+                copies.begin(&device, sources.iter().cloned(), scale, guest);
+                copies.snapshots.get_mut(&key(&sources[0])).unwrap().image = None;
+                let effective = if presentation && !materialize {
+                    scale
+                } else {
+                    1
+                };
+                let header = if effective == 2 { 69632 } else { 36864 };
+                let first_size = if effective == 2 { 1024 } else { 512 };
+                let first_guest = if guest { header + first_size } else { 0 };
+                let second = header + first_size + if guest { 512 } else { 0 };
+                let second_guest = if guest { second + 512 } else { 0 };
+                let mut expected = vec![0; second + 512 + if guest { 512 } else { 0 }];
+                expected[..4096].fill(0x5a);
+                let first_pointer = if effective == 2 { 261 } else { 131 };
+                for (index, pointer) in [
+                    header / 2 + first_pointer,
+                    header / 2 + first_pointer + 1,
+                    second / 2 + 1,
+                    second / 2 + 2,
+                    header / 2 + 1,
+                    header / 2 + 2,
+                    second / 2 + 133,
+                    second / 2 + 134,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let start = 4096 + index * 4;
+                    expected[start..start + 4].copy_from_slice(&(pointer as u32).to_le_bytes());
+                }
+                if guest {
+                    for (index, pointer) in [
+                        first_guest / 2 + 131,
+                        first_guest / 2 + 132,
+                        second_guest / 2 + 1,
+                        second_guest / 2 + 2,
+                        first_guest / 2 + 1,
+                        first_guest / 2 + 2,
+                        second_guest / 2 + 133,
+                        second_guest / 2 + 134,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let start = 20480 + index * 4;
+                        expected[start..start + 4].copy_from_slice(&(pointer as u32).to_le_bytes());
+                    }
+                }
+                if effective == 2 {
+                    for index in [0, 1, 4, 5] {
+                        let start = 36864 + index * 8;
+                        expected[start..start + 8].copy_from_slice(&[64, 0, 0, 0, 2, 0, 0, 0]);
+                    }
+                }
+                let metadata = if effective == 2 { 9216 } else { 0 };
+                let uniforms: Vec<_> = [
+                    4 * effective,
+                    effective,
+                    4,
+                    1,
+                    0,
+                    0,
+                    2,
+                    0,
+                    8,
+                    0,
+                    0,
+                    0,
+                    metadata,
+                    1024,
+                    u32::from(materialize),
+                    effective,
+                ]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect();
+                let mut commands = Vec::new();
+                for (copy, offset, guest_offset) in [
+                    (&sources[2], header, first_guest),
+                    (&sources[0], second, second_guest),
+                ] {
+                    let snapshot = &copies.snapshots[&key(copy)];
+                    let buffer = snapshot
+                        .image
+                        .as_ref()
+                        .filter(|_| effective > 1)
+                        .map_or(&snapshot.native, |image| &image.buffer);
+                    commands.push((buffer.clone(), offset as u64));
+                    if let Some(buffer) = &snapshot.guest {
+                        commands.push((buffer.clone(), guest_offset as u64));
+                    }
+                }
+                let (_, actual_scale) = copies.texture(
+                    &device,
+                    &queue,
+                    &request,
+                    &Recorder::default(),
+                    presentation,
+                );
+                assert_eq!(actual_scale, effective);
+                assert_eq!(copies.pending.len(), 1);
+                let jobs = &copies.pending[&3];
+                assert_eq!(jobs.len(), 1);
+                assert_eq!(jobs[0].job.upload.0, expected);
+                assert_eq!(jobs[0].job.upload.1.as_slice(), uniforms);
+                assert_eq!(jobs[0].sources, commands);
+            }
+        }
+    }
+}
+
+#[test]
 fn framebuffer_decode_stale_crystal_ia8_i4_ci4_and_overwritten_tags() {
     let mut rdp = Rdp::default();
     copy(&mut rdp, 0, 4);
