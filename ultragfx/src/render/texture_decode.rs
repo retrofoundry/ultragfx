@@ -25,6 +25,8 @@ impl DecodeStaging {
 }
 
 pub(crate) struct DecodeJob {
+    #[cfg(test)]
+    pub(crate) upload: (Vec<u8>, [u8; PARAM_BYTES as usize]),
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub staging: DecodeStaging,
@@ -253,6 +255,8 @@ impl DecodePipeline {
             ],
         });
         DecodeJob {
+            #[cfg(test)]
+            upload: (input.to_vec(), params.bytes()),
             texture,
             view,
             staging,
