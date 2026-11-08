@@ -27,7 +27,7 @@ def artifact_file(root, name):
 
 
 def expected_rows(inventory):
-    if inventory["schema"] != 1 or not inventory["rows"]:
+    if inventory["schema"] != 1 or (not inventory["rows"] and not inventory.get("section")):
         raise ValueError("invalid inventory")
     expected = {}
     for row in inventory["rows"]:
@@ -85,7 +85,7 @@ def gpu_decode_rows(inventory, configurations):
             for config in configurations for row in inventory["rows"]}
 
 
-def load_gpu_decode(root, manifest, inventory=None, *, allow_incomplete=False, require_gpu_decode=None):
+def load_gpu_decode(root, manifest, inventory=None, *, allow_incomplete=False, require_gpu_decode=None, configurations=None):
     declaration = manifest.get("gpu_decode")
     empty = {"required_configurations": [], "rows": 0, "missing_rows": [], "errors": []}
     if declaration is None:
@@ -94,7 +94,7 @@ def load_gpu_decode(root, manifest, inventory=None, *, allow_incomplete=False, r
         return empty
     source_hash = declaration.get("source_test_sha256")
     has_test = source_hash is not None
-    required = list(manifest["configurations"]) if has_test else []
+    required = list(manifest["configurations"] if configurations is None else configurations) if has_test else []
     declared = declaration.get("required_configurations", [])
     if declaration.get("version") != 1 or set(declared) != set(required) or len(declared) != len(required):
         raise ValueError("GPU decode requirement differs from tested source")
@@ -223,9 +223,10 @@ def load_capture(root, inventory, source_sha, run_id, *, allow_incomplete=False,
         raise ValueError(f"missing rows: {sorted(missing)}")
     manifest["_gpu_decode"] = load_gpu_decode(
         root, manifest, supplemental_inventory, allow_incomplete=allow_incomplete,
-        require_gpu_decode=require_gpu_decode)
+        require_gpu_decode=require_gpu_decode, configurations=inventory.get("gpu_decode_configurations"))
     import replacements
-    manifest["_replacements"] = replacements.load(root, manifest, allow_incomplete=allow_incomplete, require=require_replacements)
+    manifest["_replacements"] = replacements.load(root, manifest, allow_incomplete=allow_incomplete, require=require_replacements,
+                                                 configurations=inventory.get("replacement_configurations"))
     return manifest, rows
 
 

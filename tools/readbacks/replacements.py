@@ -11,10 +11,10 @@ def inventory():
     return json.loads((Path(__file__).resolve().parents[2] / INVENTORY).read_text(encoding="utf-8"))
 
 
-def requirement(checkout):
+def requirement(checkout, configurations=("all-features",)):
     source = checkout / SOURCE
     return {"version": 1, "source_test_sha256": file_hash(source) if source.is_file() else None,
-            "required_configurations": ["all-features"] if source.is_file() else []}
+            "required_configurations": ["all-features"] if source.is_file() and "all-features" in configurations else []}
 
 
 def save(output, manifest, frozen=None):
@@ -54,7 +54,7 @@ def save(output, manifest, frozen=None):
     declaration.update(manifest_file=path.name, manifest_sha256=file_hash(path))
 
 
-def load(root, manifest, *, allow_incomplete=False, require=None, frozen=None):
+def load(root, manifest, *, allow_incomplete=False, require=None, frozen=None, configurations=None):
     declaration = manifest.get("replacements")
     empty = {"required_configurations": [], "rows": 0, "missing_rows": [], "errors": []}
     if declaration is None:
@@ -62,7 +62,8 @@ def load(root, manifest, *, allow_incomplete=False, require=None, frozen=None):
             raise ValueError("missing replacement declaration")
         return empty
     source = declaration.get("source_test_sha256")
-    required = ["all-features"] if source is not None else []
+    configurations = manifest["configurations"] if configurations is None else configurations
+    required = ["all-features"] if source is not None and "all-features" in configurations else []
     if declaration.get("version") != 1 or declaration.get("required_configurations") != required:
         raise ValueError("replacement requirement differs from tested source")
     if require is not None and require != (source is not None):

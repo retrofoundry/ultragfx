@@ -49,6 +49,22 @@ class ReplacementReadbacks(CaptureCase):
         self.assertEqual(result["regions"][0]["changed_pixels"], 1)
         self.assertEqual(result["regions"][0]["bounds"], [0, 0, 0, 0])
 
+    def test_selected_configuration_scopes_replacements_and_authenticates_source(self):
+        source = self.head / "replacement-source.rs"
+        original = source.read_bytes()
+        for config in ["default", "debug-ui", "all-features"]:
+            with self.subTest(config=config):
+                self.manifest["configurations"] = {config: {"exit_code": 0}}
+                self.manifest["replacements"] = replacements.requirement(self.checkout, [config])
+                replacements.save(self.head, self.manifest, self.frozen)
+                result = self.load(require=True)
+                self.assertEqual(result["required_configurations"], [config] if config == "all-features" else [])
+                self.assertEqual(result["rows"], 1 if config == "all-features" else 0)
+                source.write_text("changed source")
+                with self.assertRaisesRegex(ValueError, "source hash"):
+                    self.load(require=True)
+                source.write_bytes(original)
+
     def test_exact_parent_without_provider_requires_zero_rows(self):
         manifest = dict(self.manifest, replacements={"version": 1, "source_test_sha256": None,
                                                      "required_configurations": []})
@@ -56,6 +72,19 @@ class ReplacementReadbacks(CaptureCase):
         self.assertEqual(replacements.load(self.base, manifest, frozen=self.frozen)["rows"], 0)
         with self.assertRaisesRegex(ValueError, "requested checkout"):
             replacements.load(self.base, manifest, frozen=self.frozen, require=True)
+
+    def test_section_cannot_change_replacement_requirement(self):
+        with self.assertRaisesRegex(ValueError, "requirement differs"):
+            self.load(configurations=[])
+        self.manifest["replacements"] = replacements.requirement(self.checkout, [])
+        shutil.rmtree(self.head / "all-features/replacements")
+        replacements.save(self.head, self.manifest, self.frozen)
+        self.assertEqual(self.load(configurations=[], require=True)["rows"], 0)
+        with self.assertRaisesRegex(ValueError, "requirement differs"):
+            self.load(configurations=["all-features"])
+        (self.head / "replacement-source.rs").write_text("changed source")
+        with self.assertRaisesRegex(ValueError, "source hash"):
+            self.load(configurations=[], require=True)
 
     def test_missing_row_and_failure_on_partial_capture(self):
         self.change_supplement(lambda m: m["rows"].clear())

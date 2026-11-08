@@ -1920,11 +1920,12 @@ impl Readback {
         };
         mapped.expect("guest write-back mapping");
         let data = self.buffer.slice(..).get_mapped_range();
-        data.chunks(self.stride)
-            .take(self.height)
-            .flat_map(|row| &row[..self.width * self.pixel_bytes])
-            .copied()
-            .collect()
+        let row_bytes = self.width * self.pixel_bytes;
+        let mut bytes = Vec::with_capacity(row_bytes * self.height);
+        for row in data.chunks(self.stride).take(self.height) {
+            bytes.extend_from_slice(&row[..row_bytes]);
+        }
+        bytes
     }
 }
 
