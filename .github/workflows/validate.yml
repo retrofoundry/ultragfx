@@ -49,7 +49,8 @@ jobs:
           sys.path.insert(0, "tools/readbacks")
           import ci
 
-          entries = [{"os": "macos-latest", "name": "macos-latest", "configuration": "", "section": ""}]
+          entries = [{"os": "macos-latest", "name": f"macos-latest-{config}", "configuration": config, "section": ""}
+                     for config in ci.COMMANDS]
           for config in ci.COMMANDS:
               for section in ci.windows_sections(Path.cwd(), config):
                   entries.append({"os": "windows-latest", "name": f"windows-latest-{config}-{section}",
@@ -124,7 +125,10 @@ jobs:
             args+=(--base-checkout "${{ github.workspace }}/base")
           fi
           if [ -n "$CONFIGURATION" ]; then
-            args+=(--configuration "$CONFIGURATION" --section "$SECTION")
+            args+=(--configuration "$CONFIGURATION")
+          fi
+          if [ -n "$SECTION" ]; then
+            args+=(--section "$SECTION")
           fi
           python "${{ github.workspace }}/candidate/tools/readbacks/ci.py" \
             --checkout "${{ github.workspace }}/candidate" \

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import shutil
 import unittest
+from unittest.mock import patch
 
 import ci
 import readbacks
@@ -84,6 +85,38 @@ class SupplementalReadbacks(CaptureCase):
         self.mutate_gpu(lambda m: m.update(rows=[r for r in m["rows"] if r["configuration"] == "all-features"]))
         with self.assertRaisesRegex(ValueError, "missing GPU decode rows"):
             self.load()
+
+    def test_configuration_without_section_requires_only_its_full_metal_supplement(self):
+        for config in ["default", "debug-ui", "all-features"]:
+            with self.subTest(config=config):
+                with patch.object(ci, "INVENTORY", self.inventory):
+                    inventory = ci.configuration_inventory(config)
+                directory = self.root / config
+                shutil.copytree(self.head, directory)
+                manifest = self.manifest(directory)
+                manifest.update(inventory_sha256=readbacks.json_hash(inventory),
+                                configurations={config: {"exit_code": 0}},
+                                rows=[r for r in manifest["rows"] if r["configuration"] == config])
+                manifest["runtime"].update(os="Darwin", backend="metal", test_threads="4")
+                for row in manifest["rows"]:
+                    row["adapter"].update(backend="Metal", device_type="IntegratedGpu")
+                metadata_path = directory / config / "gpu-decode/tile.json"
+                metadata = json.loads(metadata_path.read_text())
+                metadata["adapter"].update(backend="Metal", device_type="IntegratedGpu")
+                self.write(metadata_path, metadata)
+                manifest["gpu_decode"] = ci.gpu_decode_requirement(self.checkout, "Darwin", [config])
+                ci.save_gpu_decode_manifest(directory, manifest, self.gpu_inventory)
+                self.write(directory / "manifest.json", manifest)
+                result, _ = readbacks.load_capture(directory, inventory, HEAD, "20",
+                                                    supplemental_inventory=self.gpu_inventory, require_gpu_decode=True)
+                self.assertEqual(result["_gpu_decode"]["required_configurations"], [config])
+                self.assertEqual(result["_gpu_decode"]["rows"], 1)
+                (directory / config / "gpu-decode/tile.json").unlink()
+                ci.save_gpu_decode_manifest(directory, manifest, self.gpu_inventory)
+                self.write(directory / "manifest.json", manifest)
+                with self.assertRaisesRegex(ValueError, "missing GPU decode rows"):
+                    readbacks.load_capture(directory, inventory, HEAD, "20",
+                                           supplemental_inventory=self.gpu_inventory, require_gpu_decode=True)
 
     def test_failed_configuration_keeps_authenticated_partial_results(self):
         self.mutate(self.head, lambda m: m["configurations"]["default"].update(exit_code=101))

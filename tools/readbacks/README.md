@@ -56,6 +56,12 @@ section owns replacement readbacks. Default and debug-ui
 compute supplements belong to their readbacks sections. Other sections require
 successful test commands and authenticated manifests with zero exported rows.
 
+macOS has one job per configuration. `--configuration` alone selects its full
+existing command, frozen rows and supplements for capture, comparison and any base
+bootstrap. `--section` remains Windows-only. Each Metal job requires 1,263 GPU
+decode rows; all-features also requires the 25 replacement rows. Together the
+three jobs cover all 171 frozen rows and 3,789 Metal GPU decode rows.
+
 `ULTRAGFX_GPU_DECODE_OUTPUT` writes into each configuration's `gpu-decode` directory.
 The supplement hashes the actual encoded input, expected CPU/literal output, GPU
 output and exporter metadata. Its loader checks every GPU byte against the saved
@@ -98,7 +104,7 @@ compiler, runner image and dependency graph. The generated `Cargo.lock`, build l
 and test logs travel with the artifact.
 
 For PRs, `ci.py` searches successful main push runs with the exact PR base SHA and
-downloads `readbacks-macos-latest` or
+downloads `readbacks-macos-latest-<configuration>` or
 `readbacks-windows-latest-<configuration>-<section>`. It verifies the manifest
 source SHA and run ID before comparing. Missing, expired or incompatible artifacts
 trigger a capture of the exact base checkout in the same job. A cross-run byte delta
@@ -151,10 +157,11 @@ This command requires a fresh output directory. Missing or incompatible evidence
 exits 1 and requests the workflow's same-run bootstrap; it never selects another
 revision. For an initial T1 bootstrap, download the run's `readback-evidence-*`
 artifact and compare its `bootstrap-base` and `candidate` directories below.
-For section artifacts, generate a selection inventory with
-`ci.configuration_inventory(configuration, section)` and pass its JSON to
-`readbacks.py --inventory`. The full inventory remains the default for macOS
-and historical monolithic captures.
+For macOS configuration artifacts, generate a selection inventory with
+`ci.configuration_inventory(configuration)`; Windows section artifacts use
+`ci.configuration_inventory(configuration, section)`. Pass its JSON to
+`readbacks.py --inventory`. The full inventory remains the default for historical
+monolithic captures.
 
 To compare downloaded captures, pass the two source SHAs and run IDs explicitly.
 `BASE_ARTIFACT` and `CANDIDATE_ARTIFACT` must name physical directories containing

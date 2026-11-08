@@ -87,10 +87,11 @@ class CaptureFailures(unittest.TestCase):
                 patch.dict(os.environ, {"GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1"}):
             ci.capture(self.checkout, self.output, "a" * 40, self.checkout, inventory)
 
-    def test_selected_windows_configuration_captures_only_its_commands_and_requirements(self):
-        for config in ["default", "debug-ui", "all-features"]:
-            with self.subTest(config=config):
-                self.output = self.root / config
+    def test_selected_configuration_captures_only_its_commands_and_requirements(self):
+        for system, config in [(system, config) for system in ["Windows", "Darwin"]
+                               for config in ["default", "debug-ui", "all-features"]]:
+            with self.subTest(system=system, config=config):
+                self.output = self.root / f"{system}-{config}"
                 source = self.checkout / ci.GPU_DECODE_TEST
                 source.parent.mkdir(parents=True, exist_ok=True)
                 source.touch()
@@ -103,18 +104,28 @@ class CaptureFailures(unittest.TestCase):
                     executions.append(command)
                     return subprocess.CompletedProcess(command, 0, stdout="")
 
-                with patch.object(ci.platform, "system", return_value="Windows"):
+                with patch.object(ci.platform, "system", return_value=system):
                     self.capture(runner, ci.configuration_inventory(config))
                 manifest = json.loads((self.output / "manifest.json").read_text())
                 self.assertEqual(list(manifest["configurations"]), [config])
+                self.assertEqual(manifest["gpu_decode"]["profile"], "full" if system == "Darwin" else "warp")
                 self.assertEqual(manifest["gpu_decode"]["required_configurations"], [config])
                 self.assertEqual(manifest["replacements"]["required_configurations"],
                                  ["all-features"] if config == "all-features" else [])
                 self.assertIsNotNone(manifest["replacements"]["source_test_sha256"])
-                self.assertEqual(len(executions), 4 if config == "all-features" else 2)
+                self.assertEqual(len(executions), 4 if system == "Windows" and config == "all-features" else 2)
                 for command in executions:
                     self.assertEqual("--all-features" in command, config == "all-features")
                     self.assertEqual("debug-ui" in command, config == "debug-ui")
+                if system == "Darwin":
+                    command = {
+                        "default": ["cargo", "test", "--locked", "--no-fail-fast", "--workspace"],
+                        "debug-ui": ["cargo", "test", "--locked", "--no-fail-fast", "-p", "ultragfx", "--features", "debug-ui"],
+                        "all-features": ["cargo", "test", "--locked", "--no-fail-fast", "--workspace", "--all-features"],
+                    }[config]
+                    self.assertEqual(executions, [command + ["--no-run", "--message-format=json"], command])
+                    self.assertEqual(manifest["configurations"][config]["commands"], [command])
+                    self.assertEqual(manifest["configurations"][config]["exit_code"], 0)
 
     def test_test_failure_keeps_logs_and_manifest_for_all_configurations(self):
         def runner(command, **kwargs):

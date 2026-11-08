@@ -111,7 +111,8 @@ class ConfigurationGates(CaptureCase):
                                       if section != "guest" or scenario not in ["missing-row", "changed-byte"]]:
                 with self.subTest(config=config, section=section, scenario=scenario):
                     output = self.root / f"{config}-{section}-{scenario}"
-                    name = f"readbacks-windows-latest-{config}" + (f"-{section}" if section else "")
+                    runner = "windows-latest" if section else "macos-latest"
+                    name = f"readbacks-{runner}-{config}" + (f"-{section}" if section else "")
                     captured = []
 
                     def capture(checkout, destination, base_sha, harness_checkout, inventory):
@@ -122,6 +123,10 @@ class ConfigurationGates(CaptureCase):
                         manifest["configurations"] = {c: manifest["configurations"][c] for c in inventory["configurations"]}
                         keys = readbacks.expected_rows(inventory)
                         manifest["rows"] = [r for r in manifest["rows"] if (r["configuration"], r["id"]) in keys]
+                        if section is None:
+                            manifest["runtime"].update(os="Darwin", backend="metal", test_threads="4")
+                            for row in manifest["rows"]:
+                                row["adapter"].update(backend="Metal", device_type="IntegratedGpu")
                         if checkout == self.head:
                             if scenario == "missing-row":
                                 manifest["rows"].clear()
@@ -141,7 +146,7 @@ class ConfigurationGates(CaptureCase):
                         return {"workflow_runs": [{"id": 10, "head_sha": BASE, "conclusion": "success", "event": "push"}]}
 
                     def download(repository, run_id, name, destination):
-                        expected_name = f"readbacks-windows-latest-{config}" + (f"-{section}" if section else "")
+                        expected_name = f"readbacks-{runner}-{config}" + (f"-{section}" if section else "")
                         self.assertEqual((repository, run_id, name), ("owner/repo", "10", expected_name))
                         if scenario != "download":
                             raise ValueError("missing base artifact")
