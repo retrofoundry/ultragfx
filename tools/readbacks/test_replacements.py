@@ -49,6 +49,17 @@ class ReplacementReadbacks(CaptureCase):
         self.assertEqual(result["regions"][0]["changed_pixels"], 1)
         self.assertEqual(result["regions"][0]["bounds"], [0, 0, 0, 0])
 
+    def test_configuration_without_replacement_suite_still_authenticates_source(self):
+        self.manifest["configurations"] = {"default": {"exit_code": 0}}
+        self.manifest["replacements"] = replacements.requirement(self.checkout, ["default"])
+        replacements.save(self.head, self.manifest, self.frozen)
+        result = self.load(require=True)
+        self.assertEqual(result["required_configurations"], [])
+        self.assertEqual(result["rows"], 0)
+        (self.head / "replacement-source.rs").write_text("changed source")
+        with self.assertRaisesRegex(ValueError, "source hash"):
+            self.load(require=True)
+
     def test_exact_parent_without_provider_requires_zero_rows(self):
         manifest = dict(self.manifest, replacements={"version": 1, "source_test_sha256": None,
                                                      "required_configurations": []})
@@ -56,6 +67,19 @@ class ReplacementReadbacks(CaptureCase):
         self.assertEqual(replacements.load(self.base, manifest, frozen=self.frozen)["rows"], 0)
         with self.assertRaisesRegex(ValueError, "requested checkout"):
             replacements.load(self.base, manifest, frozen=self.frozen, require=True)
+
+    def test_section_cannot_change_replacement_requirement(self):
+        with self.assertRaisesRegex(ValueError, "requirement differs"):
+            self.load(configurations=[])
+        self.manifest["replacements"] = replacements.requirement(self.checkout, [])
+        shutil.rmtree(self.head / "all-features/replacements")
+        replacements.save(self.head, self.manifest, self.frozen)
+        self.assertEqual(self.load(configurations=[], require=True)["rows"], 0)
+        with self.assertRaisesRegex(ValueError, "requirement differs"):
+            self.load(configurations=["all-features"])
+        (self.head / "replacement-source.rs").write_text("changed source")
+        with self.assertRaisesRegex(ValueError, "source hash"):
+            self.load(configurations=[], require=True)
 
     def test_missing_row_and_failure_on_partial_capture(self):
         self.change_supplement(lambda m: m["rows"].clear())

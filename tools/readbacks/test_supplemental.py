@@ -137,6 +137,23 @@ class SupplementalReadbacks(CaptureCase):
         with self.assertRaisesRegex(ValueError, "GPU decode requirement"):
             self.load()
 
+    def test_section_requirements_come_from_selection_and_still_authenticate_source(self):
+        inventory = ci.configuration_inventory("all-features", "readbacks")
+        inventory["rows"] = [dict(self.inventory["rows"][0], configurations=["all-features"])]
+        manifest = self.manifest(self.head)
+        manifest.update(inventory_sha256=readbacks.json_hash(inventory),
+                        configurations={"all-features": {"exit_code": 0}},
+                        rows=[r for r in manifest["rows"] if r["configuration"] == "all-features"])
+        manifest["gpu_decode"] = ci.gpu_decode_requirement(self.checkout, "Windows", [])
+        shutil.rmtree(self.head / "all-features/gpu-decode")
+        ci.save_gpu_decode_manifest(self.head, manifest, self.gpu_inventory)
+        self.write(self.head / "manifest.json", manifest)
+        result, _ = readbacks.load_capture(self.head, inventory, HEAD, "20", supplemental_inventory=self.gpu_inventory, require_gpu_decode=True)
+        self.assertEqual(result["_gpu_decode"]["rows"], 0)
+        (self.head / "gpu-decode-source.rs").write_text("wrong source")
+        with self.assertRaisesRegex(ValueError, "source hash"):
+            readbacks.load_capture(self.head, inventory, HEAD, "20", supplemental_inventory=self.gpu_inventory)
+
     def test_profile_cannot_be_downgraded_or_swapped_between_backends(self):
         for profile in ["full", "empty", ""]:
             with self.subTest(profile=profile):

@@ -10,6 +10,46 @@ from unittest.mock import patch
 import ci
 
 
+class WindowsSections(unittest.TestCase):
+    def setUp(self):
+        self.checkout = Path(__file__).resolve().parents[2]
+
+    def test_sections_partition_the_existing_selection_without_duplicates(self):
+        for config in ci.COMMANDS:
+            with self.subTest(config=config):
+                commands = ci.test_commands(self.checkout, config, "Windows")
+                filters = commands[0][commands[0].index("--") + 1:]
+                names = [value + "example" for value in filters if value != "render::upscaling_tests::"]
+                names += ["render::upscaling_tests::" + name for name in ["a", "b", "c", "d", "e", "f", "g"]]
+                selected = []
+                targets = []
+                for section in ci.windows_sections(self.checkout, config):
+                    for command in ci.test_commands(self.checkout, config, "Windows", section):
+                        if "--lib" in command:
+                            selected.extend(ci.section_test_names(command[command.index("--") + 1:], section, names))
+                        else:
+                            targets.extend(command[i + 1] for i, value in enumerate(command) if value == "--test")
+                self.assertEqual(len(selected), len(set(selected)))
+                self.assertEqual(set(selected), {name for name in names if any(value in name for value in filters)})
+                self.assertCountEqual(targets, [command[i + 1] for command in commands
+                                               for i, value in enumerate(command) if value == "--test"])
+                self.assertEqual(len(targets), len(set(targets)))
+
+    def test_new_filter_or_target_without_an_assignment_fails(self):
+        for command in [["cargo", "test", "--lib", "--", "tests::new_suite::"],
+                        ["cargo", "test", "--test", "new_target"]]:
+            with self.subTest(command=command), patch.object(ci, "test_commands", return_value=[command]):
+                with self.assertRaisesRegex(ValueError, "unassigned Windows selection"):
+                    ci.windows_sections(self.checkout, "default")
+
+    def test_upscaling_sections_balance_discovered_tests_and_include_new_names(self):
+        names = [f"render::upscaling_tests::test_{i:02}" for i in range(49)]
+        groups = [ci.section_test_names(["render::upscaling_tests::"], f"upscaling-{i}", names)
+                  for i in [1, 2, 3]]
+        self.assertEqual([len(group) for group in groups], [17, 16, 16])
+        self.assertCountEqual(sum(groups, []), names)
+
+
 class CaptureFailures(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -29,7 +69,7 @@ class CaptureFailures(unittest.TestCase):
             "ultragfx/goldens/quad.bin": "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"}))
         self.output = self.root / "output"
 
-    def external_metadata(self, command, cwd, text, encoding):
+    def external_metadata(self, command, cwd, text, encoding, **kwargs):
         if command == ["git", "rev-parse", "HEAD"]:
             return "a" * 40
         if command == ["rustc", "-Vv"]:
@@ -40,12 +80,41 @@ class CaptureFailures(unittest.TestCase):
             return json.dumps({"resolve": {"nodes": [{"id": "ultragfx", "features": [], "deps": []}]}})
         raise AssertionError(command)
 
-    def capture(self, runner):
+    def capture(self, runner, inventory=None):
         with patch.object(ci, "HERE", self.harness), \
                 patch.object(ci.subprocess, "check_output", self.external_metadata), \
                 patch.object(ci.subprocess, "run", runner), \
                 patch.dict(os.environ, {"GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1"}):
-            ci.capture(self.checkout, self.output, "a" * 40, self.checkout)
+            ci.capture(self.checkout, self.output, "a" * 40, self.checkout, inventory)
+
+    def test_selected_windows_configuration_captures_only_its_commands_and_requirements(self):
+        for config in ["default", "debug-ui", "all-features"]:
+            with self.subTest(config=config):
+                self.output = self.root / config
+                source = self.checkout / ci.GPU_DECODE_TEST
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.touch()
+                source = self.checkout / ci.replacements.SOURCE
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.touch()
+                executions = []
+
+                def runner(command, **kwargs):
+                    executions.append(command)
+                    return subprocess.CompletedProcess(command, 0, stdout="")
+
+                with patch.object(ci.platform, "system", return_value="Windows"):
+                    self.capture(runner, ci.configuration_inventory(config))
+                manifest = json.loads((self.output / "manifest.json").read_text())
+                self.assertEqual(list(manifest["configurations"]), [config])
+                self.assertEqual(manifest["gpu_decode"]["required_configurations"], [config])
+                self.assertEqual(manifest["replacements"]["required_configurations"],
+                                 ["all-features"] if config == "all-features" else [])
+                self.assertIsNotNone(manifest["replacements"]["source_test_sha256"])
+                self.assertEqual(len(executions), 4 if config == "all-features" else 2)
+                for command in executions:
+                    self.assertEqual("--all-features" in command, config == "all-features")
+                    self.assertEqual("debug-ui" in command, config == "debug-ui")
 
     def test_test_failure_keeps_logs_and_manifest_for_all_configurations(self):
         def runner(command, **kwargs):
@@ -58,6 +127,35 @@ class CaptureFailures(unittest.TestCase):
         self.assertEqual(manifest["configurations"]["all-features"]["exit_code"], 0)
         self.assertEqual((self.output / "default/build.log").read_text(), "build failed\n")
         self.assertTrue((self.output / "debug-ui/test.log").is_file())
+
+    def test_section_capture_executes_discovered_names_exactly_and_keeps_failures(self):
+        source = self.checkout / "ultragfx/src/render/upscaling_tests.rs"
+        source.parent.mkdir(parents=True)
+        source.touch()
+        metadata = self.external_metadata
+
+        def external_metadata(command, **kwargs):
+            if command[-2:] == ["--", "--list"]:
+                self.assertTrue(Path(kwargs["env"]["CARGO_TARGET_DIR"]).is_dir())
+                return "".join(f"render::upscaling_tests::{name}: test\n" for name in ["a", "b", "c", "d"])
+            return metadata(command, **kwargs)
+
+        def runner(command, **kwargs):
+            if "--no-run" in command:
+                return subprocess.CompletedProcess(command, 0, stdout="")
+            self.assertEqual(command[command.index("--") + 1:],
+                             ["--exact", "render::upscaling_tests::b"])
+            return subprocess.CompletedProcess(command, 101)
+
+        self.external_metadata = external_metadata
+        with patch.object(ci.platform, "system", return_value="Windows"):
+            self.capture(runner, ci.configuration_inventory("all-features", "upscaling-2"))
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["gpu_decode"]["required_configurations"], [])
+        self.assertEqual(manifest["replacements"]["required_configurations"], [])
+        self.assertEqual(manifest["configurations"]["all-features"]["exit_code"], 101)
+        self.assertEqual(manifest["configurations"]["all-features"]["executions"][0]["command"][-1],
+                         "render::upscaling_tests::b")
 
     def test_failed_test_names_and_targets_are_retained(self):
         def runner(command, **kwargs):
