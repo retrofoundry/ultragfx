@@ -39,7 +39,7 @@ impl<Q: Send + 'static, R: Send + 'static> Worker<Q, R> {
         init: impl FnOnce() -> S + Send + 'static,
         finish: fn(&mut S),
         deadline: fn(&S) -> Option<std::time::Instant>,
-        tick: fn(&mut S) -> Result<(), PresentError>,
+        tick: fn(&mut S),
         handle: fn(&mut S, Q) -> Result<R, PresentError>,
     ) -> Self {
         let (sender, receiver) = mpsc::sync_channel::<Message<Q>>(128);
@@ -111,7 +111,7 @@ impl<Q: Send + 'static, R: Send + 'static> Worker<Q, R> {
                             }
                         }
                         if deadline(&state).is_some_and(|at| at <= std::time::Instant::now()) {
-                            tick(&mut state)?;
+                            tick(&mut state);
                         }
                     }
                     Ok(())
@@ -264,7 +264,7 @@ mod tests {
                 }
             },
             |state| state.next,
-            |_| Ok(()),
+            |_| {},
             handle,
         )
     }
@@ -288,7 +288,6 @@ mod tests {
             |state| {
                 state.frames.as_ref().unwrap().send(state.count).unwrap();
                 state.next = Some(Instant::now() + Duration::from_secs(1));
-                Ok(())
             },
             |state, _: ()| {
                 state.count += 1;
@@ -377,7 +376,7 @@ mod tests {
             || (),
             |_| {},
             |_| None,
-            |_| Ok(()),
+            |_| {},
             |_, value: u32| Ok(value),
         ));
         let callers: Vec<_> = (0..8)
@@ -402,7 +401,7 @@ mod tests {
             || panic!("init failed"),
             |_: &mut ()| {},
             |_| None,
-            |_| Ok(()),
+            |_| {},
             |_, _: ()| Ok(()),
         );
         assert!(matches!(
@@ -421,7 +420,7 @@ mod tests {
                 state.2.recv().unwrap();
             },
             |_| None,
-            |_| Ok(()),
+            |_| {},
             |state, fail| {
                 if fail {
                     state.0.send(()).unwrap();

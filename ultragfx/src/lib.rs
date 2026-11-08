@@ -1038,17 +1038,7 @@ impl Renderer {
         }
         #[cfg(not(target_arch = "wasm32"))]
         let _completion = if self.interpolation_active() {
-            match self.in_flight.begin(&self.device, &self.queue) {
-                Ok(completion) => Some(completion),
-                Err(error) => {
-                    log::error!("canonical submission failed: {error:?}");
-                    return DlSummary {
-                        errors: 1,
-                        termination: inspect::WalkTermination::Rejected,
-                        ..Default::default()
-                    };
-                }
-            }
+            Some(self.in_flight.begin(&self.device, &self.queue))
         } else {
             None
         };
@@ -1521,11 +1511,11 @@ impl Renderer {
             .take_hook()
     }
 
-    /// Fatal presentation status, including a failed canonical device poll.
+    /// Fatal presentation status.
     pub fn presenter_error(&self) -> Option<PresentError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(presenter) = &self.presenter {
-            return self.in_flight.error().or_else(|| presenter.error());
+            return presenter.error();
         }
         None
     }

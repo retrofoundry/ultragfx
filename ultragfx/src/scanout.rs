@@ -122,7 +122,7 @@ impl Renderer {
             return self.threaded_present(source, None, false);
         }
         let pending = {
-            let _completion = self.in_flight.begin(&self.device, &self.queue)?;
+            let _completion = self.in_flight.begin(&self.device, &self.queue);
             let configuration = self.configuration.clone();
             let _configuration = configuration
                 .lock()

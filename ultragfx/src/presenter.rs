@@ -167,7 +167,7 @@ impl Presentation {
             .map(|deadlines| deadlines.acquire_at(self.schedule.prepare))
     }
 
-    fn tick(&mut self) -> Result<(), PresentError> {
+    fn tick(&mut self) {
         if self.needs_configure {
             self.configure();
         }
@@ -178,7 +178,7 @@ impl Presentation {
         let deadline = deadlines.next();
         let lead = deadline.duration_since(deadlines.acquire_at(self.schedule.prepare));
         if deadlines.acquire_at(self.schedule.prepare) > Instant::now() {
-            return Ok(());
+            return;
         }
         let latest = self.schedule.latest.as_ref().unwrap();
         let period = latest.policy.period().unwrap();
@@ -210,7 +210,6 @@ impl Presentation {
         if let Err(error) = result {
             log::warn!("scheduled presentation: {error:?}");
         }
-        Ok(())
     }
 
     pub(crate) fn present(
@@ -483,7 +482,11 @@ impl Presenter {
                 }
             },
             |state| state.as_deref().and_then(Presentation::deadline),
-            |state| state.as_deref_mut().map_or(Ok(()), Presentation::tick),
+            |state| {
+                if let Some(state) = state {
+                    state.tick();
+                }
+            },
             handle,
         );
         let presenter = Self {
