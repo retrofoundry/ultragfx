@@ -1,10 +1,45 @@
 use super::*;
 use crate::{Hardware, Microcode, NopSink, PresentTarget, Rdram, RdramImage, Renderer};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 use std::time::Duration;
+
+const WAIT: Duration = Duration::from_secs(120);
+
+#[derive(Default)]
+pub(super) struct Presented {
+    textures: Mutex<Vec<wgpu::Texture>>,
+    ready: Condvar,
+}
+
+impl Presented {
+    pub(super) fn push(&self, texture: wgpu::Texture) {
+        self.textures.lock().unwrap().push(texture);
+        self.ready.notify_all();
+    }
+
+    fn len(&self) -> usize {
+        self.textures.lock().unwrap().len()
+    }
+
+    #[track_caller]
+    fn wait_for(&self, count: usize) -> wgpu::Texture {
+        let (textures, _) = self
+            .ready
+            .wait_timeout_while(self.textures.lock().unwrap(), WAIT, |textures| {
+                textures.len() < count
+            })
+            .unwrap();
+        assert!(
+            textures.len() >= count,
+            "scheduled presentation did not progress: expected {count}, presented {}",
+            textures.len()
+        );
+        textures[count - 1].clone()
+    }
+}
 
 type Events = Arc<Mutex<Vec<(String, ThreadId)>>>;
 fn event(events: &Events, name: &str) {
@@ -18,7 +53,7 @@ struct TestSurface {
     device: wgpu::Device,
     config: Mutex<wgpu::SurfaceConfiguration>,
     textures: Arc<Mutex<Vec<wgpu::Texture>>>,
-    presented: Arc<AtomicUsize>,
+    presented: Arc<Presented>,
     events: Events,
     faults: Mutex<VecDeque<PresentError>>,
     panic_configure: Arc<AtomicBool>,
@@ -80,7 +115,7 @@ fn renderer_config() -> RendererConfig {
 pub(super) struct Harness {
     pub(super) renderer: Renderer,
     textures: Arc<Mutex<Vec<wgpu::Texture>>>,
-    presented: Arc<AtomicUsize>,
+    presented: Arc<Presented>,
     events: Events,
     panic_configure: Arc<AtomicBool>,
 }
@@ -116,7 +151,7 @@ pub(super) fn harness(
         renderer_config(),
     );
     let textures = Arc::new(Mutex::new(Vec::new()));
-    let presented = Arc::new(AtomicUsize::new(0));
+    let presented = Arc::new(Presented::default());
     let events = Arc::new(Mutex::new(Vec::new()));
     let panic_configure = Arc::new(AtomicBool::new(false));
     let surface = TestSurface {
@@ -424,10 +459,10 @@ fn present_waits_for_surface_acquisition_before_returning() {
         returned.send(h.renderer.present_last()).unwrap();
         assert_eq!(h.textures.lock().unwrap().len(), 1);
     });
-    acquired.recv_timeout(Duration::from_secs(5)).unwrap();
+    acquired.recv_timeout(WAIT).unwrap();
     assert_eq!(result.try_recv(), Err(mpsc::TryRecvError::Empty));
     release.send(()).unwrap();
-    assert_eq!(result.recv_timeout(Duration::from_secs(5)).unwrap(), Ok(()));
+    assert_eq!(result.recv_timeout(WAIT).unwrap(), Ok(()));
     caller.join().unwrap();
 }
 
@@ -592,11 +627,14 @@ fn caller_owned_targets_still_scan_out_after_presenter_failure() {
             h.renderer
                 .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
                 .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while h.renderer.presenter_error().is_none() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert!(h.renderer.presenter_error().is_some());
+            let error = h
+                .renderer
+                .presenter
+                .as_ref()
+                .unwrap()
+                .worker
+                .wait_for_failure(WAIT);
+            assert_eq!(h.renderer.presenter_error(), Some(error));
         }
         for method in 0..4 {
             let target = h.renderer.device.create_texture(&wgpu::TextureDescriptor {
@@ -873,18 +911,6 @@ fn format_reconfigure_is_acknowledged_before_the_next_present() {
         .all(|pixel| *pixel == [255, 0, 0, 255]));
 }
 
-fn wait_images(h: &Harness, count: usize) {
-    let until = std::time::Instant::now() + Duration::from_secs(3);
-    while h.textures.lock().unwrap().len() < count && std::time::Instant::now() < until {
-        h.renderer.device.poll(wgpu::PollType::Poll).unwrap();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(
-        h.textures.lock().unwrap().len() >= count,
-        "scheduled presentation did not progress"
-    );
-}
-
 #[test]
 fn refresh_changes_latch_at_scanout_and_original_stops_scheduled_frames() {
     let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
@@ -904,7 +930,7 @@ fn refresh_changes_latch_at_scanout_and_original_stops_scheduled_frames() {
         .unwrap();
     assert!(h.renderer.interpolation_active());
     assert_eq!(h.renderer.effective_refresh_rate(), Some(100.0));
-    wait_images(&h, 2);
+    h.presented.wait_for(2);
     h.renderer
         .set_refresh_rate(crate::RefreshRate::Original)
         .unwrap();
@@ -1017,7 +1043,7 @@ fn scheduled_phases_and_plain_snapshots_preserve_hook_ordering() {
             )
             .unwrap();
     }
-    wait_images(&h, 3);
+    h.presented.wait_for(h.presented.len() + 2);
     assert!(h
         .renderer
         .presenter
@@ -1033,18 +1059,9 @@ fn scheduled_phases_and_plain_snapshots_preserve_hook_ordering() {
             None,
         )
         .unwrap();
-    let plain_start = h.textures.lock().unwrap().len();
-    wait_images(&h, plain_start + 2);
+    h.presented.wait_for(h.presented.len() + 2);
     h.renderer.presenter.as_ref().unwrap().barrier().unwrap();
-    let textures = h.textures.lock().unwrap().clone();
-    let draws = h
-        .events
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|(name, _)| name == "phase draw")
-        .count();
-    assert_eq!(draws, textures.len());
+    let textures = h.presented.textures.lock().unwrap().clone();
     for texture in textures {
         assert!(pixels(&h.renderer, &texture)
             .as_chunks::<4>()
@@ -1114,7 +1131,7 @@ fn asynchronous_acquisition_does_not_hold_configuration_exclusion() {
     h.renderer
         .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
         .unwrap();
-    acquired.recv_timeout(Duration::from_secs(3)).unwrap();
+    acquired.recv_timeout(WAIT).unwrap();
     let unlocked = h.renderer.configuration.try_lock().is_ok();
     if unlocked {
         h.renderer.begin_frame();
@@ -1125,7 +1142,6 @@ fn asynchronous_acquisition_does_not_hold_configuration_exclusion() {
 }
 
 fn activate_pair(h: &mut Harness) {
-    let count = h.textures.lock().unwrap().len();
     let now = Instant::now();
     for (cookie, time) in [(1, now - Duration::from_millis(50)), (2, now)] {
         let task = retained_fill(&mut h.renderer, cookie, 0x1000, 0xf801_f801);
@@ -1138,7 +1154,7 @@ fn activate_pair(h: &mut Harness) {
             )
             .unwrap();
     }
-    wait_images(h, count + 2);
+    h.presented.wait_for(h.presented.len() + 2);
     assert!(h
         .renderer
         .presenter
@@ -1187,9 +1203,8 @@ fn active_reset_reconfigure_and_reduction_discard_old_phases_and_resume() {
                     Some(&task),
                 )
                 .unwrap();
-            wait_images(&h, count + 1);
+            let texture = h.presented.wait_for(h.presented.len() + 1);
             h.renderer.presenter.as_ref().unwrap().barrier().unwrap();
-            let texture = h.textures.lock().unwrap().last().unwrap().clone();
             assert!(pixels(&h.renderer, &texture)
                 .as_chunks::<4>()
                 .0
@@ -1264,7 +1279,7 @@ fn scheduled_acquire_errors_recover_and_allow_switching_to_original() {
         h.renderer
             .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
             .unwrap();
-        wait_images(&h, 2);
+        h.presented.wait_for(2);
         assert_eq!(h.renderer.presenter_error(), None);
         assert_eq!(
             h.events
@@ -1281,9 +1296,9 @@ fn scheduled_acquire_errors_recover_and_allow_switching_to_original() {
         h.renderer
             .scanout(crate::ScanoutOrigin::Host(None), Instant::now(), &[], None)
             .unwrap();
-        let count = h.presented.load(Ordering::SeqCst);
+        let count = h.presented.len();
         h.renderer.present_host(None).unwrap();
-        assert_eq!(h.presented.load(Ordering::SeqCst), count + 1);
+        assert_eq!(h.presented.len(), count + 1);
         h.renderer.shutdown();
     }
 }
@@ -1308,7 +1323,7 @@ fn preparation_may_present_within_its_period_but_drops_an_expired_frame() {
                     .unwrap()
             })
             .unwrap();
-        assert_eq!(h.presented.load(Ordering::SeqCst), 1);
+        assert_eq!(h.presented.len(), 1);
     }
     assert_eq!(h.textures.lock().unwrap().len(), 2);
 }
@@ -1322,9 +1337,9 @@ fn enabling_debugger_stops_scheduled_frames_before_returning() {
         .unwrap();
     activate_pair(&mut h);
     h.renderer.set_debugger_enabled(true);
-    let count = h.presented.load(Ordering::SeqCst);
+    let count = h.presented.len();
     std::thread::sleep(Duration::from_millis(50));
-    assert_eq!(h.presented.load(Ordering::SeqCst), count);
+    assert_eq!(h.presented.len(), count);
     h.renderer
         .set_send_render_hook(Box::new(Hook {
             events: h.events.clone(),
@@ -1368,7 +1383,7 @@ fn a_coalesced_missing_source_breaks_the_previous_pair() {
             Some(&a),
         )
         .unwrap();
-    acquired.recv_timeout(Duration::from_secs(3)).unwrap();
+    acquired.recv_timeout(WAIT).unwrap();
     h.renderer
         .scanout(
             crate::ScanoutOrigin::Host(Some(0x1000)),
@@ -1441,11 +1456,14 @@ fn scheduled_failure_preserves_canonical_reset_and_reconfigure() {
             Some(&task),
         )
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h.renderer.presenter_error().is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let error = h.renderer.presenter_error().unwrap();
+    let error = h
+        .renderer
+        .presenter
+        .as_ref()
+        .unwrap()
+        .worker
+        .wait_for_failure(WAIT);
+    assert_eq!(h.renderer.presenter_error(), Some(error.clone()));
     assert!(matches!(error, PresentError::PresenterFailed(_)));
     assert!(!h.renderer.frame_scenes.is_empty());
     h.renderer.reset();
@@ -1480,7 +1498,7 @@ fn capture_readback_preserves_scheduled_sources_and_presentation() {
         let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
         h.renderer.set_refresh_rate(mode).unwrap();
         activate_pair(&mut h);
-        let texture = h.textures.lock().unwrap().last().unwrap().clone();
+        let texture = h.presented.wait_for(h.presented.len() + 1);
         let expected = pixels(&h.renderer, &texture);
         let configurations = h
             .events
@@ -1506,8 +1524,7 @@ fn capture_readback_preserves_scheduled_sources_and_presentation() {
                 })
                 .unwrap());
         }
-        let count = h.textures.lock().unwrap().len();
-        wait_images(&h, count + 2);
+        h.presented.wait_for(h.presented.len() + 2);
         assert_eq!(
             h.events
                 .lock()

@@ -198,6 +198,18 @@ impl<Q, R> Worker<Q, R> {
         self.reply.0.lock().unwrap().failure.clone()
     }
 
+    #[cfg(test)]
+    pub(super) fn wait_for_failure(&self, timeout: std::time::Duration) -> PresentError {
+        let (reply, _) = self
+            .reply
+            .1
+            .wait_timeout_while(self.reply.0.lock().unwrap(), timeout, |reply| {
+                !reply.stopped
+            })
+            .unwrap();
+        reply.failure.clone().expect("presenter did not fail")
+    }
+
     pub(super) fn shutdown(&mut self) {
         self.sender.take();
         if let Some(join) = self.join.take() {

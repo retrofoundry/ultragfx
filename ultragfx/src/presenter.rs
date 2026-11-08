@@ -37,7 +37,7 @@ trait Surface: Send {
 enum SurfaceFrame {
     Native(wgpu::SurfaceTexture),
     #[cfg(test)]
-    Offscreen(wgpu::Texture, Arc<std::sync::atomic::AtomicUsize>),
+    Offscreen(wgpu::Texture, Arc<tests::Presented>),
 }
 
 impl SurfaceFrame {
@@ -52,9 +52,7 @@ impl SurfaceFrame {
         match self {
             Self::Native(frame) => frame.present(),
             #[cfg(test)]
-            Self::Offscreen(_, count) => {
-                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
+            Self::Offscreen(texture, presented) => presented.push(texture),
         }
     }
 }
