@@ -278,7 +278,7 @@ fn native_stream_is_identical_and_presentation_has_new_samples_without_writeback
         assert!(!counters
             .keys()
             .any(|key| key.starts_with("readback.") || key.starts_with("import.")));
-        assert!(renderer.coherence.is_none() && renderer.coverage.is_none());
+        assert!(renderer.coherence.is_none());
         let fb = &renderer.framebuffers[&workload::TargetId::Guest(A.into())];
         let bytes = read_texture(&device, &queue, &fb.color);
         assert_eq!(native.get_or_insert_with(|| bytes.clone()), &bytes);
@@ -2545,7 +2545,7 @@ fn scaled_feedback_without_writeback_stays_gpu_only() {
         renderer.inner.profiling = profiling.clone();
         let (_, diagnostics) = submit(&mut renderer, &mut Memory(vec![0; 4096]), &feedback_task(0));
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert!(renderer.inner.coherence.is_none() && renderer.inner.coverage.is_none());
+        assert!(renderer.inner.coherence.is_none());
         assert!(renderer.take_guest_writes().is_empty());
         assert!(profiling
             .snapshot()

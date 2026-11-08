@@ -1069,17 +1069,55 @@ impl SceneRenderer {
                 continue;
             }
             let upload = self.upload_draws(device, target);
-            let delta_pipelines: Vec<_> = target
+            let replay_stamps = self.coherence.is_some();
+            let stamp_pipelines: Vec<_> = target
                 .operations
                 .iter()
                 .map(|op| {
-                    op.writes_depth().then(|| {
-                        self.delta_pipeline
-                            .pipeline(device, &self.textured_fb, &op.draw, true)
+                    (replay_stamps
+                        && matches!(
+                            op.draw,
+                            DrawInputs::Tris { .. } | DrawInputs::Rectangle { .. }
+                        ))
+                    .then(|| {
+                        let layout = if !any_depth || (op.reads_depth() && !op.writes_depth()) {
+                            super::decal::ReplayLayout::Stamps
+                        } else {
+                            super::decal::ReplayLayout::StampsDelta
+                        };
+                        self.replay_pipeline
+                            .pipeline(
+                                device,
+                                &self.textured_fb,
+                                &op.draw,
+                                layout,
+                                any_depth && op.writes_depth(),
+                            )
                             .clone()
                     })
                 })
                 .collect();
+            let delta_pipelines: Vec<_> = if replay_stamps && self.render_scale == 1 {
+                Vec::new()
+            } else {
+                target
+                    .operations
+                    .iter()
+                    .map(|op| {
+                        op.writes_depth().then(|| {
+                            self.replay_pipeline
+                                .pipeline(
+                                    device,
+                                    &self.textured_fb,
+                                    &op.draw,
+                                    super::decal::ReplayLayout::Delta,
+                                    true,
+                                )
+                                .clone()
+                        })
+                    })
+                    .collect()
+            };
             let material_bgs: Vec<_> = self
                 .material_bindings
                 .iter()
@@ -1125,19 +1163,30 @@ impl SceneRenderer {
                             ],
                         })
                     });
-            let replay_depth =
+            let mut replay_start = 0;
+            let mut replay_snapshot_bgs = [None, None];
+            let mut flush_replay =
                 |renderer: &Self,
                  encoder: &mut wgpu::CommandEncoder,
-                 range: std::ops::Range<usize>,
+                 end: usize,
+                 read_depth: bool,
+                 decal_write: bool,
                  source_valid: &[bool],
-                 snapshot_bgs: &[Option<wgpu::BindGroup>; 2]| {
+                 snapshot_bgs: &mut [Option<wgpu::BindGroup>; 2]| {
+                    let range = replay_start..end;
                     for presentation in [false, true]
                         .into_iter()
                         .take(if renderer.render_scale > 1 { 2 } else { 1 })
                     {
+                        let stamps = replay_stamps && !presentation;
+                        let pipelines = if stamps {
+                            &stamp_pipelines
+                        } else {
+                            &delta_pipelines
+                        };
                         if !range.clone().any(|slot| {
                             let op = &target.operations[slot];
-                            source_valid[slot] && op.writes_depth() && {
+                            source_valid[slot] && pipelines[slot].is_some() && {
                                 let (_, _, width, height) = if presentation {
                                     target.presentation_scissor(slot)
                                 } else {
@@ -1163,35 +1212,63 @@ impl SceneRenderer {
                         } else {
                             0
                         };
-                        let depth_bg = snapshot_bgs[usize::from(presentation)].as_ref();
-                        renderer.profiling.count("depth_delta.passes", 1);
-                        let depth = depth.unwrap();
-                        let depth = if presentation {
-                            depth.presentation.as_deref().unwrap()
-                        } else {
-                            depth
-                        };
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("depth-delta"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &depth.delta_view,
+                        let depth_bg = snapshot_bgs[usize::from(presentation)].as_ref().or(
+                            if stamps && read_depth {
+                                depth_bg.as_ref()
+                            } else {
+                                None
+                            },
+                        );
+                        let stamp_only = stamps && (!any_depth || (read_depth && !decal_write));
+                        if stamps {
+                            renderer.profiling.count("writeback.replay_passes", 1);
+                        }
+                        if !stamp_only {
+                            renderer.profiling.count("replay.depth_passes", 1);
+                        }
+                        let depth = depth.map(|depth| {
+                            if presentation {
+                                depth.presentation.as_deref().unwrap()
+                            } else {
+                                depth
+                            }
+                        });
+                        let mut attachments = Vec::with_capacity(2);
+                        let attachment = |view| {
+                            Some(wgpu::RenderPassColorAttachment {
+                                view,
                                 resolve_target: None,
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Load,
                                     store: wgpu::StoreOp::Store,
                                 },
                                 depth_slice: None,
-                            })],
-                            depth_stencil_attachment: Some(
+                            })
+                        };
+                        if stamps {
+                            attachments.push(attachment(coverage_view.as_ref().unwrap()));
+                        }
+                        if !stamp_only {
+                            attachments.push(attachment(&depth.unwrap().delta_view));
+                        }
+                        let label = if stamps {
+                            "guest-replay"
+                        } else {
+                            "depth-delta"
+                        };
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some(label),
+                            color_attachments: &attachments,
+                            depth_stencil_attachment: (!stamp_only).then(|| {
                                 wgpu::RenderPassDepthStencilAttachment {
-                                    view: depth.delta_depth.as_ref().unwrap(),
+                                    view: depth.unwrap().delta_depth.as_ref().unwrap(),
                                     depth_ops: Some(wgpu::Operations {
                                         load: wgpu::LoadOp::Load,
                                         store: wgpu::StoreOp::Store,
                                     }),
                                     stencil_ops: None,
-                                },
-                            ),
+                                }
+                            }),
                             timestamp_writes: None,
                             occlusion_query_set: None,
                             multiview_mask: None,
@@ -1216,13 +1293,13 @@ impl SceneRenderer {
                                 operation.scissor
                             };
                             if !source_valid[slot]
-                                || !operation.writes_depth()
+                                || pipelines[slot].is_none()
                                 || width == 0
                                 || height == 0
                             {
                                 continue;
                             }
-                            let pipeline = delta_pipelines[slot].as_ref().unwrap();
+                            let pipeline = pipelines[slot].as_ref().unwrap();
                             pass.set_scissor_rect(x, y, width, height);
                             match &operation.draw {
                                 DrawInputs::Tris {
@@ -1270,9 +1347,9 @@ impl SceneRenderer {
                             }
                         }
                     }
+                    replay_start = end;
+                    *snapshot_bgs = [None, None];
                 };
-            let mut delta_start = 0;
-            let mut delta_snapshot_bgs = [None, None];
             let mut start = 0;
             #[cfg(not(target_arch = "wasm32"))]
             let mut ownership_start = 0;
@@ -1280,6 +1357,15 @@ impl SceneRenderer {
             let ownership_start = 0;
             while start < target.operations.len() {
                 if let DrawInputs::FramebufferCopy(copy) = &target.operations[start].draw {
+                    flush_replay(
+                        self,
+                        &mut encoder,
+                        start,
+                        false,
+                        false,
+                        &source_valid,
+                        &mut replay_snapshot_bgs,
+                    );
                     #[cfg(not(target_arch = "wasm32"))]
                     if self.coherence.is_some() {
                         use super::framebuffers::coherence::Writer;
@@ -1333,17 +1419,6 @@ impl SceneRenderer {
                             _ => None,
                         });
                         if color.is_some_and(touches) || depth_writer.is_some_and(touches) {
-                            if depth_writer.is_some() {
-                                replay_depth(
-                                    self,
-                                    &mut encoder,
-                                    delta_start..start,
-                                    &source_valid,
-                                    &delta_snapshot_bgs,
-                                );
-                                delta_start = start;
-                                delta_snapshot_bgs = [None, None];
-                            }
                             if let Some(coherence) = &mut self.coherence {
                                 coherence.snapshot(
                                     device,
@@ -1399,7 +1474,7 @@ impl SceneRenderer {
                 }
                 let read_depth = target.operations[start].reads_depth();
                 let decal_write = |op: &OperationInputs| op.reads_depth() && op.writes_depth();
-                let end = if self.coherence.is_some() || decal_write(&target.operations[start]) {
+                let end = if decal_write(&target.operations[start]) {
                     start + 1
                 } else {
                     start
@@ -1432,15 +1507,15 @@ impl SceneRenderer {
                     }
                 }
                 if read_depth {
-                    replay_depth(
+                    flush_replay(
                         self,
                         &mut encoder,
-                        delta_start..start,
+                        start,
+                        false,
+                        false,
                         &source_valid,
-                        &delta_snapshot_bgs,
+                        &mut replay_snapshot_bgs,
                     );
-                    delta_start = start;
-                    delta_snapshot_bgs = [None, None];
                 }
                 for presentation in
                     [false, true]
@@ -1520,93 +1595,6 @@ impl SceneRenderer {
                             stencil_ops: None,
                         }
                     });
-                    if let Some(view) = coverage_view.as_ref().filter(|_| !presentation) {
-                        let operation = &target.operations[start];
-                        let (x, y, width, height) = operation.scissor;
-                        if source_valid[start]
-                            && width != 0
-                            && height != 0
-                            && !matches!(operation.draw, DrawInputs::Rejected)
-                        {
-                            let coverage = self.coverage.get_or_insert_with(|| {
-                                super::framebuffers::coherence::Coverage::new(device)
-                            });
-                            let pipeline = coverage
-                                .pipeline(device, &self.textured_fb, &operation.draw, any_depth)
-                                .clone();
-                            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("guest-coverage"),
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                    depth_slice: None,
-                                })],
-                                depth_stencil_attachment: attachment.clone(),
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                                multiview_mask: None,
-                            });
-                            pass.set_viewport(0.0, 0.0, native_w as f32, native_h as f32, 0.0, 1.0);
-                            pass.set_scissor_rect(x, y, width, height);
-                            if read_depth {
-                                pass.set_bind_group(2, depth_bg.unwrap(), &[]);
-                            }
-                            match &operation.draw {
-                                DrawInputs::Tris {
-                                    index_start,
-                                    index_count,
-                                    material_index,
-                                    ..
-                                } => {
-                                    pass.set_pipeline(&pipeline);
-                                    if let Some(index) = &buffers.indices {
-                                        pass.set_index_buffer(
-                                            index.slice(..),
-                                            wgpu::IndexFormat::Uint32,
-                                        );
-                                    }
-                                    if let Some(vertices) =
-                                        buffers.vertices.get(&target.extents.logical)
-                                    {
-                                        pass.set_vertex_buffer(0, vertices.slice(..));
-                                    }
-                                    pass.set_bind_group(
-                                        0,
-                                        material_bgs[*material_index as usize],
-                                        &[],
-                                    );
-                                    pass.set_bind_group(
-                                        1,
-                                        &upload.uniforms,
-                                        &[(start * 256) as u32],
-                                    );
-                                    pass.draw_indexed(
-                                        *index_start..*index_start + *index_count,
-                                        0,
-                                        0..1,
-                                    );
-                                }
-                                DrawInputs::Rectangle { .. } => self.draw_rect_op(
-                                    &mut pass,
-                                    device,
-                                    &operation.draw,
-                                    material_bgs,
-                                    upload.rectangles.as_ref(),
-                                    Some(&upload.uniforms),
-                                    start as u32,
-                                    target.rect_indices[start],
-                                    any_depth,
-                                    Some(&pipeline),
-                                    false,
-                                ),
-                                _ => {}
-                            }
-                        }
-                    }
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("workload-segment"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1734,12 +1722,15 @@ impl SceneRenderer {
                     }
                     drop(pass);
                     if snapshot_bg.is_some() {
-                        delta_snapshot_bgs[usize::from(presentation)] = snapshot_bg;
+                        replay_snapshot_bgs[usize::from(presentation)] = snapshot_bg;
                     }
                 }
-                if source_valid[start] {
+                for (slot, valid) in source_valid.iter().enumerate().take(end).skip(start) {
+                    if !valid {
+                        continue;
+                    }
                     if let Some(binding) = target
-                        .copy_material(start)
+                        .copy_material(slot)
                         .and_then(|index| copy_bindings.get(&index).map(|(binding, _)| binding))
                     {
                         let texture =
@@ -1770,7 +1761,7 @@ impl SceneRenderer {
                         });
                         pass.set_pipeline(&pipeline);
                         pass.set_viewport(0.0, 0.0, native_w as f32, native_h as f32, 0.0, 1.0);
-                        let (x, y, w, h) = target.operations[start].scissor;
+                        let (x, y, w, h) = target.operations[slot].scissor;
                         if w != 0 && h != 0 {
                             pass.set_scissor_rect(x, y, w, h);
                             pass.set_vertex_buffer(
@@ -1778,8 +1769,8 @@ impl SceneRenderer {
                                 upload.rectangles.as_ref().unwrap().slice(..),
                             );
                             pass.set_bind_group(0, &binding.bind_group, &[]);
-                            pass.set_bind_group(1, &upload.uniforms, &[(start * 256) as u32]);
-                            let vertex = target.rect_indices[start] * 6;
+                            pass.set_bind_group(1, &upload.uniforms, &[(slot * 256) as u32]);
+                            let vertex = target.rect_indices[slot] * 6;
                             pass.draw(vertex..vertex + 6, 0..1);
                         }
                         drop(pass);
@@ -1787,18 +1778,31 @@ impl SceneRenderer {
                             device,
                             &mut encoder,
                             &texture,
-                            start,
+                            slot,
                         );
                     }
                 }
+                if replay_stamps {
+                    flush_replay(
+                        self,
+                        &mut encoder,
+                        end,
+                        read_depth,
+                        decal_write(&target.operations[start]),
+                        &source_valid,
+                        &mut replay_snapshot_bgs,
+                    );
+                }
                 start = end;
             }
-            replay_depth(
+            flush_replay(
                 self,
                 &mut encoder,
-                delta_start..target.operations.len(),
+                target.operations.len(),
+                false,
+                false,
                 &source_valid,
-                &delta_snapshot_bgs,
+                &mut replay_snapshot_bgs,
             );
             if let TargetId::Guest(address) = target.id {
                 if target.operations.iter().any(|op| {

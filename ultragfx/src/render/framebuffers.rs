@@ -114,6 +114,10 @@ impl DepthImage {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         };
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        {
+            descriptor.usage |= wgpu::TextureUsages::COPY_SRC;
+        }
         let delta = device.create_texture(&descriptor);
         let delta_view = delta.create_view(&Default::default());
         descriptor.label = Some("depth-delta-test");

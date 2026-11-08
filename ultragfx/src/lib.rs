@@ -617,7 +617,7 @@ impl Renderer {
             render::framebuffers::coherence::Coherence::new(self.guest_writeback_encoding)
         });
         if self.guest_writeback {
-            self.inner.warm_coverage(&self.device);
+            self.inner.warm_replay(&self.device);
         }
         self.inner.framebuffer_copies = framebuffer_copies;
         self.inner.frame_serial = frame_serial;
@@ -671,7 +671,7 @@ impl Renderer {
                 self.guest_writes.clear();
             }
             if enabled {
-                self.inner.warm_coverage(&self.device);
+                self.inner.warm_replay(&self.device);
             }
         }
         self.guest_writeback = enabled;
