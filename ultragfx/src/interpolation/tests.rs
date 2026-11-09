@@ -2596,6 +2596,7 @@ fn deferred_scanout_reuses_only_the_matching_version_and_missing_tasks_keep_the_
                 &mut encoder,
                 view,
                 pending.image.as_ref().unwrap(),
+                crate::PresentationFit::Fill,
                 &Default::default(),
             );
             r.queue.submit([encoder.finish()]);

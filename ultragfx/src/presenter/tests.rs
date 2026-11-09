@@ -1105,7 +1105,7 @@ fn deferred_other_target_preserves_selection_and_mixed_or_foreign_tasks_keep_sca
             .presenter
             .as_ref()
             .unwrap()
-            .present(pending.image, None)
+            .present(pending.image, None, pending.fit)
             .unwrap();
         let texture = h.textures.lock().unwrap().last().unwrap().clone();
         assert!(pixels(&h.renderer, &texture)
@@ -1316,6 +1316,7 @@ fn preparation_may_present_within_its_period_but_drops_an_expired_frame() {
                     .present_frame(
                         None,
                         None,
+                        PresentationFit::Fill,
                         |_, _| std::thread::sleep(Duration::from_millis(25)),
                         None,
                         Some((Instant::now() + Duration::from_millis(5), period)),
@@ -1536,4 +1537,194 @@ fn capture_readback_preserves_scheduled_sources_and_presentation() {
         );
         h.renderer.shutdown();
     }
+}
+
+#[track_caller]
+fn assert_fitted_pixels(renderer: &Renderer, texture: &wgpu::Texture, rect: [u32; 4]) {
+    let [left, top, width, height] = rect;
+    for (index, pixel) in pixels(renderer, texture)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        let x = index as u32 % texture.width();
+        let y = index as u32 / texture.width();
+        if (left..left + width).contains(&x) && (top..top + height).contains(&y) {
+            assert_eq!(*pixel, [255, 0, 0, 255], "image at ({x}, {y})");
+        } else {
+            assert_eq!(*pixel, [0, 0, 0, 255], "bar at ({x}, {y})");
+        }
+    }
+}
+
+#[test]
+fn presentation_fit_rounds_bars_switches_and_applies_to_caller_targets() {
+    use crate::PresentationFit;
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    assert_eq!(h.renderer.presentation_fit(), PresentationFit::Fill);
+    retained_fill(&mut h.renderer, 1, 0x1000, 0xf801_f801);
+    for reduction in [1, 2] {
+        h.renderer.set_reduction_factor(reduction).unwrap();
+        for (width, height, rect) in [
+            (1920, 1080, [240, 0, 1440, 1080]),
+            (19, 10, [3, 0, 13, 10]),
+            (10, 19, [0, 5, 10, 8]),
+            (12, 9, [0, 0, 12, 9]),
+        ] {
+            h.renderer.resize(width, height);
+            h.renderer
+                .set_presentation_fit(PresentationFit::Fill)
+                .unwrap();
+            h.renderer.present_last().unwrap();
+            let fill = h.presented.wait_for(h.presented.len());
+            assert_fitted_pixels(&h.renderer, &fill, [0, 0, width, height]);
+            let fit = PresentationFit::Aspect {
+                width: 4,
+                height: 3,
+            };
+            let count = h.presented.len();
+            h.renderer.set_presentation_fit(fit).unwrap();
+            assert_eq!(h.renderer.presentation_fit(), fit);
+            assert_eq!(h.presented.len(), count);
+            h.renderer.present_last().unwrap();
+            let fitted = h.presented.wait_for(count + 1);
+            assert_fitted_pixels(&h.renderer, &fitted, rect);
+            let caller = fill.create_view(&Default::default());
+            h.renderer.present_last_to(&caller);
+            assert_fitted_pixels(&h.renderer, &fill, rect);
+            let presenter = h.renderer.presenter.take();
+            for (fit, rect) in [(PresentationFit::Fill, [0, 0, width, height]), (fit, rect)] {
+                h.renderer.set_presentation_fit(fit).unwrap();
+                h.renderer.present_last_to(&caller);
+                assert_fitted_pixels(&h.renderer, &fill, rect);
+            }
+            h.renderer.presenter = presenter;
+            h.renderer
+                .set_presentation_fit(PresentationFit::Fill)
+                .unwrap();
+            h.renderer.present_last().unwrap();
+            assert_fitted_pixels(
+                &h.renderer,
+                &h.presented.wait_for(count + 2),
+                [0, 0, width, height],
+            );
+        }
+    }
+}
+
+#[test]
+fn presentation_fit_rejects_zero_dimensions_without_changing_the_setting() {
+    use crate::PresentationFit;
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    let fit = PresentationFit::Aspect {
+        width: 4,
+        height: 3,
+    };
+    h.renderer.set_presentation_fit(fit).unwrap();
+    for (width, height) in [(0, 3), (4, 0), (0, 0)] {
+        assert_eq!(
+            h.renderer
+                .set_presentation_fit(PresentationFit::Aspect { width, height }),
+            Err(PresentError::InvalidPresentationFit)
+        );
+        assert_eq!(h.renderer.presentation_fit(), fit);
+    }
+}
+
+#[test]
+fn presentation_fit_latches_for_scheduled_phases_and_plain_snapshots() {
+    use crate::PresentationFit;
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    h.renderer.resize(19, 10);
+    h.renderer
+        .set_presentation_fit(PresentationFit::Aspect {
+            width: 4,
+            height: 3,
+        })
+        .unwrap();
+    h.renderer
+        .set_refresh_rate(crate::RefreshRate::Display)
+        .unwrap();
+    let now = Instant::now();
+    for (cookie, visible_at) in [(1, now - Duration::from_millis(50)), (2, now)] {
+        let task = retained_fill(&mut h.renderer, cookie, 0x1000, 0xf801_f801);
+        h.renderer
+            .scanout(
+                crate::ScanoutOrigin::Host(Some(0x1000)),
+                visible_at,
+                std::slice::from_ref(&task),
+                Some(&task),
+            )
+            .unwrap();
+    }
+    let count = h.presented.len() + 2;
+    h.presented.wait_for(count);
+    assert!(h
+        .renderer
+        .presenter
+        .as_ref()
+        .unwrap()
+        .synchronous(|state| state.schedule.phase.is_some())
+        .unwrap());
+    assert_fitted_pixels(&h.renderer, &h.presented.wait_for(count), [3, 0, 13, 10]);
+    h.renderer
+        .set_presentation_fit(PresentationFit::Fill)
+        .unwrap();
+    let count = h.presented.len() + 2;
+    assert_fitted_pixels(&h.renderer, &h.presented.wait_for(count), [3, 0, 13, 10]);
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(Some(0x1000)),
+            Instant::now(),
+            &[],
+            None,
+        )
+        .unwrap();
+    let count = h.presented.len() + 2;
+    assert_fitted_pixels(&h.renderer, &h.presented.wait_for(count), [0, 0, 19, 10]);
+    h.renderer
+        .set_presentation_fit(PresentationFit::Aspect {
+            width: 4,
+            height: 3,
+        })
+        .unwrap();
+    h.renderer
+        .scanout(
+            crate::ScanoutOrigin::Host(Some(0x1000)),
+            Instant::now(),
+            &[],
+            None,
+        )
+        .unwrap();
+    let count = h.presented.len() + 2;
+    assert_fitted_pixels(&h.renderer, &h.presented.wait_for(count), [3, 0, 13, 10]);
+    h.renderer.presenter.as_ref().unwrap().barrier().unwrap();
+}
+
+#[test]
+fn presentation_fit_keeps_hooks_over_the_whole_surface() {
+    let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+    h.renderer.resize(19, 10);
+    h.renderer
+        .set_presentation_fit(crate::PresentationFit::Aspect {
+            width: 4,
+            height: 3,
+        })
+        .unwrap();
+    retained_fill(&mut h.renderer, 1, 0x1000, 0xf801_f801);
+    h.renderer
+        .set_send_render_hook(Box::new(Hook {
+            events: h.events.clone(),
+            name: "fit",
+            panic: None,
+        }))
+        .unwrap();
+    h.renderer.present_last().unwrap();
+    let texture = h.presented.wait_for(1);
+    assert!(pixels(&h.renderer, &texture)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == [0, 0, 255, 255]));
 }

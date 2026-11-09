@@ -9,6 +9,24 @@ representable period. `requested_refresh_rate()` returns the request;
 `effective_refresh_rate()` and `display_refresh_rate()` describe the last scanout.
 Wasm32 and targets without an owned surface accept Original only.
 
+`Renderer::set_presentation_fit(PresentationFit::Aspect { width: 4, height: 3 })`
+fits the scanned-out image inside the presentation target with black bars. The
+default, `PresentationFit::Fill`, stretches over the whole target.
+`presentation_fit()` returns the requested setting; on an owned surface the next
+scanout latches it for Original presents, snapshots and interpolation phases.
+`present_to`, `present_last_to` and `present_host_to` apply it to the caller's
+target; `present_native_to` always fills. Render hooks still receive the full
+target and draw over the bars.
+Zero aspect dimensions return `PresentError::InvalidPresentationFit` without
+changing the setting.
+
+Aspect fit keeps the largest continuous rectangle of the requested ratio inside
+the target, then rounds its unconstrained dimension to the nearest whole pixel,
+with halves rounded up and a minimum of one pixel. Each centering offset is half
+the unused extent rounded down, so an odd extra bar pixel goes on the right or
+bottom. For 4:3 in 1920×1080, the image occupies `(240, 0, 1440, 1080)`;
+in 19×10 it occupies `(3, 0, 13, 10)`, and in 10×19, `(0, 5, 10, 8)`.
+
 `interpolation_active()` also describes the last scanout. Hosts can omit task
 annotations while it is false. Changing the rate does not enable retention by
 itself. Original acknowledges each present. Display and Manual acknowledge

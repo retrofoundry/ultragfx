@@ -15,6 +15,7 @@ pub(crate) struct PendingScanout {
     pub(crate) image: Option<Scanout>,
     pub(crate) source: Option<SourceFrame>,
     pub(crate) policy: crate::refresh::RefreshPolicy,
+    pub(crate) fit: crate::PresentationFit,
 }
 
 impl Renderer {
@@ -89,6 +90,7 @@ impl Renderer {
             image,
             source: retained.filter(|source| source.ineligibility().is_empty()),
             policy: self.refresh_latched,
+            fit: self.presentation_fit,
         }
     }
 
