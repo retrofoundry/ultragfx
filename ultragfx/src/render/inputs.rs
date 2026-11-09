@@ -330,6 +330,14 @@ impl OperationInputs {
 }
 
 impl<'a> RenderInputs<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn color_targets(&self) -> impl Iterator<Item = TargetId> + '_ {
+        self.targets
+            .iter()
+            .filter(|target| !target.depth_clear)
+            .map(|target| target.id)
+    }
+
     pub(crate) fn strict_depth_id(
         &self,
         renderer: &super::SceneRenderer,

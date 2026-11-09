@@ -1,4 +1,35 @@
-# Annotated sources and phase rendering
+# Owned-surface interpolation
+
+Native owned surfaces support `RefreshRate::Original` (the default), `Display`,
+and `Manual(hz)`. `set_refresh_rate` queues the setting for the next scanout.
+`set_display_refresh_rate(Some(millihz))` supplies the monitor's nominal rate;
+`None` explicitly means unknown and uses 60 Hz. Manual keeps the requested Hz and
+clamps the effective rate to the monitor. Rates must have a finite positive,
+representable period. `requested_refresh_rate()` returns the request;
+`effective_refresh_rate()` and `display_refresh_rate()` describe the last scanout.
+Wasm32 and targets without an owned surface accept Original only.
+
+`interpolation_active()` also describes the last scanout. Hosts can omit task
+annotations while it is false. Changing the rate does not enable retention by
+itself. Original acknowledges each present. Display and Manual acknowledge
+acceptance and present asynchronously; fatal worker errors are latched in
+`presenter_error()` and returned by later calls.
+
+The present thread paces before surface acquisition, using the effective rate
+on an ideal deadline grid, skipping expired deadlines after a late frame. Present
+overhead does not extend the period. If the nominal rate exceeds the display's
+actual rate, FIFO occasionally waits as the grid runs ahead; a delay of a full
+period skips expired work instead of producing a catch-up burst. A nominal rate
+below the actual rate still targets the lower rate and can repeat a display frame.
+FIFO is a backstop. It drains a bounded batch
+of messages before serving at most one due presentation and keeps the newest
+sources. Entering Original discards interpolation work and acknowledges the
+boundary. Entering Display or Manual shows plain scanouts until two compatible
+retained sources are available. Interior phases are delayed by the larger of the
+last two source intervals plus the preparation lead. The preceding pair stays
+available until the delayed sample reaches the latest pair. This absorbs source
+jitter and preparation time without extrapolating past the newest source. The
+phase target is an estimate, not physical scanout or a VRR promise.
 
 `annotation::ANNOTATION_ABI_VERSION` is 2; the host checks it during registration.
 `Renderer::submit_task` and the
@@ -103,15 +134,23 @@ consumed effective M with the same exact floating-point equality as MVP reconstr
 can therefore differ from the supplied basis without losing endpoint parity.
 Other construction orders require a source hold.
 
-`commit_source(&tasks, SourceScanout { task_cookie, address, rows, visible_at })`
-associates visibility with the selected task's immutable target snapshot. The
-required VI origin address must belong to that task's targets.
-Rows select a native full-width crop. The host supplies `visible_at` on its
-monotonic clock at swap enqueue and carries the producer sample separately. A
-completed task becomes visible only through this call. A no-swap task is simply
-left uncommitted. Later address reuse cannot change a committed image.
+Call native `Renderer::scanout(origin, visible_at, tasks, selected)` once per VI
+swap, even when no task or annotation is available. `ScanoutOrigin::Vi` uses the
+ordinary VI source resolver; `Host` uses the native framebuffer address resolver.
+The host records `visible_at: std::time::Instant` at swap enqueue and carries its
+producer sample separately. `selected` explicitly identifies one of `tasks` from
+the same renderer. A no-swap task is left uncommitted.
 
-`SourceFrame::ineligibility()` returns `&[ReasonCount]`, each containing
+The resolved scanout image is authoritative. A retained target is reused only if
+no later write changed that target. Otherwise the render thread snapshots the
+current image and submits the copy before publishing it. Missing, mixed, foreign
+or stale task data never suppresses a real scanout; it breaks the interpolation
+pair. An unrelated target write does not invalidate a deferred scanout. Snapshot
+textures are pooled by extent and format and cannot be reused until both CPU
+ownership and the present thread's GPU use have ended. Source-frame construction
+is internal; hosts do not call `commit_source` or schedule phases themselves.
+
+Internally, source ineligibility records `ReasonCount` entries, each containing
 `reason: Ineligibility` and `count: u64`. Reasons include unresolved scopes,
 unresolved or ambiguous bindings, unknown world triangles, unsafe billboard
 recipes, unsupported topology, and the framebuffer/task reasons below. A triangle
@@ -122,12 +161,6 @@ additional declaration. Framebuffer counts count admission violations or
 dependent operations; task-wide flags count once per task. Counts accumulate
 across submitted tasks when committing a source. Every reason holds the source.
 
-`SourceFrame::counts() -> SourceCounts` reports submitted triangles, held triangles
-(all policies except Interpolate and StaticWorld, including unscoped triangles),
-texture rectangles and fills, whether the source is eligible or held. Rectangles
-and fills stay in A's retained content. Counts describe submitted primitives,
-including clipped or transparent geometry, rather than visible pixels.
-
 Framebuffer admission rejects texture loads, copies, live aliases, inherited
 colour/depth contents, CPU imports and multitask sources. It requires explicit
 fills covering each attachment before use, with matching layout and depth/colour
@@ -136,19 +169,11 @@ texture replacement providers and canonical tasks with diagnostics, dropped draw
 or incomplete termination also hold. Multitask sources retain the selected
 endpoint rather than replaying task history.
 
-`Renderer::phase_renderer() -> interpolation::PhaseRenderer` creates independent
-phase state on the same device and queue. Move it to the presentation thread;
-`PhaseRenderer` is `Send` and `SourceFrame` is `Send + Sync` on native targets.
-The canonical `Renderer` remains `!Send + !Sync`. On wasm32, wgpu's device and
-resource handles keep their platform thread restrictions.
-
-`PhaseRenderer::render_phase(&a, &b, t, target)` accepts finite `0..=1` phases
-and renders to a caller-owned texture view on that device in the creator's
-presentation format.
-Creation copies the current reduction factor; subsequent changes use
-`PhaseRenderer::set_reduction_factor` independently of the canonical renderer.
-The host derives t from the visibility timestamps: interior phases precede B; `t == 1` switches
-to B's discrete scene. Matching uses draw identity. M follows the scope's policy;
+The present thread creates its independent `PhaseRenderer` lazily on the shared
+device and queue. The canonical `Renderer` remains `!Send + !Sync`; native source
+frames can cross threads. Phase state uses the current presentation format and
+reduction factor. Its finite `0..=1` phase selects retained content, with `t == 1`
+switching to B's discrete scene. Matching uses draw identity. M follows the scope's policy;
 V blends entrywise. World camera validation is independent of draw matching:
 matching world scopes pair their consumed cameras, including distinct camera
 reads within a scope. A uniform B camera applies regardless of triangle count.
@@ -159,10 +184,10 @@ be paired unambiguously, or a changed P, holds the interval. Light and look-at
 directions are folded again with M, including held models. Other vertex, material and
 texture content remains A's until B.
 
-Eligible endpoints render their own retained scenes, without endpoint-image
-reuse. Ineligible pairs and epoch breaks present the frozen A endpoint until B.
+Owned-surface endpoints reuse their immutable images. An ineligible scanout or
+epoch break presents the newly scanned image directly and breaks the pair.
 Changes in scale, dimensions or crop, and non-increasing visibility timestamps
-also hold.
+also break it.
 `PhaseResult::Interpolated { restrictions }` reports per-draw fallback, grouped by
 `RestrictionReason`: NoMatch, TopologyChanged, PolicyChanged or
 DecompositionRejected. Each `DrawRestriction` contains the affected scope count
@@ -179,8 +204,10 @@ context. Attachments are cleared per phase and reused while their layout, size
 and scale match; phases blit directly from scratch without snapshot copies.
 It runs at 1x as well as higher presentation scales. Scanout uses the
 saved source scale, native crop and phase reduction factor through the normal
-box-reduction/blit path. It does not invoke render hooks or advance canonical
-state, ownership, write-back, frame serials or dither seeds.
+box-reduction/blit path. Final composition invokes render hooks on every
+presented frame, including phases and plain snapshots. Hook command buffers run
+before the final encoder. Phases do not advance canonical state, ownership,
+write-back, frame serials or dither seeds.
 
 Each phase renderer owns its scratch targets, pipeline variants, texture residency,
 scanout resources and correspondence for one pair with weak source references.
@@ -193,7 +220,14 @@ Canonical snapshots are submitted before their handles are returned.
 Source handles own their selected task and endpoint; dropping them on either
 thread releases that history, even while the phase renderer survives. Scratch
 attachments are limited to the current retained scene's targets, and texture
-residency uses its own bounded cache. Epoch breaks hold the source pair. Canonical
-reset or destruction does not invalidate retained sources or phase renderers;
-dropping a phase renderer discards its scratch state. Callers retain only the
-source pair they need; the phase renderer does not keep a queue of sources.
+residency uses its own bounded cache. Reset and reconfiguration discard scheduled
+sources and phase state. The presenter retains up to three sources and a two-source
+mailbox. Coalescing an overflow breaks continuity with the discarded history.
+Hosts control the lifetime of any task handles they keep.
+
+Surface configuration excludes all canonical submissions. This lock is not held
+across acquisition, phase rendering or joining the present thread. Hosts using
+cloned device/queue handles must stop external submissions during configuration
+and surface recovery. Before external work on an owned surface, select Original
+and acknowledge a scanout so asynchronous recovery has stopped; hook submissions
+already run on the present thread.

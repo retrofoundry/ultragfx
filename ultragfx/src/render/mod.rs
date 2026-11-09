@@ -1,4 +1,6 @@
 //! wgpu pass-through renderer for the walking skeleton, extended with texture support.
+#[cfg(not(target_arch = "wasm32"))]
+mod snapshots;
 use bytemuck::{Pod, Zeroable};
 
 #[cfg(test)]
@@ -1957,6 +1959,8 @@ fn address_mode(wrap: u8) -> wgpu::AddressMode {
 }
 
 pub struct SceneRenderer {
+    #[cfg(not(target_arch = "wasm32"))]
+    snapshots: snapshots::SnapshotPool,
     pub(crate) profiling: crate::profiling::Recorder,
     pub(crate) frame_serial: u64,
     pub(crate) dither_seed: u32,
@@ -2246,6 +2250,8 @@ impl SceneRenderer {
             texture_resources: texture_resources::TextureResources::new(device),
             sampling_cache: Default::default(),
             framebuffer_copies: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            snapshots: Default::default(),
             color_versions: Default::default(),
             presentation_versions: Default::default(),
             material_bindings: Vec::new(),
@@ -2513,6 +2519,8 @@ impl SceneRenderer {
         let rows = rows.unwrap_or(0..fb.height);
         if native && (self.render_scale != 1 || self.reduction_factor != 1) {
             return Scanout {
+                #[cfg(not(target_arch = "wasm32"))]
+                lease: None,
                 texture: fb.color.clone(),
                 height: fb.height,
                 scale: 1,
@@ -2542,6 +2550,8 @@ impl SceneRenderer {
         }
         let fb = &self.framebuffers[&src];
         Scanout {
+            #[cfg(not(target_arch = "wasm32"))]
+            lease: None,
             texture: fb
                 .presentation
                 .as_ref()
@@ -2570,6 +2580,10 @@ impl SceneRenderer {
     }
 
     pub(crate) fn reset(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.snapshots = Default::default();
+        }
         #[cfg(feature = "capture")]
         {
             self.depth_color_epoch = None;

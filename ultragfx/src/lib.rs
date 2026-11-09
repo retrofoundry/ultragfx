@@ -16,6 +16,12 @@ pub mod interpolation;
 pub mod microcode;
 #[cfg(not(target_arch = "wasm32"))]
 mod presenter;
+#[cfg(not(target_arch = "wasm32"))]
+mod scanout;
+#[cfg(not(target_arch = "wasm32"))]
+pub use scanout::ScanoutOrigin;
+mod refresh;
+pub use refresh::{RefreshRate, RefreshRateError};
 pub(crate) mod render;
 pub mod replacement;
 pub(crate) mod scene;
@@ -272,6 +278,16 @@ pub struct Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     presenter: Option<presenter::Presenter>,
     target: PresentTarget,
+    #[cfg(not(target_arch = "wasm32"))]
+    configuration: std::sync::Arc<std::sync::Mutex<()>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    in_flight: presenter::canonical::InFlight,
+    #[cfg(not(target_arch = "wasm32"))]
+    identity: std::sync::Arc<()>,
+    #[cfg(not(target_arch = "wasm32"))]
+    target_versions: std::collections::HashMap<TargetId, std::sync::Arc<()>>,
+    refresh_requested: refresh::RefreshPolicy,
+    refresh_latched: refresh::RefreshPolicy,
     inner: SceneRenderer,
     rdp: crate::hle::rdp::Rdp,
     color_image_epoch: u64,
@@ -384,6 +400,14 @@ impl Renderer {
             return Err(ConfigError::ReductionFactor(factor));
         }
         self.mark_mutation();
+        if factor != self.inner.reduction_factor {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(presenter) = &self.presenter {
+                if let Err(error) = presenter.barrier() {
+                    log::error!("reduction change failed: {error:?}");
+                }
+            }
+        }
         self.inner.reduction_factor = factor;
         Ok(())
     }
@@ -428,6 +452,8 @@ impl Renderer {
             SceneRenderer::new_profiled(&device, render_fmt, w, h, dual_source, profiling);
         inner.render_scale = config.resolution_multiplier;
         #[cfg(not(target_arch = "wasm32"))]
+        let configuration = std::sync::Arc::new(std::sync::Mutex::new(()));
+        #[cfg(not(target_arch = "wasm32"))]
         let (target, presenter) = match target {
             PresentTarget::Surface { surface, config } => {
                 let target = PresentTarget::Headless {
@@ -441,6 +467,7 @@ impl Renderer {
                     inner.compositor(),
                     device.clone(),
                     queue.clone(),
+                    configuration.clone(),
                 );
                 (target, Some(presenter))
             }
@@ -449,7 +476,17 @@ impl Renderer {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
             presenter,
+            #[cfg(not(target_arch = "wasm32"))]
+            configuration,
+            #[cfg(not(target_arch = "wasm32"))]
+            in_flight: Default::default(),
             target,
+            #[cfg(not(target_arch = "wasm32"))]
+            identity: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            target_versions: Default::default(),
+            refresh_requested: Default::default(),
+            refresh_latched: Default::default(),
             inner,
             rdp: Default::default(),
             color_image_epoch: 0,
@@ -545,8 +582,9 @@ impl Renderer {
     }
 
     /// Live handles for consumers that upload their own GPU resources (helix HUD textures, wafel).
-    /// A host submitting through cloned handles must exclude those submissions while calling
-    /// resize/reconfigure or a present that can recover a Lost/Outdated surface.
+    /// External submissions must stop during resize/reconfigure and surface recovery. With an
+    /// owned surface, select Original and acknowledge a scanout before submitting externally;
+    /// Display/Manual can recover the surface asynchronously. Hooks submit on the present thread.
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
@@ -600,6 +638,12 @@ impl Renderer {
     /// Re-applies `present_mode` (and an explicit `format` override) to a `Surface`. A `None` format
     /// keeps the currently picked format (no adapter retained to re-run `pick_surface_format`).
     pub fn reconfigure(&mut self, config: RendererConfig) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(presenter) = &self.presenter {
+            if let Err(error) = presenter.barrier() {
+                log::error!("reconfigure barrier failed: {error:?}");
+            }
+        }
         self.mark_mutation();
         let _ = self.device.poll(wgpu::PollType::wait_indefinitely()); // #[must_use]; no-op on web
         let config = normalize_config(config);
@@ -664,6 +708,8 @@ impl Renderer {
         self.frame_admission_error = None;
         // The store was just dropped with the old `inner`; drop dangling scanout state too.
         self.last_scanout_addr = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.target_versions.clear();
         self.frame_scenes.clear();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(presenter) = &self.presenter {
@@ -990,6 +1036,18 @@ impl Renderer {
                 ..Default::default()
             };
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _completion = if self.interpolation_active() {
+            Some(self.in_flight.begin(&self.device, &self.queue))
+        } else {
+            None
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let configuration = self.configuration.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let _configuration = configuration
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let _process = self.inner.profiling.span("process_dl");
         let mut released = Ok(());
         if let Some(coherence) = &mut self.inner.coherence {
@@ -1004,12 +1062,15 @@ impl Renderer {
         }
         // Released bytes are already foreign, so import them even if this task is rejected.
         self.inner.import_existing(&self.device, &self.queue);
-        let cpu_imported = recording.is_some()
-            && self
-                .inner
-                .coherence
-                .as_ref()
-                .is_some_and(|coherence| coherence.imported);
+        let cpu_imported = self
+            .inner
+            .coherence
+            .as_ref()
+            .is_some_and(|coherence| coherence.imported);
+        #[cfg(not(target_arch = "wasm32"))]
+        if cpu_imported {
+            self.target_versions.clear();
+        }
         let is_image = mem.is_rdram_image();
         let rdp = if submission == Submission::RasterizePrefix {
             Default::default()
@@ -1125,6 +1186,12 @@ impl Renderer {
             }
         };
         #[cfg(not(target_arch = "wasm32"))]
+        if recording.is_some() || !self.target_versions.is_empty() {
+            for target in prepared.iter().flat_map(|inputs| inputs.color_targets()) {
+                self.target_versions.insert(target, std::sync::Arc::new(()));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         let staged = native.then(|| {
             let target = workload.as_ref().unwrap().targets[0].id;
             let depth = prepared
@@ -1211,6 +1278,8 @@ impl Renderer {
         result.dropped_runs += self.inner.dropped_runs;
         let summary = result.summary(scanout.is_some());
 
+        #[cfg(not(target_arch = "wasm32"))]
+        self.inner.retire_snapshots();
         if let Some(recording) = recording {
             let annotations = result.scene.annotations.take();
             let mut retained_scene = result.scene.clone();
@@ -1223,6 +1292,8 @@ impl Renderer {
                 cpu_imported,
                 self.inner.has_replacement_provider(),
                 summary,
+                #[cfg(not(target_arch = "wasm32"))]
+                &self.target_versions,
             )));
         }
 
@@ -1265,6 +1336,8 @@ impl Renderer {
         self.color_image_epoch = 0;
         self.guest_writes.clear();
         self.inner.reset();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.target_versions.clear();
         self.frame_scenes.clear();
         self.last_scanout_addr = None;
         self.last_backend_was_image = false;
@@ -1290,6 +1363,12 @@ impl Renderer {
     /// Latch scale using the current native VI crop. Failure preserves the store and rejects
     /// tasks until a subsequent frame boundary succeeds. Missing VI reuses the last reference.
     pub fn begin_frame_with_vi(&mut self, vi: Option<ViRegisters>) -> Result<(), Diagnostic> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let configuration = self.configuration.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let _configuration = configuration
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let _span = self.inner.profiling.span("begin_frame");
         self.mark_mutation();
         let reference = if self.last_scanout_addr == Some(TargetId::Legacy) {
@@ -1317,10 +1396,16 @@ impl Renderer {
             ScalePolicy::Fixed(scale) => scale,
             ScalePolicy::Auto => self.content_height.div_ceil(reference).clamp(1, 4),
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        if scale != self.inner.render_scale {
+            self.target_versions.clear();
+        }
         self.frame_admission_error = self
             .inner
             .change_scale(&self.device, &self.queue, scale)
             .err();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.inner.retire_snapshots();
         if let Some(diagnostic) = self.frame_admission_error {
             return Err(diagnostic);
         }
@@ -1426,7 +1511,7 @@ impl Renderer {
             .take_hook()
     }
 
-    /// Fatal presenter status, retained after a panic or failure to start.
+    /// Fatal presentation status.
     pub fn presenter_error(&self) -> Option<PresentError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(presenter) = &self.presenter {
@@ -1475,6 +1560,14 @@ impl Renderer {
     #[cfg(feature = "debug-ui")]
     pub fn set_debugger_enabled(&mut self, enabled: bool) {
         self.mark_mutation();
+        #[cfg(not(target_arch = "wasm32"))]
+        if enabled && !self.debugger.enabled {
+            if let Some(presenter) = &self.presenter {
+                if let Err(error) = presenter.barrier() {
+                    log::error!("debugger barrier failed: {error:?}");
+                }
+            }
+        }
         self.debugger.enabled = enabled;
     }
 
@@ -1742,7 +1835,7 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         if self.presenter.is_some() {
-            return self.threaded_present(src, None, false);
+            return self.scanout_resolved(src, std::time::Instant::now(), &[], None);
         }
 
         // RO: acquire in a scope so the `&self.target` borrow (surface/config) ENDS before

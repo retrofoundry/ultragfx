@@ -1,14 +1,13 @@
 use std::{collections::HashMap, ops::Range, sync::Arc};
 
 use super::{
-    framebuffers,
     workload::{TargetId, Workload},
     ImageLayout, SceneRenderer,
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct TargetSnapshot {
-    pub(super) texture: wgpu::Texture,
+    pub(crate) texture: Arc<wgpu::Texture>,
     pub(crate) layout: ImageLayout,
     pub(crate) height: u32,
     pub(crate) scale: u32,
@@ -106,11 +105,12 @@ impl IsolatedRenderer {
             .get(&target)
             .expect("an eligible source's selected target is rendered by its retained scene");
         Ok(TargetSnapshot {
-            texture: fb
-                .presentation
-                .as_ref()
-                .map_or(&fb.color, |p| &p.texture)
-                .clone(),
+            texture: Arc::new(
+                fb.presentation
+                    .as_ref()
+                    .map_or(&fb.color, |p| &p.texture)
+                    .clone(),
+            ),
             layout: fb.layout,
             height: fb.height,
             scale: context.render_scale,
@@ -119,6 +119,14 @@ impl IsolatedRenderer {
 }
 
 impl SceneRenderer {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retire_snapshots(&mut self) {
+        self.snapshots.retain(self.framebuffers.values().map(|fb| {
+            let source = fb.presentation.as_ref().map_or(&fb.color, |p| &p.texture);
+            (source.size(), source.format())
+        }));
+    }
+
     pub(crate) fn has_replacement_provider(&self) -> bool {
         self.texture_resources.replacements.active.is_some()
     }
@@ -133,7 +141,7 @@ impl SceneRenderer {
     }
 
     pub(crate) fn snapshot_targets(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         scene: &crate::Scene,
@@ -147,21 +155,31 @@ impl SceneRenderer {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("endpoint-snapshots"),
         });
-        let snapshots = self
+        #[cfg(not(target_arch = "wasm32"))]
+        let pool = &mut self.snapshots;
+        let snapshots: HashMap<_, _> = self
             .framebuffers
             .iter()
             .filter(|(id, _)| targets.contains(id))
             .map(|(&id, fb)| {
                 let source = fb.presentation.as_ref().map_or(&fb.color, |p| &p.texture);
-                let texture = device.create_texture(&framebuffers::color_descriptor(
-                    "endpoint-snapshot",
-                    (source.width(), source.height()),
-                ));
-                encoder.copy_texture_to_texture(
-                    source.as_image_copy(),
-                    texture.as_image_copy(),
-                    source.size(),
-                );
+                #[cfg(not(target_arch = "wasm32"))]
+                let texture = pool.copy(device, &mut encoder, source);
+                #[cfg(target_arch = "wasm32")]
+                let texture = {
+                    let texture = Arc::new(device.create_texture(
+                        &super::framebuffers::color_descriptor(
+                            "endpoint-snapshot",
+                            (source.width(), source.height()),
+                        ),
+                    ));
+                    encoder.copy_texture_to_texture(
+                        source.as_image_copy(),
+                        texture.as_image_copy(),
+                        source.size(),
+                    );
+                    texture
+                };
                 (
                     id,
                     Arc::new(TargetSnapshot {
@@ -174,7 +192,31 @@ impl SceneRenderer {
             })
             .collect();
         queue.submit([encoder.finish()]);
+        #[cfg(not(target_arch = "wasm32"))]
+        let leases: Vec<_> = snapshots
+            .values()
+            .map(|image| image.texture.clone())
+            .collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        queue.on_submitted_work_done(move || drop(leases));
         snapshots
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn snapshot_scanout(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &mut super::Scanout,
+    ) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("scanout-snapshot"),
+        });
+        let texture = self.snapshots.copy(device, &mut encoder, &image.texture);
+        queue.submit([encoder.finish()]);
+        let lease = texture.clone();
+        queue.on_submitted_work_done(move || drop(lease));
+        self.compositor.replace_texture(device, image, texture);
     }
 
     pub(crate) fn scanout_snapshot(

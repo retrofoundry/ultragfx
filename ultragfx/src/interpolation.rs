@@ -35,30 +35,49 @@ pub struct TaskSubmission<'a> {
 
 #[derive(Clone)]
 pub struct TaskHandle {
+    #[cfg(not(target_arch = "wasm32"))]
+    renderer: Arc<()>,
     info: TaskInfo,
     pub summary: DlSummary,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) retained: Option<Arc<RetainedTask>>,
 }
 
 impl TaskHandle {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn same_task(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.renderer, &other.renderer)
+            && self.info == other.info
+            && self
+                .retained
+                .as_ref()
+                .zip(other.retained.as_ref())
+                .is_some_and(|(a, b)| Arc::ptr_eq(a, b))
+    }
+
     pub fn info(&self) -> TaskInfo {
         self.info
     }
 }
 
 pub(crate) struct RetainedTask {
+    #[cfg(not(target_arch = "wasm32"))]
+    versions: HashMap<TargetId, Arc<()>>,
     scene: Scene,
     context: IsolatedContext,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     targets: HashMap<TargetId, Arc<TargetSnapshot>>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     eligibility: Vec<ReasonCount>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SourceScanout {
-    pub task_cookie: u64,
-    pub address: u64,
-    pub rows: Option<Range<u32>>,
-    pub visible_at: u64,
+pub(crate) struct SourceScanout {
+    pub(crate) task_cookie: u64,
+    pub(crate) address: u64,
+    pub(crate) rows: Option<Range<u32>>,
+    pub(crate) visible_at: std::time::Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,14 +114,6 @@ impl ReasonCount {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SourceCounts {
-    pub triangles: u64,
-    pub held_triangles: u64,
-    pub rectangles: u64,
-    pub fills: u64,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceError {
     UnrecordedTask,
@@ -118,24 +129,43 @@ pub struct SourceFrame {
 
 struct SourceData {
     info: TaskInfo,
-    visible_at: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    visible_at: std::time::Instant,
     task: Arc<RetainedTask>,
     target: TargetId,
     rows: Option<Range<u32>>,
     image: Arc<TargetSnapshot>,
-    counts: SourceCounts,
     eligibility: Vec<ReasonCount>,
 }
 
 impl SourceFrame {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn image(&self) -> &TargetSnapshot {
+        &self.data.image
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn compatible(&self, previous: &Self) -> bool {
+        self.visible_at() > previous.visible_at()
+            && self.info().epoch == previous.info().epoch
+            && self.data.image.scale == previous.data.image.scale
+            && self.data.image.layout == previous.data.image.layout
+            && self.data.image.height == previous.data.image.height
+            && self.data.rows == previous.data.rows
+            && self.data.eligibility.is_empty()
+            && previous.data.eligibility.is_empty()
+    }
+
     pub fn info(&self) -> TaskInfo {
         self.data.info
     }
-    pub fn visible_at(&self) -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn visible_at(&self) -> std::time::Instant {
         self.data.visible_at
     }
-    pub fn counts(&self) -> SourceCounts {
-        self.data.counts
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn legacy_extent(&self) -> (u32, u32) {
+        self.data.task.context.legacy_extent
     }
     pub fn ineligibility(&self) -> &[ReasonCount] {
         &self.data.eligibility
@@ -215,6 +245,7 @@ impl RetainedTask {
         cpu_imported: bool,
         replacements: bool,
         summary: DlSummary,
+        #[cfg(not(target_arch = "wasm32"))] versions: &HashMap<TargetId, Arc<()>>,
     ) -> Self {
         let mut eligibility = eligibility(&scene, context, cpu_imported, &targets);
         if replacements {
@@ -228,6 +259,11 @@ impl RetainedTask {
             ReasonCount::add(&mut eligibility, Ineligibility::UnsupportedTask, 1);
         }
         Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            versions: targets
+                .keys()
+                .filter_map(|id| versions.get(id).map(|version| (*id, version.clone())))
+                .collect(),
             scene,
             context,
             targets,
@@ -369,35 +405,6 @@ fn eligibility(
     reasons
 }
 
-fn source_counts(scene: &Scene) -> SourceCounts {
-    let mut counts = SourceCounts {
-        triangles: (scene.indices.len() / 3) as u64,
-        ..Default::default()
-    };
-    if let Some(records) = &scene.annotations {
-        counts.held_triangles = records
-            .draws
-            .iter()
-            .filter(|d| {
-                d.annotation.is_none_or(|i| {
-                    !matches!(
-                        records.sidecar.draws[i].policy,
-                        TransformPolicy::Interpolate | TransformPolicy::StaticWorld
-                    )
-                })
-            })
-            .count() as u64;
-    }
-    for op in scene.framebuffer_pairs.iter().flat_map(|pair| &pair.ops) {
-        match op {
-            SceneOp::TexRect { .. } => counts.rectangles += 1,
-            SceneOp::FillRect { .. } => counts.fills += 1,
-            _ => {}
-        }
-    }
-    counts
-}
-
 fn covered(bounds: [i32; 4], rectangles: &[[i32; 4]]) -> bool {
     let mut remaining = vec![bounds];
     for &[left, top, right, bottom] in rectangles {
@@ -477,14 +484,25 @@ impl crate::Renderer {
             recording.as_mut(),
         );
         TaskHandle {
+            #[cfg(not(target_arch = "wasm32"))]
+            renderer: self.identity.clone(),
             info: submission.info,
             summary,
             retained: recording.and_then(|recording| recording.task),
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn source_is_current(&self, source: &SourceFrame) -> bool {
+        self.target_versions
+            .get(&source.data.target)
+            .zip(source.data.task.versions.get(&source.data.target))
+            .is_some_and(|(current, retained)| Arc::ptr_eq(current, retained))
+    }
+
     /// Associate visibility with an immutable task version. Completion alone creates no source.
-    pub fn commit_source(
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn commit_source(
         &mut self,
         tasks: &[TaskHandle],
         scanout: SourceScanout,
@@ -495,17 +513,14 @@ impl crate::Renderer {
             .ok_or(SourceError::TaskNotFound)?;
         let info = tasks[selected].info;
         let mut reasons = Vec::new();
-        let mut counts = SourceCounts::default();
         for task in tasks {
+            if !Arc::ptr_eq(&task.renderer, &self.identity) {
+                return Err(SourceError::SourceMismatch);
+            }
             if task.info.source != info.source || task.info.epoch != info.epoch {
                 return Err(SourceError::SourceMismatch);
             }
             let task = task.retained.as_ref().ok_or(SourceError::UnrecordedTask)?;
-            let task_counts = source_counts(&task.scene);
-            counts.triangles += task_counts.triangles;
-            counts.held_triangles += task_counts.held_triangles;
-            counts.rectangles += task_counts.rectangles;
-            counts.fills += task_counts.fills;
             for &reason in &task.eligibility {
                 ReasonCount::add(&mut reasons, reason.reason, reason.count);
             }
@@ -529,7 +544,6 @@ impl crate::Renderer {
                 rows: scanout.rows,
                 image,
                 eligibility: reasons,
-                counts,
             }),
         })
     }
@@ -793,27 +807,63 @@ impl crate::Renderer {
     /// The caller must exclude phase rendering while the originating renderer configures its surface.
     /// wgpu surface configuration waits for device idle and rejects concurrent queue submissions.
     pub fn phase_renderer(&self) -> PhaseRenderer {
-        let (width, height) = self.inner.isolated_context().legacy_extent;
-        let mut renderer = IsolatedRenderer::new(
-            &self.device,
+        PhaseRenderer::new(
+            self.device.clone(),
+            self.queue.clone(),
             self.surface_format,
-            width,
-            height,
-            self.device
-                .features()
-                .contains(wgpu::Features::DUAL_SOURCE_BLENDING),
-        );
-        renderer.renderer.reduction_factor = self.reduction_factor();
-        PhaseRenderer {
-            renderer,
-            pair: None,
-            queue: self.queue.clone(),
-            device: self.device.clone(),
-        }
+            self.inner.isolated_context().legacy_extent,
+            self.reduction_factor(),
+        )
     }
 }
 
 impl PhaseRenderer {
+    pub(crate) fn new(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+        (width, height): (u32, u32),
+        reduction: u32,
+    ) -> Self {
+        let mut renderer = IsolatedRenderer::new(
+            &device,
+            format,
+            width,
+            height,
+            device
+                .features()
+                .contains(wgpu::Features::DUAL_SOURCE_BLENDING),
+        );
+        renderer.renderer.reduction_factor = reduction;
+        Self {
+            renderer,
+            pair: None,
+            queue,
+            device,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn scanout_phase(
+        &mut self,
+        a: &SourceFrame,
+        b: &SourceFrame,
+        t: f32,
+    ) -> Result<crate::render::Scanout, PhaseError> {
+        let source = if t == 1.0 { &b.data } else { &a.data };
+        let image = if t == 0.0 || t == 1.0 {
+            (*source.image).clone()
+        } else {
+            self.render_image(a, b, t)?.0
+        };
+        Ok(self.renderer.renderer.compositor().snapshot(
+            &self.device,
+            &image,
+            source.rows.clone(),
+            self.renderer.renderer.reduction_factor,
+        ))
+    }
+
     /// Set the integer box reduction used for phase presentation.
     pub fn set_reduction_factor(&mut self, factor: u32) -> Result<(), crate::ConfigError> {
         if factor == 0 {
@@ -833,11 +883,34 @@ impl PhaseRenderer {
         t: f32,
         target: &wgpu::TextureView,
     ) -> Result<PhaseResult, PhaseError> {
+        let (image, result) = self.render_image(a, b, t)?;
+        let source = if t == 1.0 { &b.data } else { &a.data };
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        self.renderer.renderer.scanout_snapshot(
+            &image,
+            source.rows.clone(),
+            &self.device,
+            &mut encoder,
+            target,
+        );
+        self.queue.submit([encoder.finish()]);
+        Ok(result)
+    }
+    fn render_image(
+        &mut self,
+        a: &SourceFrame,
+        b: &SourceFrame,
+        t: f32,
+    ) -> Result<(TargetSnapshot, PhaseResult), PhaseError> {
         if !t.is_finite() || !(0.0..=1.0).contains(&t) {
             return Err(PhaseError::InvalidPhase);
         }
         let source = if t == 1.0 { &b.data } else { &a.data };
-        let held = b.data.visible_at <= a.data.visible_at
+        #[cfg(not(target_arch = "wasm32"))]
+        let time_reversed = b.data.visible_at <= a.data.visible_at;
+        #[cfg(target_arch = "wasm32")]
+        let time_reversed = false;
+        let held = time_reversed
             || a.data.info.epoch != b.data.info.epoch
             || !a.data.eligibility.is_empty()
             || !b.data.eligibility.is_empty()
@@ -893,16 +966,7 @@ impl PhaseRenderer {
                 .map_err(PhaseError::Render)?;
             &rendered
         };
-        let mut encoder = self.device.create_command_encoder(&Default::default());
-        self.renderer.renderer.scanout_snapshot(
-            image,
-            source.rows.clone(),
-            &self.device,
-            &mut encoder,
-            target,
-        );
-        self.queue.submit([encoder.finish()]);
-        Ok(result)
+        Ok((image.clone(), result))
     }
 }
 
