@@ -621,6 +621,7 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
             w1: cmd.w1,
             w1_addr: cmd.w1_addr,
         };
+        rsp.annotation_command(command_pc, return_stack.len());
         let op = c.opcode();
         #[cfg(any(test, feature = "profiling"))]
         rsp.profiling

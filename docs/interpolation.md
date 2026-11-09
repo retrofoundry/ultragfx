@@ -31,7 +31,7 @@ available until the delayed sample reaches the latest pair. This absorbs source
 jitter and preparation time without extrapolating past the newest source. The
 phase target is an estimate, not physical scanout or a VRR promise.
 
-`annotation::ANNOTATION_ABI_VERSION` is 2; the host checks it during registration.
+`annotation::ANNOTATION_ABI_VERSION` is 3; the host checks it during registration.
 `Renderer::submit_task` and the
 64-bit native `unsafe submit_task_host` execute the ordinary canonical task and
 return an owned `interpolation::TaskHandle`. `TaskSubmission` supplies a unique
@@ -45,14 +45,38 @@ Existing `process_dl` entry points use that path. `Some(empty_annotations)` reta
 an endpoint whose geometry is held. Handles belong to the renderer that created
 them.
 
-Each `DrawAnnotation::scope` selects the resolved address of a call or branch
-command, with an optional zero-based execution occurrence within the task. The
-scope inherits through nested lists and branch chains until that call returns.
-A nested declaration overrides its parent until its own invocation returns. A
-missing selector, multiple matching declarations, or an occurrence-free selector
-executed more than once makes the source ineligible. The engine never chooses
-one execution of an ambiguous selector. OoT scopes calls emitted into dynamic
-lists, each executed once; shared static leaf lists need no annotations.
+`DrawAnnotation::scope` is a `ScopeSelector`:
+
+- `Invocation(InvocationSelector { address, occurrence })` selects the resolved
+  address of a call or branch command, not its target. Its scope inherits through
+  nested lists and branch chains until that invocation returns.
+- `Commands(CommandSpan { start, end, occurrence })` selects dispatched commands
+  whose resolved starting addresses lie in `start..end` within one display list.
+  The endpoints are already resolved addresses, not segmented operands. A span
+  starts before the first selected command and ends before the next command of
+  that list outside the range, or when that list ends. A single-command range
+  selects every triangle emitted by that primitive command. Continuation words
+  are part of their leading command, not separate dispatches.
+
+A call inside a span inherits it while the callee executes; returning to the next
+in-range command resumes the same span occurrence. Each contiguous entry in a
+list execution is one zero-based occurrence, counted across the task. A nested
+list can enter a span independently, even if an ancestor already carries that
+span.
+
+A declaration in a deeper invocation overrides inherited scopes. Within a list,
+a command span overrides the inherited invocation or span until its range ends.
+An invocation selected at a call inside a span governs the callee and overrides
+that span until it returns.
+Two command spans directly selecting the same command in the same list conflict,
+even if one range contains the other. Inherited spans do not participate in that
+local conflict. Multiple declarations selecting the same invocation also conflict.
+
+A declaration that never matches, any conflicting declaration, or an occurrence-free
+selector entered more than once reports `UnresolvedScope` and makes the source
+ineligible. An explicit occurrence selects only that entry. Declaration order does
+not resolve ambiguity. OoT scopes calls emitted into dynamic lists, each executed
+once; shared static leaf lists need no annotations.
 
 `DrawIdentity` contains namespace, instance, generation, part, subdraw and pass.
 Use a new generation when an instance is reused or its representation changes.
@@ -66,26 +90,72 @@ triangle count, local vertex positions or palette parts, incompatible policy,
 or rejected model decomposition fall back to HoldModel for that entire scope.
 Other scopes continue interpolating.
 
-`MatrixBinding { operand, role }` declares View and Projection, or ViewProjection.
-Operands may be native, physical or segmented addresses. Each successful canonical
-matrix read resolves declarations through the segment table at that read, after
-any guest rewrites. The interpreter records the raw read and its role before
-MVP deduplication. Projection loads reset the consumed read chain; multiplies
-extend it. Each vertex keeps the chain that actually produced it, so repeated
-OPA/XLU camera reads and cached vertices bind their own consumed occurrence.
+`MatrixBinding { operand, role }` assigns View, Projection or ViewProjection to a
+consumed matrix operand. Operands may be native, physical or segmented addresses.
+Each successful canonical matrix read resolves declarations through the segment
+table at that read, after any guest rewrites. The interpreter records the raw
+read and its role before MVP deduplication. Projection loads reset the consumed
+read chain; multiplies extend it. Each vertex keeps the chain that actually
+produced it, so repeated OPA/XLU camera reads and cached vertices bind their own
+consumed occurrence.
 Guests supply no version numbers. Missing roles, duplicate roles or multiple
-reads of a role within that accumulation are unresolved bindings. Separate V/P
-must reproduce the consumed V·P, and M·(V·P) must reproduce the canonical MVP
-with exact floating-point equality. Opaque VP binds as identity V plus VP in P's
-place; any change to that VP holds the pair.
+reads of a role within that accumulation are unresolved bindings. For scopes
+without a composed view, separate V/P must reproduce the consumed V·P exactly.
+For every resolved scope, the consumed stack product MV·(V·P) must equal the
+canonical MVP with exact floating-point equality. Opaque VP binds as identity V
+plus VP in P's place; any change to that VP holds the pair.
 
-Effective Model comes directly from canonical stack operations. Optional
-`MatrixPalette { base, parts }` declares consecutive 64-byte slots; `parts.len()`
-is the slot count and each entry is its semantic part. Every successful model
-read resolves the palette base using that read's segment table and binds its
-slot. Each vertex retains its effective M and part, including vertices cached
-from earlier scopes. A triangle can join different slots, such as torso 17 and
-shoulder 10. A missing slot binding holds the source.
+`DrawAnnotation::composed_view: Some(i)` declares that the consumed modelviews
+already contain the view in `TaskAnnotations::composed_views[i]`. Each entry is
+`[u32; 16]`: the sixteen big-endian-order words of a 64-byte N64 signed 16.16
+matrix, with the integer halfwords first and fractional halfwords second, decoded
+by the same reader as fixed-point `G_MTX`. This layout also applies to native
+hosts. The scope must declare exactly one matrix binding with role Projection;
+View, ViewProjection, extra bindings, an absent consumed P or an out-of-range
+index are `UnresolvedBinding`. P must exactly reproduce the consumed projection
+chain, which contains only P because V is already in MV.
+
+For each consumed vertex, a composed scope resolves V from the sidecar, P from
+its consumed binding, and effective `M = MV · V⁻¹` from the canonical modelview.
+A singular V is an unresolved binding. If MV equals V exactly, M is exactly
+identity. Otherwise the product is computed in f64 and rounded to f32 once.
+
+The recovered M must satisfy the following componentwise reconstruction budget,
+where products and the residual are evaluated in f64:
+
+```text
+q = 2^-16
+u32 = f32::EPSILON / 2
+u64 = f64::EPSILON / 2
+rho = u32 / (1 - u32)
+gamma8 = 8*u64 / (1 - 8*u64)
+Mhat = f32(MV · V⁻¹)
+Sij = sum_k |Mhat_ik * Vkj|
+Bij = q + rho*|MVij| + rho*Sij + gamma8*(Sij + |MVij|)
+|sum_k Mhat_ik * Vkj - MVij| <= Bij
+```
+
+The matrix residual norm is the maximum absolute component; each component has
+its own bound. Packing a signed 16.16 component truncates by less than q. Decoding
+to f32 adds at most `rho*|MVij|`. For an unrounded recovered entry x and its f32
+value y, `|x-y| <= u32*|x| <= rho*|y|`. Multiplying each entry's error by `|Vkj|`
+and summing gives the additional `rho*Sij` budget for rounding the recovered M.
+The four products, three additions and final subtraction contribute at most
+`gamma8*(Sij + |MVij|)` when evaluating the residual in f64.
+A nonfinite residual or a rounded model exceeding that budget is an unresolved
+binding, including recovery made inaccurate by an ill-conditioned V.
+
+Resolved composed and RSP-read cameras use the same pairing and phase path:
+HoldModel renders `M_A · V(t) · P`, StaticWorld requires exact identity M, and
+Interpolate decomposes the recovered M with the tolerance below.
+
+Without a composed view, effective Model comes directly from canonical stack
+operations. Optional `MatrixPalette { base, parts }` declares consecutive 64-byte
+slots; `parts.len()` is the slot count and each entry is its semantic part. Every
+successful model read resolves the palette base using that read's segment table
+and binds its slot. Each vertex retains its effective M and part, including
+vertices cached from earlier scopes. A triangle can join different slots, such
+as torso 17 and shoulder 10. A missing slot binding holds the source.
 
 Policies are `Interpolate`, `StaticWorld`, `HoldModel`,
 `BillboardHold(BillboardRecipe)`, `ScreenSpace` and `Hold`:
@@ -98,13 +168,13 @@ Policies are `Interpolate`, `StaticWorld`, `HoldModel`,
   product of the measured rows around orthogonal true rows gives that bound;
   the final term covers floating-point roundoff. A bound of 1 or greater cannot
   constrain a normalized dot product, so it rejects the transform. Accepted
-  rotations are orthonormalized with Gram–Schmidt and a cross product before quaternion
-  extraction, rejecting a zero or nonfinite orthogonalization residual.
+  rotations are orthonormalized with Gram–Schmidt and a cross product before
+  quaternion extraction, rejecting a zero or nonfinite orthogonalization residual.
   Reflections, singular transforms and shear beyond that bound are rejected.
   Endpoints retain the original canonical matrices exactly. Unsupported M reports
-  a per-draw DecompositionRejected restriction and keeps A's effective M under the phase camera. World triangles
-  with XY/Z screen overrides report source-level UnsupportedTopology;
-  ScreenSpace remains discrete.
+  a per-draw DecompositionRejected restriction and keeps A's effective M under
+  the phase camera. World triangles with XY/Z screen overrides report source-level
+  UnsupportedTopology; ScreenSpace remains discrete.
 - StaticWorld requires identity M and applies the phase camera.
 - HoldModel keeps A's effective per-vertex M and applies phase V/P.
 - BillboardHold interpolates the supplied world anchor, scale, local Z spin
@@ -129,10 +199,12 @@ of the asset-level segment-1 multiply. Here S is scale, T is world translation,
 and fixed is signed 16.16 truncation. The supplied basis must be a proper
 rotation (the quantization-aware orthogonality bound above and unit scale
 tolerance 0.001). Each source recipe must reproduce every affected vertex's
-consumed effective M with the same exact floating-point equality as MVP reconstruction; otherwise it reports
+consumed effective M with exact floating-point equality; otherwise it reports
 `UnsafeBillboard`. There is no correction inferred from V. A late camera rewrite
 can therefore differ from the supplied basis without losing endpoint parity.
-Other construction orders require a source hold.
+Under a composed view, the recipe must exactly match the recovered M, so in
+practice BillboardHold reports `UnsafeBillboard`. Other construction orders
+require a source hold.
 
 Call native `Renderer::scanout(origin, visible_at, tasks, selected)` once per VI
 swap, even when no task or annotation is available. `ScanoutOrigin::Vi` uses the
@@ -173,10 +245,11 @@ The present thread creates its independent `PhaseRenderer` lazily on the shared
 device and queue. The canonical `Renderer` remains `!Send + !Sync`; native source
 frames can cross threads. Phase state uses the current presentation format and
 reduction factor. Its finite `0..=1` phase selects retained content, with `t == 1`
-switching to B's discrete scene. Matching uses draw identity. M follows the scope's policy;
-V blends entrywise. World camera validation is independent of draw matching:
-matching world scopes pair their consumed cameras, including distinct camera
-reads within a scope. A uniform B camera applies regardless of triangle count.
+switching to B's discrete scene. Matching uses draw identity. M follows the
+scope's policy; V blends entrywise. World camera validation is independent of
+draw matching: matching world scopes pair their consumed cameras, including
+distinct camera reads within a scope. A uniform B camera applies regardless of
+triangle count.
 A scope missing from B can use the common world camera or an unambiguous camera
 pair established by surviving scopes with the same consumed A V/P. Both sources
 must provide resolved world V/P when A has world geometry. A camera that cannot

@@ -156,6 +156,12 @@ impl Rsp {
         )));
     }
 
+    pub(crate) fn annotation_command(&mut self, pc: u64, depth: usize) {
+        if let Some(capture) = &mut self.annotations {
+            capture.command(pc, depth);
+        }
+    }
+
     pub(crate) fn annotation_call(&mut self, pc: u64, depth: usize) {
         if let Some(capture) = &mut self.annotations {
             capture.enter(pc, depth);

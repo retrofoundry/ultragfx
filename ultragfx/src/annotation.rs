@@ -8,7 +8,11 @@ use crate::{
     interpolation::{Ineligibility, ReasonCount},
 };
 
-pub const ANNOTATION_ABI_VERSION: u32 = 2;
+mod composed;
+
+use composed::ComposedView;
+
+pub const ANNOTATION_ABI_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct DrawIdentity {
@@ -25,6 +29,27 @@ pub struct InvocationSelector {
     /// Resolved address of the call or branch command, not its target.
     pub address: u64,
     pub occurrence: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CommandSpan {
+    pub start: u64,
+    pub end: u64,
+    pub occurrence: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeSelector {
+    /// The resolved address of a call or branch command.
+    Invocation(InvocationSelector),
+    /// Commands with resolved addresses in a half-open range within one list.
+    Commands(CommandSpan),
+}
+
+impl Default for ScopeSelector {
+    fn default() -> Self {
+        Self::Invocation(InvocationSelector::default())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,7 +104,9 @@ pub enum TransformPolicy {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DrawAnnotation {
-    pub scope: InvocationSelector,
+    pub scope: ScopeSelector,
+    /// Index into `TaskAnnotations::composed_views`.
+    pub composed_view: Option<u32>,
     pub identity: DrawIdentity,
     pub policy: TransformPolicy,
     pub matrices: Vec<MatrixBinding>,
@@ -89,6 +116,8 @@ pub struct DrawAnnotation {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TaskAnnotations {
     pub draws: Vec<DrawAnnotation>,
+    /// CPU-composed views as 16 big-endian-order words in the fixed-point G_MTX layout.
+    pub composed_views: Vec<[u32; 16]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,11 +160,16 @@ pub(crate) struct CapturedAnnotations {
 struct Scope {
     depth: usize,
     annotation: usize,
+    commands: bool,
 }
 
 pub(crate) struct AnnotationCapture {
     records: CapturedAnnotations,
     occurrences: HashMap<u64, u32>,
+    command_spans: Vec<(usize, CommandSpan)>,
+    span_entries: Vec<u32>,
+    list_spans: Vec<Vec<(usize, u32)>>,
+    composed_views: Vec<Option<ComposedView>>,
     matches: Vec<u32>,
     collisions: Vec<bool>,
     scopes: Vec<Scope>,
@@ -169,6 +203,20 @@ struct LoadedVertex {
 impl AnnotationCapture {
     pub(crate) fn new(sidecar: TaskAnnotations) -> Self {
         let count = sidecar.draws.len();
+        let command_spans = sidecar
+            .draws
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| match a.scope {
+                ScopeSelector::Commands(span) => Some((i, span)),
+                ScopeSelector::Invocation(_) => None,
+            })
+            .collect();
+        let composed_views = sidecar
+            .composed_views
+            .iter()
+            .map(ComposedView::new)
+            .collect();
         Self {
             records: CapturedAnnotations {
                 sidecar,
@@ -177,6 +225,10 @@ impl AnnotationCapture {
                 reasons: Vec::new(),
             },
             occurrences: HashMap::new(),
+            command_spans,
+            span_entries: vec![0; count],
+            list_spans: Vec::new(),
+            composed_views,
             matches: vec![0; count],
             collisions: vec![false; count],
             scopes: Vec::new(),
@@ -196,7 +248,8 @@ impl AnnotationCapture {
             .iter()
             .enumerate()
             .filter(|(_, a)| {
-                a.scope.address == pc && a.scope.occurrence.is_none_or(|n| n == *occurrence)
+                matches!(a.scope, ScopeSelector::Invocation(selector)
+                    if selector.address == pc && selector.occurrence.is_none_or(|n| n == *occurrence))
             })
             .map(|(i, _)| i)
             .collect();
@@ -208,11 +261,57 @@ impl AnnotationCapture {
         let Some(&annotation) = matching.first() else {
             return;
         };
-        self.scopes.push(Scope { depth, annotation });
+        self.scopes.push(Scope {
+            depth,
+            annotation,
+            commands: false,
+        });
+    }
+
+    pub(crate) fn command(&mut self, pc: u64, depth: usize) {
+        if self.command_spans.is_empty() {
+            return;
+        }
+        self.list_spans.resize_with(depth + 1, Vec::new);
+        let previous = &self.list_spans[depth];
+        let mut inside = Vec::new();
+        let mut matching = Vec::new();
+        for &(i, span) in &self.command_spans {
+            if !(span.start..span.end).contains(&pc) {
+                continue;
+            }
+            let prior_entry = previous.iter().find(|&&(index, _)| index == i);
+            let occurrence = if let Some(&(_, occurrence)) = prior_entry {
+                occurrence
+            } else {
+                let occurrence = self.span_entries[i];
+                self.span_entries[i] += 1;
+                occurrence
+            };
+            inside.push((i, occurrence));
+            if span.occurrence.is_none_or(|n| n == occurrence) {
+                matching.push(i);
+                if prior_entry.is_none() {
+                    self.matches[i] += 1;
+                    self.scopes.push(Scope {
+                        depth,
+                        annotation: i,
+                        commands: true,
+                    });
+                }
+            }
+        }
+        self.scopes
+            .retain(|s| !s.commands || s.depth != depth || matching.contains(&s.annotation));
+        for &annotation in &matching {
+            self.collisions[annotation] |= matching.len() > 1;
+        }
+        self.list_spans[depth] = inside;
     }
 
     pub(crate) fn leave(&mut self, depth: usize) {
         self.scopes.retain(|scope| scope.depth <= depth);
+        self.list_spans.truncate(depth + 1);
     }
 
     pub(crate) fn matrix(
@@ -356,8 +455,27 @@ impl AnnotationCapture {
         });
     }
 
-    fn camera(annotation: usize, state: &LoadedTransform) -> Option<(Mat4, Mat4)> {
-        let mut view = None;
+    fn camera(
+        &self,
+        annotation: usize,
+        state: &LoadedTransform,
+        composed: Option<&ComposedView>,
+    ) -> Option<(Mat4, Mat4)> {
+        let declaration = &self.records.sidecar.draws[annotation];
+        let mut view = if let Some(composed) = composed {
+            if !matches!(
+                declaration.matrices.as_slice(),
+                [MatrixBinding {
+                    role: MatrixRole::Projection,
+                    ..
+                }]
+            ) {
+                return None;
+            }
+            Some(composed.matrix)
+        } else {
+            None
+        };
         let mut projection = None;
         for read in &state.projection_reads {
             for &(_, role) in read.roles.iter().filter(|(i, _)| *i == annotation) {
@@ -379,7 +497,12 @@ impl AnnotationCapture {
             }
         }
         let (view, projection) = (view?, projection?);
-        (mul4(view, projection) == state.viewproj).then_some((view, projection))
+        let expected = if composed.is_some() {
+            projection
+        } else {
+            mul4(view, projection)
+        };
+        (expected == state.viewproj).then_some((view, projection))
     }
 
     fn resolve(
@@ -394,15 +517,31 @@ impl AnnotationCapture {
         ) {
             return Ok(None);
         }
+        let composed_view = annotation
+            .composed_view
+            .map(|index| {
+                self.composed_views
+                    .get(index as usize)
+                    .and_then(Option::as_ref)
+                    .ok_or(Ineligibility::UnresolvedBinding)
+            })
+            .transpose()?;
         let state = &self.transforms[vertex.transform as usize];
-        let (view, projection) =
-            Self::camera(scope.annotation, state).ok_or(Ineligibility::UnresolvedBinding)?;
+        let (view, projection) = self
+            .camera(scope.annotation, state, composed_view)
+            .ok_or(Ineligibility::UnresolvedBinding)?;
+        let effective = match composed_view {
+            Some(view) => view
+                .model(state.model)
+                .ok_or(Ineligibility::UnresolvedBinding)?,
+            None => state.model,
+        };
         let model = if annotation.policy == TransformPolicy::StaticWorld {
             identity()
         } else {
-            state.model
+            effective
         };
-        if model != state.model || mul4(model, mul4(view, projection)) != state.mvp {
+        if model != effective || mul4(state.model, state.viewproj) != state.mvp {
             return Err(Ineligibility::UnresolvedBinding);
         }
         if let TransformPolicy::BillboardHold(recipe) = annotation.policy {
