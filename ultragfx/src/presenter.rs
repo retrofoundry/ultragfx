@@ -143,10 +143,11 @@ impl Presentation {
         }
         let previous = self.schedule.latest.take().and_then(|last| {
             last.source.filter(|previous| {
-                pending
-                    .source
-                    .as_ref()
-                    .is_some_and(|next| next.compatible(previous))
+                pending.source.as_ref().is_some_and(|next| {
+                    next.compatible(previous)
+                        && next.visible_at().duration_since(previous.visible_at())
+                            <= schedule::MAX_SOURCE_INTERVAL
+                })
             })
         });
         self.schedule.older = self.schedule.previous.take().filter(|older| {

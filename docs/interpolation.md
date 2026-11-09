@@ -31,6 +31,16 @@ available until the delayed sample reaches the latest pair. This absorbs source
 jitter and preparation time without extrapolating past the newest source. The
 phase target is an estimate, not physical scanout or a VRR promise.
 
+Source intervals greater than `presenter::schedule::MAX_SOURCE_INTERVAL` (125 ms)
+break the pair like an epoch change: the newer source is presented directly, and
+the preceding sources are discarded from the jitter-delay history. The next
+ordinary pair uses its own interval plus the preparation lead. Intervals up to
+and including 125 ms remain eligible for interpolation. The cutoff allows OoT's
+20 Hz cadence and ordinary hitches to about 15 Hz (roughly 66 ms), with nearly
+twice that interval as headroom; Nightmare Creatures normally runs at 60 Hz.
+Longer loading, pause or window-mode stalls must not become interpolated motion
+or additional latency.
+
 `annotation::ANNOTATION_ABI_VERSION` is 3; the host checks it during registration.
 `Renderer::submit_task` and the
 64-bit native `unsafe submit_task_host` execute the ordinary canonical task and
