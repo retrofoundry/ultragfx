@@ -46,21 +46,25 @@ build settings, binary hashes and logs, and are saved after each configuration.
 All required raw exports are retained. Candidate and bootstrap base still run on
 the same runner and use the same comparison policy.
 
-The Windows matrix comes from `ci.py`'s `WINDOWS_SECTIONS` table. Every selected
-filter and integration target must have an assignment. Fog and all-features
-upscaling split their sorted libtest names across sections; each selected name
-runs exactly once. `--configuration` and `--section` scope both capture and base
-lookup. Readbacks sections own golden and CPU decode rows; the integration
-section owns IMAGE fixtures and the all-features compute supplement. The residency
-section owns replacement readbacks. Default and debug-ui
-compute supplements belong to their readbacks sections. Other sections require
-successful test commands and authenticated manifests with zero exported rows.
+The Windows matrix comes from `ci.py`'s `WINDOWS_SECTIONS` and `WINDOWS_GROUPS`
+tables: four default jobs, three debug-ui jobs and five all-features jobs. Every
+selected filter, integration target and section must have an assignment. Fog and
+all-features upscaling partition their sorted libtest names before grouping;
+each selected name runs exactly once. `--configuration` and `--section` scope
+both capture and base lookup. Readbacks groups own golden and CPU decode rows,
+plus the default and debug-ui compute supplements. All-features
+`guest-integration` owns IMAGE fixtures and its compute supplement;
+`upscaling-3-residency` owns replacement readbacks. Other groups require successful
+test commands and authenticated manifests with zero exported rows.
 
-macOS has one job per configuration. `--configuration` alone selects its full
-existing command, frozen rows and supplements for capture, comparison and any base
-bootstrap. `--section` remains Windows-only. Each Metal job requires 1,263 GPU
-decode rows; all-features also requires the 25 replacement rows. Together the
-three jobs cover all 171 frozen rows and 3,789 Metal GPU decode rows.
+macOS runs default and debug-ui in full. All-features splits into `library`
+(`--lib`) and `integration-docs` (`--test '*'`, then `--doc`), retaining every
+workspace test target exactly once. The library job owns 56 frozen rows;
+integration-docs owns three IMAGE rows, 1,263 GPU decode rows and 25 replacement
+rows. Both use the same section for capture, comparison and base bootstrap.
+Together the four jobs cover all 171 frozen rows and 3,789 Metal GPU decode rows.
+With lint, wasm, browser and matrix generation, the workflow has 20 jobs and
+five macOS jobs including browser.
 
 `ULTRAGFX_GPU_DECODE_OUTPUT` writes into each configuration's `gpu-decode` directory.
 The supplement hashes the actual encoded input, expected CPU/literal output, GPU
@@ -104,7 +108,7 @@ compiler, runner image and dependency graph. The generated `Cargo.lock`, build l
 and test logs travel with the artifact.
 
 For PRs, `ci.py` searches successful main push runs with the exact PR base SHA and
-downloads `readbacks-macos-latest-<configuration>` or
+downloads `readbacks-macos-latest-<configuration>[-<section>]` or
 `readbacks-windows-latest-<configuration>-<section>`. It verifies the manifest
 source SHA and run ID before comparing. Missing, expired or incompatible artifacts
 trigger a capture of the exact base checkout in the same job. A cross-run byte delta
@@ -157,9 +161,9 @@ This command requires a fresh output directory. Missing or incompatible evidence
 exits 1 and requests the workflow's same-run bootstrap; it never selects another
 revision. For an initial T1 bootstrap, download the run's `readback-evidence-*`
 artifact and compare its `bootstrap-base` and `candidate` directories below.
-For macOS configuration artifacts, generate a selection inventory with
-`ci.configuration_inventory(configuration)`; Windows section artifacts use
-`ci.configuration_inventory(configuration, section)`. Pass its JSON to
+For configuration artifacts, generate a selection inventory with
+`ci.configuration_inventory(configuration)`; macOS and Windows section artifacts
+use `ci.configuration_inventory(configuration, section)`. Pass its JSON to
 `readbacks.py --inventory`. The full inventory remains the default for historical
 monolithic captures.
 

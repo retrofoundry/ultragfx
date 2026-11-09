@@ -49,6 +49,26 @@ WINDOWS_SECTIONS = {
     "rt64_v5": ("integration",),
     "upscaling": ("integration",),
 }
+WINDOWS_GROUPS = {
+    "default": {
+        "readbacks-batches": ("readbacks", "batches"),
+        "guest-fog": ("guest", "fog-2", "fog-mirror"),
+        "fog-1": ("fog-1",),
+        "triangles": ("triangles",),
+    },
+    "debug-ui": {
+        "readbacks": ("readbacks",),
+        "guest-batches": ("guest", "batches"),
+        "triangles": ("triangles",),
+    },
+    "all-features": {
+        "readbacks-batches": ("readbacks", "batches"),
+        "guest-integration": ("guest", "integration"),
+        "triangles": ("triangles",),
+        "upscaling-1-2": ("upscaling-1", "upscaling-2"),
+        "upscaling-3-residency": ("upscaling-3", "residency"),
+    },
+}
 
 
 def configuration_inventory(configuration, section=None):
@@ -60,11 +80,14 @@ def configuration_inventory(configuration, section=None):
                      rows=[dict(row, configurations=[configuration]) for row in INVENTORY["rows"]
                            if configuration in row["configurations"]])
     if section is not None:
+        members = {"library": ("readbacks",), "integration-docs": ("integration", "residency")}.get(section)
+        if members is None:
+            members = WINDOWS_GROUPS[configuration][section]
         inventory.update(section=section,
-                         gpu_decode_configurations=[configuration] if section == ("integration" if configuration == "all-features" else "readbacks") else [],
-                         replacement_configurations=[configuration] if section == "residency" and configuration == "all-features" else [])
+                         gpu_decode_configurations=[configuration] if ("integration" if configuration == "all-features" else "readbacks") in members else [],
+                         replacement_configurations=[configuration] if "residency" in members and configuration == "all-features" else [])
         inventory["rows"] = [row for row in inventory["rows"]
-                             if section == ("integration" if row["id"].startswith("tmem-") else "readbacks")]
+                             if ("integration" if row["id"].startswith("tmem-") else "readbacks") in members]
     return inventory
 
 
@@ -78,27 +101,40 @@ def windows_sections(checkout, config):
     missing = set(selections) - WINDOWS_SECTIONS.keys()
     if missing:
         raise ValueError(f"unassigned Windows selection: {sorted(missing)}")
-    return sorted({section for selection in selections for section in WINDOWS_SECTIONS[selection]})
+    sections = {section for selection in selections for section in WINDOWS_SECTIONS[selection]}
+    groups = WINDOWS_GROUPS[config]
+    missing = sections - {section for members in groups.values() for section in members}
+    if missing:
+        raise ValueError(f"unassigned Windows section: {sorted(missing)}")
+    return sorted(group for group, members in groups.items() if sections.intersection(members))
 
 
-def section_test_names(filters, section, names):
+def section_test_names(filters, config, section, names):
     selected = []
     for value in filters:
         sections = WINDOWS_SECTIONS[value]
-        if section in sections:
-            matches = sorted(name for name in names if value in name)
-            selected.extend(matches[sections.index(section)::len(sections)])
+        matches = sorted(name for name in names if value in name)
+        for member in WINDOWS_GROUPS[config][section]:
+            if member in sections:
+                selected.extend(matches[sections.index(member)::len(sections)])
     if len(selected) != len(set(selected)):
         raise ValueError("overlapping Windows filters")
     return selected
 
 
 def test_commands(checkout, config, system, section=None):
-    if section is not None and (system != "Windows" or section not in windows_sections(checkout, config)):
-        raise ValueError(f"unknown Windows section: {config}/{section}")
     command = COMMANDS[config]
     if system != "Windows":
-        return [command]
+        if section is None:
+            return [command]
+        if system == "Darwin" and config == "all-features":
+            if section == "library":
+                return [command + ["--lib"]]
+            if section == "integration-docs":
+                return [command + ["--test", "*"], command + ["--doc"]]
+        raise ValueError(f"unknown {system} section: {config}/{section}")
+    if section is not None and section not in windows_sections(checkout, config):
+        raise ValueError(f"unknown Windows section: {config}/{section}")
     features = {"default": [], "debug-ui": ["--features", "debug-ui"], "all-features": ["--all-features"]}
     command = ["cargo", "test", "--locked", "--no-fail-fast", "-p", "ultragfx"] + features[config]
     commands = [command + ["--lib", "--", "tests::goldens::", "tests::tmem_witnesses::",
@@ -131,16 +167,17 @@ def test_commands(checkout, config, system, section=None):
         commands.append(command + targets)
     if section is None:
         return commands
+    members = set(WINDOWS_GROUPS[config][section])
     selected = []
     for command in commands:
         if "--" in command:
             index = command.index("--")
-            filters = [value for value in command[index + 1:] if section in WINDOWS_SECTIONS[value]]
+            filters = [value for value in command[index + 1:] if members.intersection(WINDOWS_SECTIONS[value])]
             if filters:
                 selected.append(command[:index + 1] + filters)
         else:
             targets = [command[i + 1] for i, value in enumerate(command)
-                       if value == "--test" and section in WINDOWS_SECTIONS[command[i + 1]]]
+                       if value == "--test" and members.intersection(WINDOWS_SECTIONS[command[i + 1]])]
             if targets:
                 selected.append(command[:command.index("--test")] + [value for target in targets for value in ["--test", target]])
     return selected
@@ -339,9 +376,11 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None):
                     (directory / "test.log").open("w", encoding="utf-8") as log:
                 for index, command in enumerate(configuration["commands"]):
                     cargo = command[:command.index("--")] if "--" in command else command
-                    print(f"{checkout}: {config} build {json.dumps(cargo)}; disk free {shutil.disk_usage(checkout).free}", flush=True)
+                    # Cargo cannot combine --doc with --no-run; preflight the library harness instead.
+                    build_cargo = ["--lib" if value == "--doc" else value for value in cargo]
+                    print(f"{checkout}: {config} build {json.dumps(build_cargo)}; disk free {shutil.disk_usage(checkout).free}", flush=True)
                     started = time.monotonic()
-                    build = subprocess.run(cargo + ["--no-run", "--message-format=json"], cwd=checkout,
+                    build = subprocess.run(build_cargo + ["--no-run", "--message-format=json"], cwd=checkout,
                                            env=env, text=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                     build_log.write(build.stdout)
                     build_log.flush()
@@ -353,11 +392,11 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None):
                                 binaries[str(Path(executable).resolve())] = file_hash(executable)
                         except json.JSONDecodeError:
                             continue
-                    if build.returncode == 0 and inventory.get("section") and "--lib" in command:
+                    if build.returncode == 0 and platform.system() == "Windows" and inventory.get("section") and "--lib" in command:
                         listing = subprocess.check_output(cargo + ["--", "--list"], cwd=checkout, env=env,
                                                           text=True, encoding="utf-8")
                         names = [line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")]
-                        names = section_test_names(command[command.index("--") + 1:], inventory["section"], names)
+                        names = section_test_names(command[command.index("--") + 1:], config, inventory["section"], names)
                         if not names:
                             raise ValueError("Windows section selected no tests")
                         command = cargo + ["--", "--exact"] + names

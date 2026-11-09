@@ -26,7 +26,7 @@ class WindowsSections(unittest.TestCase):
                 for section in ci.windows_sections(self.checkout, config):
                     for command in ci.test_commands(self.checkout, config, "Windows", section):
                         if "--lib" in command:
-                            selected.extend(ci.section_test_names(command[command.index("--") + 1:], section, names))
+                            selected.extend(ci.section_test_names(command[command.index("--") + 1:], config, section, names))
                         else:
                             targets.extend(command[i + 1] for i, value in enumerate(command) if value == "--test")
                 self.assertEqual(len(selected), len(set(selected)))
@@ -44,10 +44,15 @@ class WindowsSections(unittest.TestCase):
 
     def test_upscaling_sections_balance_discovered_tests_and_include_new_names(self):
         names = [f"render::upscaling_tests::test_{i:02}" for i in range(49)]
-        groups = [ci.section_test_names(["render::upscaling_tests::"], f"upscaling-{i}", names)
-                  for i in [1, 2, 3]]
-        self.assertEqual([len(group) for group in groups], [17, 16, 16])
+        groups = [ci.section_test_names(["render::upscaling_tests::"], "all-features", section, names)
+                  for section in ["upscaling-1-2", "upscaling-3-residency"]]
+        self.assertEqual([len(group) for group in groups], [33, 16])
         self.assertCountEqual(sum(groups, []), names)
+
+    def test_new_section_without_a_group_fails(self):
+        with patch.dict(ci.WINDOWS_SECTIONS, {"tests::goldens::": ("new-section",)}):
+            with self.assertRaisesRegex(ValueError, "unassigned Windows section"):
+                ci.windows_sections(self.checkout, "default")
 
 
 class CaptureFailures(unittest.TestCase):
@@ -139,6 +144,39 @@ class CaptureFailures(unittest.TestCase):
         self.assertEqual((self.output / "default/build.log").read_text(), "build failed\n")
         self.assertTrue((self.output / "debug-ui/test.log").is_file())
 
+    def test_macos_sections_capture_only_their_commands_and_supplements(self):
+        for section, failure in [("library", None), ("integration-docs", None),
+                                 ("integration-docs", "--test"), ("integration-docs", "--doc")]:
+            with self.subTest(section=section, failure=failure):
+                self.output = self.root / f"{section}-{failure}"
+                for name in [ci.GPU_DECODE_TEST, ci.replacements.SOURCE]:
+                    source = self.checkout / name
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    source.touch()
+                executions = []
+
+                def runner(command, **kwargs):
+                    self.assertFalse("--doc" in command and "--no-run" in command)
+                    executions.append(command)
+                    return subprocess.CompletedProcess(command, 101 if failure in command and "--no-run" not in command else 0, stdout="")
+
+                inventory = ci.configuration_inventory("all-features", section)
+                with patch.object(ci.platform, "system", return_value="Darwin"):
+                    self.capture(runner, inventory)
+                command = ci.COMMANDS["all-features"]
+                expected = [command + ["--lib"]] if section == "library" else [command + ["--test", "*"], command + ["--doc"]]
+                self.assertEqual(executions[1::2], expected)
+                self.assertEqual(executions[::2], [
+                    ["--lib" if value == "--doc" else value for value in test] + ["--no-run", "--message-format=json"]
+                    for test in expected])
+                manifest = json.loads((self.output / "manifest.json").read_text())
+                self.assertEqual(manifest["configurations"]["all-features"]["commands"], expected)
+                self.assertEqual(manifest["configurations"]["all-features"]["exit_code"], 101 if failure else 0)
+                for field in ["gpu_decode", "replacements"]:
+                    self.assertEqual(manifest[field]["required_configurations"],
+                                     [] if section == "library" else ["all-features"])
+                    self.assertIsNotNone(manifest[field]["source_test_sha256"])
+
     def test_section_capture_executes_discovered_names_exactly_and_keeps_failures(self):
         source = self.checkout / "ultragfx/src/render/upscaling_tests.rs"
         source.parent.mkdir(parents=True)
@@ -155,18 +193,18 @@ class CaptureFailures(unittest.TestCase):
             if "--no-run" in command:
                 return subprocess.CompletedProcess(command, 0, stdout="")
             self.assertEqual(command[command.index("--") + 1:],
-                             ["--exact", "render::upscaling_tests::b"])
+                             ["--exact", "render::upscaling_tests::c"])
             return subprocess.CompletedProcess(command, 101)
 
         self.external_metadata = external_metadata
         with patch.object(ci.platform, "system", return_value="Windows"):
-            self.capture(runner, ci.configuration_inventory("all-features", "upscaling-2"))
+            self.capture(runner, ci.configuration_inventory("all-features", "upscaling-3-residency"))
         manifest = json.loads((self.output / "manifest.json").read_text())
         self.assertEqual(manifest["gpu_decode"]["required_configurations"], [])
         self.assertEqual(manifest["replacements"]["required_configurations"], [])
         self.assertEqual(manifest["configurations"]["all-features"]["exit_code"], 101)
         self.assertEqual(manifest["configurations"]["all-features"]["executions"][0]["command"][-1],
-                         "render::upscaling_tests::b")
+                         "render::upscaling_tests::c")
 
     def test_failed_test_names_and_targets_are_retained(self):
         def runner(command, **kwargs):

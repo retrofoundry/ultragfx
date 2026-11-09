@@ -49,8 +49,11 @@ jobs:
           sys.path.insert(0, "tools/readbacks")
           import ci
 
-          entries = [{"os": "macos-latest", "name": f"macos-latest-{config}", "configuration": config, "section": ""}
-                     for config in ci.COMMANDS]
+          entries = []
+          for config in ci.COMMANDS:
+              for section in (("library", "integration-docs") if config == "all-features" else ("",)):
+                  name = f"macos-latest-{config}" + (f"-{section}" if section else "")
+                  entries.append({"os": "macos-latest", "name": name, "configuration": config, "section": section})
           for config in ci.COMMANDS:
               for section in ci.windows_sections(Path.cwd(), config):
                   entries.append({"os": "windows-latest", "name": f"windows-latest-{config}-{section}",

@@ -171,7 +171,7 @@ class SupplementalReadbacks(CaptureCase):
             self.load()
 
     def test_section_requirements_come_from_selection_and_still_authenticate_source(self):
-        inventory = ci.configuration_inventory("all-features", "readbacks")
+        inventory = ci.configuration_inventory("all-features", "readbacks-batches")
         inventory["rows"] = [dict(self.inventory["rows"][0], configurations=["all-features"])]
         manifest = self.manifest(self.head)
         manifest.update(inventory_sha256=readbacks.json_hash(inventory),
