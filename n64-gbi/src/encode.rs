@@ -660,6 +660,11 @@ pub fn mtx_to_bytes(m: [[f32; 4]; 4]) -> [u8; 64] {
     b
 }
 
+pub fn fixed_words(matrix: [[f32; 4]; 4]) -> [u32; 16] {
+    let bytes = mtx_to_bytes(matrix);
+    std::array::from_fn(|i| u32::from_be_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap()))
+}
+
 /// Identity matrix in the fixed-point split form.
 pub fn mtx_identity_bytes() -> [u8; 64] {
     mtx_to_bytes([

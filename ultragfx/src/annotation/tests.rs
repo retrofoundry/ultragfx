@@ -14,10 +14,10 @@ fn binding(operand: u64, role: MatrixRole) -> MatrixBinding {
 }
 fn scope(address: u64, instance: u64) -> DrawAnnotation {
     DrawAnnotation {
-        scope: InvocationSelector {
+        scope: ScopeSelector::Invocation(InvocationSelector {
             address,
             occurrence: None,
-        },
+        }),
         identity: DrawIdentity {
             instance,
             ..Default::default()
@@ -90,6 +90,7 @@ fn shared_leaf_has_three_invocation_identities_and_no_canonical_changes() {
         draws: (0..3)
             .map(|i| scope(u64::from(entry) + i * 8, i + 1))
             .collect(),
+        ..Default::default()
     };
     let canonical = interpret(&built, None);
     let mut annotated = interpret(&built, Some(annotations));
@@ -120,11 +121,15 @@ fn repeated_selector_requires_an_occurrence() {
     let built = dl.finish("main");
     let run = |occurrence| {
         let mut annotation = scope(u64::from(parent), 1);
-        annotation.scope.occurrence = occurrence;
+        annotation.scope = ScopeSelector::Invocation(InvocationSelector {
+            address: u64::from(parent),
+            occurrence,
+        });
         interpret(
             &built,
             Some(TaskAnnotations {
                 draws: vec![annotation],
+                ..Default::default()
             }),
         )
         .scene
@@ -161,6 +166,7 @@ fn scope_inherits_calls_and_branches_and_nested_scope_overrides_until_return() {
         &built,
         Some(TaskAnnotations {
             draws: vec![scope(u64::from(entry), 1), scope(u64::from(middle), 2)],
+            ..Default::default()
         }),
     )
     .scene
@@ -235,6 +241,7 @@ fn palette_and_repeated_cameras_resolve_actual_per_vertex_reads() {
                 a
             })
             .to_vec(),
+        ..Default::default()
     };
     let captured = interpret(&built, Some(annotations.clone()))
         .scene
@@ -311,6 +318,7 @@ fn repeated_camera_reads_and_palette_rebase_preserve_cached_vertex_provenance() 
                 a
             })
             .to_vec(),
+        ..Default::default()
     });
     let mut scene = Scene::default();
     rsp.annotation_call(0x100, 1);
@@ -410,6 +418,7 @@ fn forced_mvp_that_cannot_be_reconstructed_is_an_unresolved_binding() {
     let mut rsp = Rsp::default();
     rsp.set_annotations(TaskAnnotations {
         draws: vec![annotation],
+        ..Default::default()
     });
     rsp.matrix(
         &memory,
@@ -464,10 +473,16 @@ fn duplicate_camera_roles_are_ambiguous_and_branch_scopes_work() {
         binding(u64::from(v), MatrixRole::View),
         binding(u64::from(p), MatrixRole::Projection),
     ];
-    let captured = interpret(&built, Some(TaskAnnotations { draws: vec![a] }))
-        .scene
-        .annotations
-        .unwrap();
+    let captured = interpret(
+        &built,
+        Some(TaskAnnotations {
+            draws: vec![a],
+            ..Default::default()
+        }),
+    )
+    .scene
+    .annotations
+    .unwrap();
     assert_eq!(captured.draws[0].annotation, Some(0));
     assert_eq!(
         captured.reasons,
@@ -493,10 +508,16 @@ fn opaque_view_projection_binds_the_actual_read() {
     let mut a = scope(u64::from(entry), 1);
     a.policy = TransformPolicy::StaticWorld;
     a.matrices = vec![binding(u64::from(pa), MatrixRole::ViewProjection)];
-    let captured = interpret(&built, Some(TaskAnnotations { draws: vec![a] }))
-        .scene
-        .annotations
-        .unwrap();
+    let captured = interpret(
+        &built,
+        Some(TaskAnnotations {
+            draws: vec![a],
+            ..Default::default()
+        }),
+    )
+    .scene
+    .annotations
+    .unwrap();
     assert!(captured.reasons.is_empty(), "{:?}", captured.reasons);
     assert_eq!(
         captured.draws[0].vertices[0].transform.unwrap().projection,
@@ -556,10 +577,16 @@ fn asset_segment_one_billboard_recipe_matches_effective_rsp_multiply() {
         binding(u64::from(va), MatrixRole::View),
         binding(u64::from(pa), MatrixRole::Projection),
     ];
-    let captured = interpret(&built, Some(TaskAnnotations { draws: vec![a] }))
-        .scene
-        .annotations
-        .unwrap();
+    let captured = interpret(
+        &built,
+        Some(TaskAnnotations {
+            draws: vec![a],
+            ..Default::default()
+        }),
+    )
+    .scene
+    .annotations
+    .unwrap();
     assert!(captured.reasons.is_empty(), "{:?}", captured.reasons);
     assert_eq!(
         captured.draws[0].vertices[0].transform.unwrap().model,
@@ -570,4 +597,473 @@ fn asset_segment_one_billboard_recipe_matches_effective_rsp_multiply() {
             [12.0, 4.0, 0.0, 1.0]
         ]
     );
+}
+
+fn span(start: u64, end: u64, occurrence: Option<u32>, instance: u64) -> DrawAnnotation {
+    DrawAnnotation {
+        scope: ScopeSelector::Commands(CommandSpan {
+            start,
+            end,
+            occurrence,
+        }),
+        ..scope(0, instance)
+    }
+}
+
+#[test]
+fn command_span_enters_and_exits_around_one_primitive() {
+    let mut dl = DlBuilder::new();
+    let vertices = dl.bytes(16, &[0; 48]);
+    let entry = u64::from(dl.list(
+        "main",
+        &[
+            shade(),
+            gsp_vertex(0, 3, vertices),
+            gsp_1triangle(0, 1, 2),
+            gsp_2triangles(0, 1, 2, 0, 2, 1),
+            gsp_1triangle(0, 1, 2),
+            gsp_enddl(),
+        ],
+    ));
+    let built = dl.finish("main");
+    let canonical = interpret(&built, None);
+    let mut annotated = interpret(
+        &built,
+        Some(TaskAnnotations {
+            draws: vec![span(entry + 24, entry + 32, None, 1)],
+            ..Default::default()
+        }),
+    );
+    let records = annotated.scene.annotations.take().unwrap();
+    assert!(records.reasons.is_empty(), "{:?}", records.reasons);
+    assert_eq!(
+        records
+            .draws
+            .iter()
+            .map(|d| d.annotation)
+            .collect::<Vec<_>>(),
+        [None, Some(0), Some(0), None]
+    );
+    assert_eq!(annotated, canonical);
+}
+
+#[test]
+fn command_span_occurrences_count_entries_in_each_list_execution() {
+    let (mut dl, leaf) = lists();
+    dl.list(
+        "main",
+        &[gsp_displaylist(leaf), gsp_displaylist(leaf), gsp_enddl()],
+    );
+    let built = dl.finish("main");
+    let run = |occurrences: &[Option<u32>]| {
+        interpret(
+            &built,
+            Some(TaskAnnotations {
+                draws: occurrences
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &occurrence)| {
+                        span(
+                            u64::from(leaf) + 8,
+                            u64::from(leaf) + 24,
+                            occurrence,
+                            i as u64,
+                        )
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
+        )
+        .scene
+        .annotations
+        .unwrap()
+    };
+    let records = run(&[Some(0), Some(1)]);
+    assert!(records.reasons.is_empty(), "{:?}", records.reasons);
+    assert_eq!(
+        records
+            .draws
+            .iter()
+            .map(|d| d.annotation)
+            .collect::<Vec<_>>(),
+        [Some(0), Some(1)]
+    );
+    for occurrence in [None, Some(2)] {
+        assert_eq!(
+            run(&[occurrence]).reasons,
+            [ReasonCount {
+                reason: Ineligibility::UnresolvedScope,
+                count: 1,
+            }]
+        );
+    }
+}
+
+#[test]
+fn overlapping_duplicate_and_unreached_command_spans_are_unresolved() {
+    let (dl, leaf) = lists();
+    let built = dl.finish("leaf");
+    for second in [u64::from(leaf) + 8, u64::from(leaf) + 16] {
+        let records = interpret(
+            &built,
+            Some(TaskAnnotations {
+                draws: vec![
+                    span(u64::from(leaf) + 8, u64::from(leaf) + 24, None, 1),
+                    span(second, u64::from(leaf) + 24, None, 2),
+                ],
+                ..Default::default()
+            }),
+        )
+        .scene
+        .annotations
+        .unwrap();
+        assert_eq!(
+            records.reasons,
+            [ReasonCount {
+                reason: Ineligibility::UnresolvedScope,
+                count: 2
+            }]
+        );
+    }
+    let records = interpret(
+        &built,
+        Some(TaskAnnotations {
+            draws: vec![span(0, 8, None, 1)],
+            ..Default::default()
+        }),
+    )
+    .scene
+    .annotations
+    .unwrap();
+    assert_eq!(
+        records.reasons,
+        [ReasonCount {
+            reason: Ineligibility::UnresolvedScope,
+            count: 1
+        }]
+    );
+}
+
+#[test]
+fn spans_inherit_calls_and_nest_with_invocation_scopes() {
+    let (mut dl, leaf) = lists();
+    let middle = dl.list(
+        "middle",
+        &[
+            gsp_displaylist(leaf),
+            gsp_displaylist(leaf),
+            gsp_displaylist(leaf),
+            gsp_enddl(),
+        ],
+    );
+    let entry = u64::from(dl.list(
+        "main",
+        &[
+            gsp_displaylist(middle),
+            gsp_displaylist(leaf),
+            gsp_displaylist(leaf),
+            gsp_enddl(),
+        ],
+    ));
+    let built = dl.finish("main");
+    let records = interpret(
+        &built,
+        Some(TaskAnnotations {
+            draws: vec![
+                span(entry, entry + 16, None, 1),
+                scope(u64::from(middle) + 8, 2),
+                span(u64::from(leaf) + 16, u64::from(leaf) + 24, Some(2), 3),
+            ],
+            ..Default::default()
+        }),
+    )
+    .scene
+    .annotations
+    .unwrap();
+    assert!(records.reasons.is_empty(), "{:?}", records.reasons);
+    assert_eq!(
+        records
+            .draws
+            .iter()
+            .map(|d| d.annotation)
+            .collect::<Vec<_>>(),
+        [Some(0), Some(1), Some(2), Some(0), None]
+    );
+}
+
+#[test]
+fn a_span_inside_an_invocation_restores_the_invocation_on_exit() {
+    let mut dl = DlBuilder::new();
+    let vertices = dl.bytes(16, &[0; 48]);
+    let leaf = u64::from(dl.list(
+        "leaf",
+        &[
+            shade(),
+            gsp_vertex(0, 3, vertices),
+            gsp_1triangle(0, 1, 2),
+            gsp_1triangle(0, 1, 2),
+            gsp_1triangle(0, 1, 2),
+            gsp_enddl(),
+        ],
+    ));
+    let entry = dl.list("main", &[gsp_displaylist(leaf as u32), gsp_enddl()]);
+    let built = dl.finish("main");
+    let records = interpret(
+        &built,
+        Some(TaskAnnotations {
+            draws: vec![
+                scope(u64::from(entry), 1),
+                span(leaf + 24, leaf + 32, None, 2),
+            ],
+            ..Default::default()
+        }),
+    )
+    .scene
+    .annotations
+    .unwrap();
+    assert!(records.reasons.is_empty(), "{:?}", records.reasons);
+    assert_eq!(
+        records
+            .draws
+            .iter()
+            .map(|d| d.annotation)
+            .collect::<Vec<_>>(),
+        [Some(0), Some(1), Some(0)]
+    );
+}
+
+fn composed_fixture(
+    view: Mat4,
+    modelview: Mat4,
+) -> (crate::tests::dl_builder::Built, TaskAnnotations) {
+    let mut dl = DlBuilder::new();
+    let mut projection = identity();
+    projection[0][0] = 0.75;
+    projection[2][3] = -1.0;
+    let pa = dl.matrix(projection);
+    let ma = dl.matrix(modelview);
+    let vertices = dl.bytes(16, &[0; 48]);
+    let entry = u64::from(dl.list(
+        "main",
+        &[
+            shade(),
+            gsp_matrix(pa, true, true, false),
+            gsp_matrix(ma, false, true, false),
+            gsp_vertex(0, 3, vertices),
+            gsp_1triangle(0, 1, 2),
+            gsp_enddl(),
+        ],
+    ));
+    let mut annotation = span(entry + 32, entry + 40, None, 1);
+    annotation.policy = TransformPolicy::HoldModel;
+    annotation.composed_view = Some(0);
+    annotation.matrices = vec![binding(u64::from(pa), MatrixRole::Projection)];
+    (
+        dl.finish("main"),
+        TaskAnnotations {
+            draws: vec![annotation],
+            composed_views: vec![fixed_words(view)],
+        },
+    )
+}
+
+fn composed_view() -> Mat4 {
+    [
+        [0.8, 0.6, 0.0, 0.0],
+        [-0.6, 0.8, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [123.125, -41.75, 7.0, 1.0],
+    ]
+}
+
+#[test]
+fn composed_camera_only_model_is_exact_identity_including_static_world() {
+    let view = composed_view();
+    let (built, mut annotations) = composed_fixture(view, view);
+    for policy in [
+        TransformPolicy::HoldModel,
+        TransformPolicy::StaticWorld,
+        TransformPolicy::Interpolate,
+    ] {
+        annotations.draws[0].policy = policy;
+        let records = interpret(&built, Some(annotations.clone()))
+            .scene
+            .annotations
+            .unwrap();
+        assert!(records.reasons.is_empty(), "{:?}", records.reasons);
+        let decoded = ComposedView::new(&fixed_words(view)).unwrap().matrix;
+        for vertex in records.draws[0].vertices.iter() {
+            assert_eq!(vertex.transform.unwrap().model, identity());
+            assert_eq!(vertex.transform.unwrap().view, decoded);
+        }
+    }
+}
+
+#[test]
+fn composed_model_recovers_a_fixed_point_modelview_and_checks_static_world() {
+    let view = composed_view();
+    let model = [
+        [1.5, 0.0, 0.0, 0.0],
+        [0.0, 0.75, 0.0, 0.0],
+        [0.0, 0.0, 2.0, 0.0],
+        [3.25, -4.5, 1.0, 1.0],
+    ];
+    let (built, mut annotations) = composed_fixture(view, mul4(model, view));
+    let mut result = interpret(&built, Some(annotations.clone()));
+    let records = result.scene.annotations.take().unwrap();
+    assert!(records.reasons.is_empty(), "{:?}", records.reasons);
+    for vertex in &records.draws[0].vertices {
+        let resolved = vertex.transform.unwrap();
+        for (recovered, expected) in resolved.model.iter().flatten().zip(model.iter().flatten()) {
+            assert!((recovered - expected).abs() < 0.0001, "{resolved:?}");
+        }
+        assert_ne!(
+            mul4(resolved.model, mul4(resolved.view, resolved.projection)),
+            result.scene.mvp_table[0]
+        );
+    }
+    annotations.draws[0].policy = TransformPolicy::StaticWorld;
+    assert_eq!(
+        interpret(&built, Some(annotations))
+            .scene
+            .annotations
+            .unwrap()
+            .reasons,
+        [ReasonCount {
+            reason: Ineligibility::UnresolvedBinding,
+            count: 1
+        }]
+    );
+}
+
+#[test]
+fn composed_view_rejects_bad_indices_singular_views_and_forbidden_bindings() {
+    let (built, annotations) = composed_fixture(composed_view(), composed_view());
+    for case in 0..6 {
+        let mut annotations = annotations.clone();
+        match case {
+            0 => annotations.draws[0].composed_view = Some(1),
+            1 => annotations.composed_views[0] = [0; 16],
+            2 => annotations.draws[0].matrices.clear(),
+            3 => annotations.draws[0].matrices[0].role = MatrixRole::ViewProjection,
+            4 => annotations.draws[0]
+                .matrices
+                .push(binding(0xdead, MatrixRole::View)),
+            5 => annotations.draws[0].matrices[0].operand = 0xdead,
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            interpret(&built, Some(annotations))
+                .scene
+                .annotations
+                .unwrap()
+                .reasons,
+            [ReasonCount {
+                reason: Ineligibility::UnresolvedBinding,
+                count: 1
+            }],
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn an_unscoped_triangle_using_a_composed_scopes_projection_still_holds() {
+    let (built, mut annotations) = composed_fixture(composed_view(), composed_view());
+    let ScopeSelector::Commands(span) = &mut annotations.draws[0].scope else {
+        unreachable!()
+    };
+    span.start -= 8;
+    span.end -= 8;
+    let records = interpret(&built, Some(annotations))
+        .scene
+        .annotations
+        .unwrap();
+    assert_eq!(
+        records.reasons,
+        [ReasonCount {
+            reason: Ineligibility::UnknownWorldDraw,
+            count: 1
+        }]
+    );
+}
+
+#[test]
+fn composed_view_rejects_an_uncertifiable_nearly_singular_view() {
+    let q = 1.0 / 65536.0;
+    let view = [
+        [q, 2.0, 0.0, 0.0],
+        [0.0, q, 2.0, 0.0],
+        [0.0, 0.0, q, 2.0],
+        [0.0, 0.0, 0.0, q],
+    ];
+    let (built, annotations) = composed_fixture(view, identity());
+    assert!(ComposedView::new(&annotations.composed_views[0]).is_none());
+    assert_eq!(
+        interpret(&built, Some(annotations))
+            .scene
+            .annotations
+            .unwrap()
+            .reasons,
+        [ReasonCount {
+            reason: Ineligibility::UnresolvedBinding,
+            count: 1
+        }]
+    );
+}
+
+#[test]
+fn composed_recovery_budgets_f32_rounding_at_large_world_translations() {
+    let q = 1.0 / 65536.0;
+    let view = [
+        [27824.0 * q, 6264.0 * q, -16112.0 * q, 0.0],
+        [0.0, -30520.0 * q, -11848.0 * q, 0.0],
+        [-17296.0 * q, 10072.0 * q, -25928.0 * q, 0.0],
+        [12160.5, -909.75, 751.75, 1.0],
+    ];
+    let mut model = identity();
+    model[3] = [-19369.027, -994.2944, 14780.223, 1.0];
+    let (built, annotations) = composed_fixture(view, mul4(model, view));
+    let records = interpret(&built, Some(annotations))
+        .scene
+        .annotations
+        .unwrap();
+    assert!(records.reasons.is_empty(), "{:?}", records.reasons);
+    for vertex in &records.draws[0].vertices {
+        let recovered = vertex.transform.unwrap().model;
+        for (recovered, expected) in recovered.iter().flatten().zip(model.iter().flatten()) {
+            assert!((recovered - expected).abs() < 0.002);
+        }
+    }
+}
+
+#[test]
+fn a_nested_entry_does_not_change_the_callers_span_occurrence() {
+    let (mut dl, leaf) = lists();
+    let entry = u64::from(dl.list(
+        "main",
+        &[gsp_displaylist(leaf), gsp_1triangle(0, 1, 2), gsp_enddl()],
+    ));
+    let built = dl.finish("main");
+    for occurrence in [0, 1] {
+        let records = interpret(
+            &built,
+            Some(TaskAnnotations {
+                draws: vec![span(u64::from(leaf), entry + 24, Some(occurrence), 1)],
+                ..Default::default()
+            }),
+        )
+        .scene
+        .annotations
+        .unwrap();
+        assert!(records.reasons.is_empty(), "{:?}", records.reasons);
+        assert_eq!(
+            records
+                .draws
+                .iter()
+                .map(|d| d.annotation)
+                .collect::<Vec<_>>(),
+            [Some(0), (occurrence == 0).then_some(0)]
+        );
+    }
 }

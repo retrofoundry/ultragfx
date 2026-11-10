@@ -150,10 +150,10 @@ fn fixture_with_lighting(models: &[Mat4], view: Mat4, p: Mat4, lit: bool) -> Fix
         draws: specs
             .into_iter()
             .map(|(draw, part)| DrawAnnotation {
-                scope: InvocationSelector {
+                scope: ScopeSelector::Invocation(InvocationSelector {
                     address: u64::from(entry) + draw as u64 * 8,
                     occurrence: None,
-                },
+                }),
                 identity: DrawIdentity {
                     namespace: 7,
                     instance: 11,
@@ -170,8 +170,10 @@ fn fixture_with_lighting(models: &[Mat4], view: Mat4, p: Mat4, lit: bool) -> Fix
                     })
                     .to_vec(),
                 palette: None,
+                composed_view: None,
             })
             .collect(),
+        ..Default::default()
     };
     Fixture {
         built: b.finish("main"),
@@ -1658,7 +1660,12 @@ fn source_reasons_are_committed() {
     {
         let mut f = fixture(&[identity(), identity()], identity(), projection());
         match case {
-            0 => f.annotations.draws[1].scope.address = 0xdead,
+            0 => {
+                f.annotations.draws[1].scope = ScopeSelector::Invocation(InvocationSelector {
+                    address: 0xdead,
+                    occurrence: None,
+                })
+            }
             1 => f.annotations.draws[1].matrices[0].operand = 0xdead,
             2 => {
                 f.annotations.draws.pop();
@@ -1909,7 +1916,7 @@ fn world_screen_coordinate_overrides_hold_as_unsupported_topology() {
     let a = source(&mut r, ta);
     for where_ in [0x18, 0x1c] {
         let mut f = fixture(&[identity()], transform(0.0, 7.0, 0.0), projection());
-        let call = f.annotations.draws[0].scope.address as usize;
+        let call = invocation_address(&f.annotations.draws[0]) as usize;
         let leaf =
             u32::from_be_bytes(f.built.rdram[call + 4..call + 8].try_into().unwrap()) as usize;
         let tail = f.built.rdram.len() as u32;
@@ -1937,8 +1944,15 @@ fn world_screen_coordinate_overrides_hold_as_unsupported_topology() {
     }
 }
 
+fn invocation_address(annotation: &DrawAnnotation) -> u64 {
+    let ScopeSelector::Invocation(selector) = annotation.scope else {
+        panic!("expected invocation");
+    };
+    selector.address
+}
+
 fn double_triangle(f: &mut Fixture, scope: usize) {
-    let call = f.annotations.draws[scope].scope.address as usize;
+    let call = invocation_address(&f.annotations.draws[scope]) as usize;
     let leaf = u32::from_be_bytes(f.built.rdram[call + 4..call + 8].try_into().unwrap()) as usize;
     let (w0, w1) = gsp_2triangles(0, 1, 2, 0, 2, 1);
     f.built.rdram[leaf + 16..leaf + 20].copy_from_slice(&w0.to_be_bytes());
@@ -2056,7 +2070,7 @@ fn interpolate_restrictions_keep_only_the_affected_scope_in_a_world_pose() {
         match case {
             0 => double_triangle(&mut fb, 0),
             1 => {
-                let call = fb.annotations.draws[0].scope.address as usize;
+                let call = invocation_address(&fb.annotations.draws[0]) as usize;
                 let leaf =
                     u32::from_be_bytes(fb.built.rdram[call + 4..call + 8].try_into().unwrap())
                         as usize;
@@ -2071,7 +2085,7 @@ fn interpolate_restrictions_keep_only_the_affected_scope_in_a_world_pose() {
             }
             2 => {
                 for (f, part) in [(&mut fa, 17), (&mut fb, 18)] {
-                    let call = f.annotations.draws[0].scope.address as usize;
+                    let call = invocation_address(&f.annotations.draws[0]) as usize;
                     let leaf =
                         u32::from_be_bytes(f.built.rdram[call + 4..call + 8].try_into().unwrap())
                             as usize;
@@ -2085,7 +2099,7 @@ fn interpolate_restrictions_keep_only_the_affected_scope_in_a_world_pose() {
             }
             3 => fb.annotations.draws[0].policy = TransformPolicy::ScreenSpace,
             4 => {
-                let call = fa.annotations.draws[0].scope.address as usize;
+                let call = invocation_address(&fa.annotations.draws[0]) as usize;
                 let leaf =
                     u32::from_be_bytes(fa.built.rdram[call + 4..call + 8].try_into().unwrap())
                         as usize;
@@ -2354,7 +2368,7 @@ fn billboard_recipe_matches_an_executed_scope_without_b_triangles() {
         anchor: [8.0, 0.0, 0.0],
         ..recipe
     });
-    let call = fb.annotations.draws[0].scope.address as usize;
+    let call = invocation_address(&fb.annotations.draws[0]) as usize;
     let leaf = u32::from_be_bytes(fb.built.rdram[call + 4..call + 8].try_into().unwrap()) as usize;
     let (w0, w1) = gsp_enddl();
     fb.built.rdram[leaf + 16..leaf + 20].copy_from_slice(&w0.to_be_bytes());
@@ -2588,4 +2602,164 @@ fn deferred_scanout_reuses_only_the_matching_version_and_missing_tasks_keep_the_
         });
         assert_eq!(actual, expected);
     }
+}
+
+fn composed_fixture(models: &[Mat4], view: Mat4, projection: Mat4, screen_x: f32) -> Fixture {
+    use crate::hle::math::mul4;
+    let mut modelviews: Vec<_> = models.iter().map(|&model| mul4(model, view)).collect();
+    modelviews.push(transform(0.0, screen_x, -14.0));
+    let mut fixture = fixture(&modelviews, identity(), projection);
+    let old_entry = fixture.built.entry as usize;
+    let pa = fixture.annotations.draws[0].matrices[1].operand as u32;
+    let mut commands = fixture.built.rdram[old_entry..old_entry + 18 * 8].to_vec();
+    for (offset, (w0, w1)) in [
+        (16 * 8, gsp_segment(5, pa)),
+        (17 * 8, gsp_matrix(0x05000000, true, true, false)),
+    ] {
+        commands[offset..offset + 4].copy_from_slice(&w0.to_be_bytes());
+        commands[offset + 4..offset + 8].copy_from_slice(&w1.to_be_bytes());
+    }
+    fixture
+        .built
+        .rdram
+        .resize(fixture.built.rdram.len().next_multiple_of(16), 0);
+    let ortho = fixture.built.rdram.len() as u32;
+    fixture.built.rdram.extend(mtx_to_bytes(self::projection()));
+    let entry = fixture.built.rdram.len() as u64;
+    for (i, annotation) in fixture.annotations.draws.iter_mut().enumerate() {
+        let screen = i == models.len();
+        if screen {
+            let (w0, w1) = gsp_matrix(ortho, true, true, false);
+            commands.extend(w0.to_be_bytes());
+            commands.extend(w1.to_be_bytes());
+        }
+        let call = invocation_address(annotation) as usize;
+        let leaf = u32::from_be_bytes(fixture.built.rdram[call + 4..call + 8].try_into().unwrap())
+            as usize;
+        let start = entry + commands.len() as u64;
+        commands.extend_from_slice(&fixture.built.rdram[leaf..leaf + 24]);
+        annotation.scope = ScopeSelector::Commands(CommandSpan {
+            start,
+            end: entry + commands.len() as u64,
+            occurrence: None,
+        });
+        annotation.policy = if screen {
+            TransformPolicy::ScreenSpace
+        } else {
+            TransformPolicy::HoldModel
+        };
+        annotation.composed_view = (!screen).then_some(0);
+        annotation.matrices = if screen {
+            Vec::new()
+        } else {
+            vec![MatrixBinding {
+                operand: 0x05000000,
+                role: MatrixRole::Projection,
+            }]
+        };
+    }
+    let ScopeSelector::Commands(last) = fixture.annotations.draws[models.len() - 1].scope else {
+        unreachable!()
+    };
+    let ScopeSelector::Commands(first) = &mut fixture.annotations.draws[0].scope else {
+        unreachable!()
+    };
+    first.end = last.end;
+    fixture.annotations.draws.drain(1..models.len());
+    let (w0, w1) = gsp_enddl();
+    commands.extend(w0.to_be_bytes());
+    commands.extend(w1.to_be_bytes());
+    fixture.built.entry = entry as u32;
+    fixture.built.rdram.extend(commands);
+    fixture.annotations.composed_views = vec![fixed_words(view)];
+    fixture
+}
+
+#[test]
+fn composed_root_primitives_hold_models_under_the_phase_camera_and_keep_hud_discrete() {
+    use crate::hle::math::{mul4, mul_row_vec4};
+    let view = |s: f32, x: f32| {
+        [
+            [0.875, 0.0, -s, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [s, 0.0, 0.875, 0.0],
+            [x, 0.0, -32.0, 1.0],
+        ]
+    };
+    let va = view(-0.5, -4.0);
+    let vb = view(0.5, 4.0);
+    let p = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.25, 0.0, 0.0],
+        [0.0, 0.0, -1.0, -1.0],
+        [0.0, 0.0, -2.0, 0.0],
+    ];
+    let mut ma = transform(0.0, 10.0, 3.0);
+    ma[3][2] = 4.0;
+    let mb = transform(90.0, -12.0, 8.0);
+    let mut r = renderer(1);
+    let mut phases = r.phase_renderer();
+    let ta = task(
+        &mut r,
+        composed_fixture(&[identity(), ma], va, p, -22.0),
+        1,
+        1,
+        true,
+    );
+    let ca = canonical(&mut r);
+    let a = source(&mut r, ta);
+    let tb = task(
+        &mut r,
+        composed_fixture(&[identity(), mb], vb, p, 22.0),
+        2,
+        1,
+        true,
+    );
+    let cb = canonical(&mut r);
+    let b = source(&mut r, tb);
+    assert!(a.ineligibility().is_empty(), "{:?}", a.ineligibility());
+    assert!(b.ineligibility().is_empty(), "{:?}", b.ineligibility());
+    let at = &a.data.task.scene;
+    let bt = &b.data.task.scene;
+    assert_eq!(
+        at.annotations
+            .as_ref()
+            .unwrap()
+            .draws
+            .iter()
+            .map(|draw| draw.annotation)
+            .collect::<Vec<_>>(),
+        [Some(0), Some(0), Some(1)]
+    );
+    let scene = phase_scene(at, bt, &correspondence(at, bt).unwrap(), 0.5);
+    let midpoint: Mat4 =
+        std::array::from_fn(|i| std::array::from_fn(|j| (va[i][j] + vb[i][j]) / 2.0));
+    for (triangle, model) in [identity(), ma].into_iter().enumerate() {
+        let expected = mul4(model, mul4(midpoint, p));
+        for corner in 0..3 {
+            let vertex = scene.indices[triangle * 3 + corner] as usize;
+            let mvp = scene.mvp_table[scene.mtx_index[vertex] as usize];
+            for (got, want) in mvp.iter().flatten().zip(expected.iter().flatten()) {
+                assert!((got - want).abs() < 0.00001, "{mvp:?} != {expected:?}");
+            }
+        }
+    }
+    let image = phase(&mut phases, &a, &b, 0.5, INTERPOLATED);
+    assert_ne!(image, ca);
+    let center = mul_row_vec4([0.0, 0.0, 0.0, 1.0], mul4(ma, mul4(midpoint, p)));
+    let x = (32.0 + center[0] / center[3] * 32.0).floor() as u32;
+    let y = (24.0 - center[1] / center[3] * 24.0).floor() as u32;
+    assert_eq!(pixel(&image, 64, x, y), [255; 4]);
+    for corner in 0..3 {
+        let before = at.indices[6 + corner] as usize;
+        let after = scene.indices[6 + corner] as usize;
+        assert_eq!(
+            scene.mvp_table[scene.mtx_index[after] as usize],
+            at.mvp_table[at.mtx_index[before] as usize]
+        );
+    }
+    assert_eq!(pixel(&image, 64, 10, 38), [255; 4]);
+    assert_ne!(pixel(&cb, 64, 10, 38), [255; 4]);
+    assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+    assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
 }
