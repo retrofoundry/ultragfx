@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 pub(super) const SPIN_WINDOW: Duration = Duration::from_micros(250);
+pub(super) const MAX_SOURCE_INTERVAL: Duration = Duration::from_millis(125);
 
 pub(super) fn wait_until(at: Instant) {
     while let Some(remaining) = at.checked_duration_since(Instant::now()) {

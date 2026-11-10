@@ -1164,6 +1164,116 @@ fn activate_pair(h: &mut Harness) {
         .unwrap());
 }
 
+fn pending_fill(h: &mut Harness, cookie: u64, visible_at: Instant, color: u32) -> PendingScanout {
+    let task = retained_fill(&mut h.renderer, cookie, 0x1000, color);
+    let resolved = h.renderer.host_scanout_source(Some(0x1000));
+    let mut pending = h.renderer.prepare_scanout(
+        resolved,
+        visible_at,
+        std::slice::from_ref(&task),
+        Some(&task),
+    );
+    pending.policy.requested = crate::RefreshRate::Display;
+    pending
+}
+
+#[test]
+fn a_long_source_gap_presents_the_endpoint_and_resumes_with_ordinary_delay() {
+    for gap in [
+        Duration::from_nanos(125_000_001),
+        Duration::from_millis(643),
+    ] {
+        let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+        let b = Instant::now();
+        let sources = [
+            pending_fill(&mut h, 1, b - gap - Duration::from_millis(50), 0xf801_f801),
+            pending_fill(&mut h, 2, b - gap, 0xf801_f801),
+            pending_fill(&mut h, 3, b, 0x07c1_07c1),
+        ];
+        h.renderer
+            .presenter
+            .as_ref()
+            .unwrap()
+            .synchronous(move |state| {
+                for source in sources {
+                    state.source(source);
+                }
+                assert!(state.schedule.previous.is_none());
+                assert!(state.schedule.older.is_none());
+            })
+            .unwrap();
+        assert!(pixels(&h.renderer, &h.presented.wait_for(1))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 255, 0, 255]));
+        h.renderer
+            .presenter
+            .as_ref()
+            .unwrap()
+            .synchronous(|state| state.schedule.deadlines = None)
+            .unwrap();
+
+        let c = b + Duration::from_millis(50);
+        let next = pending_fill(&mut h, 4, c, 0x003f_003f);
+        h.renderer
+            .presenter
+            .as_ref()
+            .unwrap()
+            .synchronous(move |state| {
+                state.source(next);
+                let a = state.schedule.previous.as_ref().unwrap().visible_at();
+                let phase = schedule::select_phase(
+                    state.schedule.older.as_ref().map(SourceFrame::visible_at),
+                    a,
+                    c,
+                    c + Duration::from_millis(31),
+                    Duration::from_millis(6),
+                );
+                assert_eq!(phase, schedule::Phase::Latest(0.5));
+                assert!(state.schedule.older.is_none());
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn source_intervals_up_to_the_maximum_still_interpolate() {
+    for interval in [
+        Duration::from_nanos(124_999_999),
+        Duration::from_millis(125),
+    ] {
+        let mut h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
+        let b = Instant::now();
+        let sources = [
+            pending_fill(&mut h, 1, b - interval, 0xf801_f801),
+            pending_fill(&mut h, 2, b, 0x07c1_07c1),
+        ];
+        h.renderer
+            .presenter
+            .as_ref()
+            .unwrap()
+            .synchronous(move |state| {
+                for source in sources {
+                    state.source(source);
+                }
+                let a = state.schedule.previous.as_ref().unwrap().visible_at();
+                assert_eq!(
+                    schedule::select_phase(
+                        None,
+                        a,
+                        b,
+                        b + interval / 2 + Duration::from_millis(6),
+                        Duration::from_millis(6),
+                    ),
+                    schedule::Phase::Latest(0.5)
+                );
+                state.schedule.deadlines = None;
+            })
+            .unwrap();
+    }
+}
+
 #[test]
 fn active_reset_reconfigure_and_reduction_discard_old_phases_and_resume() {
     for mode in [
