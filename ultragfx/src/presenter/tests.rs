@@ -461,7 +461,7 @@ fn present_waits_for_surface_acquisition_before_returning() {
     });
     acquired.recv_timeout(WAIT).unwrap();
     assert_eq!(result.try_recv(), Err(mpsc::TryRecvError::Empty));
-    release.send(()).unwrap();
+    drop(release);
     assert_eq!(result.recv_timeout(WAIT).unwrap(), Ok(()));
     caller.join().unwrap();
 }
@@ -1136,7 +1136,7 @@ fn asynchronous_acquisition_does_not_hold_configuration_exclusion() {
     if unlocked {
         h.renderer.begin_frame();
     }
-    release.send(()).unwrap();
+    drop(release);
     h.renderer.presenter.as_ref().unwrap().barrier().unwrap();
     assert!(unlocked);
 }
