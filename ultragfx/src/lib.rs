@@ -22,6 +22,8 @@ mod scanout;
 pub use scanout::ScanoutOrigin;
 mod refresh;
 pub use refresh::{RefreshRate, RefreshRateError};
+mod presentation_fit;
+pub use presentation_fit::PresentationFit;
 pub(crate) mod render;
 pub mod replacement;
 pub(crate) mod scene;
@@ -209,6 +211,7 @@ pub enum PresentError {
     /// Native owned surfaces require `set_send_render_hook`.
     HookRequiresSend,
     SurfaceRequired,
+    InvalidPresentationFit,
 }
 
 /// The render format for a `Surface` target — the non-sRGB `view_format` when one was configured,
@@ -288,6 +291,7 @@ pub struct Renderer {
     target_versions: std::collections::HashMap<TargetId, std::sync::Arc<()>>,
     refresh_requested: refresh::RefreshPolicy,
     refresh_latched: refresh::RefreshPolicy,
+    presentation_fit: PresentationFit,
     inner: SceneRenderer,
     rdp: crate::hle::rdp::Rdp,
     color_image_epoch: u64,
@@ -487,6 +491,7 @@ impl Renderer {
             target_versions: Default::default(),
             refresh_requested: Default::default(),
             refresh_latched: Default::default(),
+            presentation_fit: Default::default(),
             inner,
             rdp: Default::default(),
             color_image_epoch: 0,
@@ -1771,8 +1776,17 @@ impl Renderer {
                 self.inner
                     .scanout_native(&self.device, &mut encoder, target, src.target, src.rows);
             } else {
-                self.inner
-                    .scanout(&self.device, &mut encoder, target, src.target, src.rows);
+                let image = self
+                    .inner
+                    .resolve_scanout(&self.device, src.target, src.rows, false);
+                self.inner.compositor().scanout_profiled(
+                    &self.device,
+                    &mut encoder,
+                    target,
+                    &image,
+                    self.presentation_fit,
+                    &self.inner.profiling,
+                );
             }
         }
         self.record_and_submit(encoder, target);
@@ -1811,10 +1825,15 @@ impl Renderer {
             self.inner
                 .resolve_scanout(&self.device, source.target, source.rows, native)
         });
+        let fit = if native {
+            PresentationFit::Fill
+        } else {
+            self.presentation_fit
+        };
         #[cfg(feature = "debug-ui")]
         if self.debugger.enabled {
             return presenter.synchronous(|state| {
-                state.present(source, target, |encoder, view| {
+                state.present(source, target, fit, |encoder, view| {
                     self.debugger.draw(
                         &self.device,
                         &self.queue,
@@ -1826,7 +1845,7 @@ impl Renderer {
                 })
             })?;
         }
-        presenter.present(source, target)
+        presenter.present(source, target, fit)
     }
 
     fn present_source(&mut self, src: Option<ScanoutSource>) -> Result<(), PresentError> {
@@ -1870,8 +1889,17 @@ impl Renderer {
                 label: Some("present"),
             });
         if let Some(src) = src {
-            self.inner
-                .scanout(&self.device, &mut encoder, &view, src.target, src.rows);
+            let image = self
+                .inner
+                .resolve_scanout(&self.device, src.target, src.rows, false);
+            self.inner.compositor().scanout_profiled(
+                &self.device,
+                &mut encoder,
+                &view,
+                &image,
+                self.presentation_fit,
+                &self.inner.profiling,
+            );
         }
         // ── SEAM (P4): hook draw() records over `view` (LoadOp::Load); its pre-frame CommandBuffers
         //    submit STRICTLY BEFORE this encoder.

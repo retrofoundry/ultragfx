@@ -5,7 +5,7 @@ mod worker;
 use crate::interpolation::{PhaseRenderer, SourceFrame};
 use crate::render::{Compositor, Scanout};
 use crate::scanout::PendingScanout;
-use crate::{PresentError, RenderHook, RendererConfig};
+use crate::{PresentError, PresentationFit, RenderHook, RendererConfig};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -200,7 +200,9 @@ impl Presentation {
                 }
             });
         let image = latest.image.clone();
-        let result = self.present_frame(image, None, |_, _| {}, phase, Some((deadline, period)));
+        let fit = latest.fit;
+        let result =
+            self.present_frame(image, None, fit, |_, _| {}, phase, Some((deadline, period)));
         if self.needs_configure {
             self.configure();
         }
@@ -214,9 +216,10 @@ impl Presentation {
         &mut self,
         source: Option<Scanout>,
         target: Option<wgpu::TextureView>,
+        fit: PresentationFit,
         after_hook: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
     ) -> Result<(), PresentError> {
-        self.present_frame(source, target, after_hook, None, None)
+        self.present_frame(source, target, fit, after_hook, None, None)
             .map(|_| ())
     }
 
@@ -224,6 +227,7 @@ impl Presentation {
         &mut self,
         mut source: Option<Scanout>,
         target: Option<wgpu::TextureView>,
+        fit: PresentationFit,
         after_hook: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
         phase: Option<(SourceFrame, SourceFrame, f32)>,
         timing: Option<(Instant, std::time::Duration)>,
@@ -283,6 +287,7 @@ impl Presentation {
                 &mut encoder,
                 &view,
                 source,
+                fit,
                 &self.profiling,
             );
         }
@@ -319,7 +324,7 @@ impl Presentation {
 }
 
 enum Request {
-    Present(Option<Scanout>, Option<wgpu::TextureView>),
+    Present(Option<Scanout>, Option<wgpu::TextureView>, PresentationFit),
     Sources(Arc<Mutex<Mailbox>>),
     Resize(u32, u32),
     Reconfigure(wgpu::PresentMode, Option<wgpu::TextureFormat>, Compositor),
@@ -364,8 +369,8 @@ fn handle(slot: &mut Option<Box<Presentation>>, request: Request) -> Result<Repl
     };
     let state = slot.as_mut().ok_or(PresentError::PresenterStopped)?;
     let result = match request {
-        Request::Present(source, target) => state
-            .present(source, target, |_, _| {})
+        Request::Present(source, target, fit) => state
+            .present(source, target, fit, |_, _| {})
             .map(|_| Reply::Done),
         Request::Sources(mailbox) => {
             let (sources, discontinuity) = {
@@ -520,9 +525,10 @@ impl Presenter {
         &self,
         source: Option<Scanout>,
         target: Option<wgpu::TextureView>,
+        fit: PresentationFit,
     ) -> Result<(), PresentError> {
         self.worker
-            .request(Request::Present(source, target))
+            .request(Request::Present(source, target, fit))
             .map(|_| ())
     }
 

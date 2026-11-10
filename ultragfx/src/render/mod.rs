@@ -2496,11 +2496,16 @@ impl SceneRenderer {
         rows: Option<std::ops::Range<u32>>,
     ) {
         let image = self.resolve_scanout(device, src_addr.into(), rows, false);
-        self.compositor
-            .scanout_profiled(device, encoder, target, &image, &self.profiling);
+        self.compositor.scanout_profiled(
+            device,
+            encoder,
+            target,
+            &image,
+            crate::PresentationFit::Fill,
+            &self.profiling,
+        );
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn compositor(&self) -> Compositor {
         self.compositor.clone()
     }
@@ -2575,8 +2580,14 @@ impl SceneRenderer {
         rows: Option<std::ops::Range<u32>>,
     ) {
         let image = self.resolve_scanout(device, src, rows, true);
-        self.compositor
-            .scanout_profiled(device, encoder, target, &image, &self.profiling);
+        self.compositor.scanout_profiled(
+            device,
+            encoder,
+            target,
+            &image,
+            crate::PresentationFit::Fill,
+            &self.profiling,
+        );
     }
 
     pub(crate) fn reset(&mut self) {

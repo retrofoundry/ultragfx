@@ -102,6 +102,7 @@ fn live_scanout_preserves_overheight_rows_and_reduction_clamping() {
                     &mut encoder,
                     target,
                     &image,
+                    crate::PresentationFit::Fill,
                     &Default::default(),
                 );
                 queue.submit([encoder.finish()]);
@@ -157,7 +158,14 @@ fn resolved_scanout_reads_live_pixels_and_native_bypasses_reduction() {
     ] {
         let actual = common::pixels_from_render(&device, &queue, 4, 8, FORMAT, |target| {
             let mut encoder = device.create_command_encoder(&Default::default());
-            compositor.scanout_profiled(&device, &mut encoder, target, &image, &Default::default());
+            compositor.scanout_profiled(
+                &device,
+                &mut encoder,
+                target,
+                &image,
+                crate::PresentationFit::Fill,
+                &Default::default(),
+            );
             queue.submit([encoder.finish()]);
         });
         let expected: Vec<u8> = expected_rows

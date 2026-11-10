@@ -94,6 +94,7 @@ impl Compositor {
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         image: &Scanout,
+        fit: crate::PresentationFit,
         profiling: &crate::profiling::Recorder,
     ) {
         if image.reduction > 1 {
@@ -101,17 +102,18 @@ impl Compositor {
                 device,
                 encoder,
                 target,
-                image.reduction,
+                fit,
                 profiling,
                 (
                     &image.texture,
                     image.height,
                     image.scale,
                     Some(image.rows.clone()),
+                    image.reduction,
                 ),
             );
         } else {
-            self.blit_to(encoder, target, &image.bindings, &image.extent);
+            self.blit_to(encoder, target, &image.bindings, &image.extent, fit);
         }
     }
 
@@ -121,14 +123,20 @@ impl Compositor {
         dst_view: &wgpu::TextureView,
         src_bg: &wgpu::BindGroup,
         extent_bg: &wgpu::BindGroup,
+        fit: crate::PresentationFit,
     ) {
+        let viewport = fit.viewport(dst_view.texture().width(), dst_view.texture().height());
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("present-pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: dst_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: if viewport.is_some() {
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+                    } else {
+                        wgpu::LoadOp::Load
+                    },
                     store: wgpu::StoreOp::Store,
                 },
                 depth_slice: None,
@@ -139,6 +147,9 @@ impl Compositor {
             multiview_mask: None,
         });
         pass.set_pipeline(&self.present);
+        if let Some([x, y, width, height]) = viewport {
+            pass.set_viewport(x as f32, y as f32, width as f32, height as f32, 0.0, 1.0);
+        }
         pass.set_bind_group(0, src_bg, &[]);
         pass.set_bind_group(1, extent_bg, &[]);
         pass.draw(0..3, 0..1);
@@ -226,9 +237,15 @@ impl Compositor {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-        reduction_factor: u32,
+        fit: crate::PresentationFit,
         profiling: &crate::profiling::Recorder,
-        (texture, height, scale, rows): (&wgpu::Texture, u32, u32, Option<std::ops::Range<u32>>),
+        (texture, height, scale, rows, reduction_factor): (
+            &wgpu::Texture,
+            u32,
+            u32,
+            Option<std::ops::Range<u32>>,
+            u32,
+        ),
     ) {
         let rows = rows.unwrap_or(0..height);
         let rows = rows.start * scale..rows.end.min(height) * scale;
@@ -246,6 +263,6 @@ impl Compositor {
         let bindings = self.make_present_bindings(device, &source.create_view(&Default::default()));
         let extent =
             self.make_present_extent(device, source.width(), rows, source.height(), profiling);
-        self.blit_to(encoder, target, &bindings, &extent);
+        self.blit_to(encoder, target, &bindings, &extent, fit);
     }
 }

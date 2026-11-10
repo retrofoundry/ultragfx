@@ -231,9 +231,15 @@ impl SceneRenderer {
             device,
             encoder,
             target,
-            self.reduction_factor,
+            crate::PresentationFit::Fill,
             &self.profiling,
-            (&image.texture, image.height, image.scale, rows),
+            (
+                &image.texture,
+                image.height,
+                image.scale,
+                rows,
+                self.reduction_factor,
+            ),
         );
     }
 }
