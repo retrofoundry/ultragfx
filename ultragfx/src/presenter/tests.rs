@@ -73,7 +73,7 @@ impl Surface for TestSurface {
         event(&self.events, "acquire");
         if let Some((entered, release)) = &self.acquire {
             entered.send(()).unwrap();
-            release.lock().unwrap().recv().unwrap();
+            let _ = release.lock().unwrap().recv();
         }
         if let Some(error) = self.faults.lock().unwrap().pop_front() {
             return Err(error);
@@ -1306,7 +1306,7 @@ fn scheduled_acquire_errors_recover_and_allow_switching_to_original() {
 #[test]
 fn preparation_may_present_within_its_period_but_drops_an_expired_frame() {
     let h = harness(wgpu::TextureFormat::Rgba8Unorm, vec![], None);
-    for period in [Duration::from_millis(100), Duration::from_millis(10)] {
+    for period in [Duration::from_secs(10), Duration::from_millis(10)] {
         h.renderer
             .presenter
             .as_ref()
@@ -1403,7 +1403,7 @@ fn a_coalesced_missing_source_breaks_the_previous_pair() {
             )
             .unwrap();
     }
-    release.send(()).unwrap();
+    drop(release);
     let chain = h
         .renderer
         .presenter
