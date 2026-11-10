@@ -49,8 +49,11 @@ jobs:
           sys.path.insert(0, "tools/readbacks")
           import ci
 
-          entries = [{"os": "macos-latest", "name": f"macos-latest-{config}", "configuration": config, "section": ""}
-                     for config in ci.COMMANDS]
+          entries = []
+          for config in ci.COMMANDS:
+              for section in (("library", "integration-docs") if config == "all-features" else ("",)):
+                  name = f"macos-latest-{config}" + (f"-{section}" if section else "")
+                  entries.append({"os": "macos-latest", "name": name, "configuration": config, "section": section})
           for config in ci.COMMANDS:
               for section in ci.windows_sections(Path.cwd(), config):
                   entries.append({"os": "windows-latest", "name": f"windows-latest-{config}-{section}",
@@ -66,6 +69,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.test-matrix.outputs.include) }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     env:
       # WARP is a CPU rasterizer; parallel GPU tests starve each other and have crashed the
       # process with STATUS_ACCESS_VIOLATION.
@@ -102,7 +106,7 @@ jobs:
           netrc.write_text("".join(f"machine {host} login x-access-token password {token}\n"
                                    for host in ["github.com", "api.github.com"]), encoding="utf-8")
           config = (f'netrc-file = "{netrc.as_posix()}"\n'
-                    'fail\nretry = 5\nretry-all-errors\nretry-delay = 2\n')
+                    'fail\nretry = 5\nretry-all-errors\nretry-delay = 2\nssl-revoke-best-effort\n')
           for name in [".curlrc", "_curlrc"]:
               (directory / name).write_text(config, encoding="utf-8")
       - name: bound Windows build resources

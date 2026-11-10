@@ -67,20 +67,23 @@ class ConfigurationGates(CaptureCase):
     def test_sections_partition_frozen_and_supplemental_requirements(self):
         checkout = Path(__file__).resolve().parents[2]
         original = json.dumps(ci.INVENTORY, sort_keys=True)
-        keys, gpu_configs, replacement_configs = [], [], []
-        for config in ci.COMMANDS:
-            for section in ci.windows_sections(checkout, config):
-                inventory = ci.configuration_inventory(config, section)
-                keys.extend(readbacks.expected_rows(inventory))
-                gpu_configs.extend(inventory["gpu_decode_configurations"])
-                replacement_configs.extend(inventory["replacement_configurations"])
-        self.assertCountEqual(keys, readbacks.expected_rows(ci.INVENTORY))
-        self.assertCountEqual(gpu_configs, ["default", "debug-ui", "all-features"])
-        self.assertEqual(replacement_configs, ["all-features"])
+        for system in ["Windows", "Darwin"]:
+            keys, gpu_configs, replacement_configs = [], [], []
+            for config in ci.COMMANDS:
+                sections = ci.windows_sections(checkout, config) if system == "Windows" else (
+                    ["library", "integration-docs"] if config == "all-features" else [None])
+                for section in sections:
+                    inventory = ci.configuration_inventory(config, section)
+                    keys.extend(readbacks.expected_rows(inventory))
+                    gpu_configs.extend(inventory.get("gpu_decode_configurations", [config]))
+                    replacement_configs.extend(inventory.get("replacement_configurations", [config] if config == "all-features" else []))
+            self.assertCountEqual(keys, readbacks.expected_rows(ci.INVENTORY))
+            self.assertCountEqual(gpu_configs, ["default", "debug-ui", "all-features"])
+            self.assertEqual(replacement_configs, ["all-features"])
         self.assertEqual(json.dumps(ci.INVENTORY, sort_keys=True), original)
 
     def test_section_without_rows_still_rejects_failed_tests(self):
-        inventory = ci.configuration_inventory("default", "guest")
+        inventory = ci.configuration_inventory("default", "guest-fog")
         for directory in [self.base, self.head]:
             self.mutate(directory, lambda m: m.update(
                 inventory_sha256=readbacks.json_hash(inventory), rows=[],
@@ -106,12 +109,15 @@ class ConfigurationGates(CaptureCase):
 
     def test_selected_gate_downloads_or_bootstraps_only_its_configuration(self):
         for config in ["default", "debug-ui", "all-features"]:
-            for section, scenario in [(section, scenario) for section in [None, "readbacks", "guest"]
+            sections = [None, "readbacks" if config == "debug-ui" else "readbacks-batches", "triangles"]
+            if config == "all-features":
+                sections.extend(["library", "integration-docs"])
+            for section, scenario in [(section, scenario) for section in sections
                                       for scenario in ["download", "bootstrap", "missing-row", "failed-test", "changed-byte", "missing-configuration"]
-                                      if section != "guest" or scenario not in ["missing-row", "changed-byte"]]:
+                                      if section not in ["triangles", "integration-docs"] or scenario not in ["missing-row", "changed-byte"]]:
                 with self.subTest(config=config, section=section, scenario=scenario):
                     output = self.root / f"{config}-{section}-{scenario}"
-                    runner = "windows-latest" if section else "macos-latest"
+                    runner = "macos-latest" if section in [None, "library", "integration-docs"] else "windows-latest"
                     name = f"readbacks-{runner}-{config}" + (f"-{section}" if section else "")
                     captured = []
 
@@ -123,7 +129,7 @@ class ConfigurationGates(CaptureCase):
                         manifest["configurations"] = {c: manifest["configurations"][c] for c in inventory["configurations"]}
                         keys = readbacks.expected_rows(inventory)
                         manifest["rows"] = [r for r in manifest["rows"] if (r["configuration"], r["id"]) in keys]
-                        if section is None:
+                        if runner == "macos-latest":
                             manifest["runtime"].update(os="Darwin", backend="metal", test_threads="4")
                             for row in manifest["rows"]:
                                 row["adapter"].update(backend="Metal", device_type="IntegratedGpu")
