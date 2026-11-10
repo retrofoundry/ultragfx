@@ -125,6 +125,10 @@ def section_test_names(filters, config, section, names):
 def test_commands(checkout, config, system, section=None):
     command = COMMANDS[config]
     if system != "Windows":
+        if system == "Darwin" and config == "debug-ui" and section is None:
+            commands = test_commands(checkout, config, "Windows")
+            commands[0].extend(["debug::", "debugger_", "presenter::tests::"])
+            return commands
         if section is None:
             return [command]
         if system == "Darwin" and config == "all-features":

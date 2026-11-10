@@ -57,7 +57,9 @@ plus the default and debug-ui compute supplements. All-features
 `upscaling-3-residency` owns replacement readbacks. Other groups require successful
 test commands and authenticated manifests with zero exported rows.
 
-macOS runs default and debug-ui in full. All-features splits into `library`
+macOS runs default in full. Debug-ui runs the Windows readback selection plus the
+debugger and presenter tests, since the rest of its suite is the default suite
+again. All-features splits into `library`
 (`--lib`) and `integration-docs` (`--test '*'`, then `--doc`), retaining every
 workspace test target exactly once. The library job owns 56 frozen rows;
 integration-docs owns three IMAGE rows, 1,263 GPU decode rows and 25 replacement

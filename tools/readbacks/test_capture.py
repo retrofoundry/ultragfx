@@ -125,10 +125,12 @@ class CaptureFailures(unittest.TestCase):
                 if system == "Darwin":
                     command = {
                         "default": ["cargo", "test", "--locked", "--no-fail-fast", "--workspace"],
-                        "debug-ui": ["cargo", "test", "--locked", "--no-fail-fast", "-p", "ultragfx", "--features", "debug-ui"],
+                        "debug-ui": ci.test_commands(self.checkout, "debug-ui", "Windows")[0]
+                        + ["debug::", "debugger_", "presenter::tests::"],
                         "all-features": ["cargo", "test", "--locked", "--no-fail-fast", "--workspace", "--all-features"],
                     }[config]
-                    self.assertEqual(executions, [command + ["--no-run", "--message-format=json"], command])
+                    build = command[:command.index("--")] if "--" in command else command
+                    self.assertEqual(executions, [build + ["--no-run", "--message-format=json"], command])
                     self.assertEqual(manifest["configurations"][config]["commands"], [command])
                     self.assertEqual(manifest["configurations"][config]["exit_code"], 0)
 
@@ -283,8 +285,11 @@ class CaptureFailures(unittest.TestCase):
         commands = ci.test_commands(self.checkout, "all-features", "Windows")
         self.assertEqual(len(commands), 2)
         self.assertEqual(commands[1][-2:], ["--test", "tmem_fixture_replay"])
-        for config in ci.COMMANDS:
+        for config in ["default", "all-features"]:
             self.assertEqual(ci.test_commands(self.checkout, config, "Darwin"), [ci.COMMANDS[config]])
+        commands = ci.test_commands(self.checkout, "debug-ui", "Darwin")
+        self.assertEqual(commands, [ci.test_commands(self.checkout, "debug-ui", "Windows")[0]
+                                    + ["debug::", "debugger_", "presenter::tests::"]])
 
     def test_windows_selects_scaled_feedback_and_public_api_when_present(self):
         for name in ["ultragfx/src/render/upscaling_tests.rs", "ultragfx/src/render/framebuffers/copies_tests.rs", "ultragfx/tests/upscaling.rs"]:
