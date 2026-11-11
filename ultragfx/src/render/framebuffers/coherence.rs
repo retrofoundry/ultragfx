@@ -497,6 +497,98 @@ impl Ownership {
             .insert(address, OwnedRange::new(writer, generation, bytes));
     }
 
+    /// Same result as calling `write` for each of `writes` in order, but splits each existing range
+    /// once; a task's row writes over the previous task's coalesced range would otherwise recopy its
+    /// tail per row.
+    pub fn write_all(&mut self, writes: Vec<(Writer, u64, u64, Vec<u8>)>) {
+        let mut covered = BTreeMap::<u64, u64>::new();
+        let mut pieces = Vec::new();
+        for (writer, generation, address, bytes) in writes.into_iter().rev() {
+            let end = address + bytes.len() as u64;
+            if address == end {
+                continue;
+            }
+            let touching: Vec<_> = covered
+                .range(..=end)
+                .rev()
+                .take_while(|(_, right)| **right >= address)
+                .map(|(&left, &right)| (left, right))
+                .collect();
+            let mut gaps = Vec::new();
+            let mut cursor = address;
+            for &(left, right) in touching.iter().rev() {
+                if left > cursor {
+                    gaps.push(cursor..left);
+                }
+                cursor = cursor.max(right);
+            }
+            if cursor < end {
+                gaps.push(cursor..end);
+            }
+            if gaps.len() == 1 && gaps[0].start == address && gaps[0].end == end {
+                pieces.push((address, writer, generation, bytes));
+            } else {
+                for gap in gaps {
+                    let range = (gap.start - address) as usize..(gap.end - address) as usize;
+                    pieces.push((gap.start, writer, generation, bytes[range].to_vec()));
+                }
+            }
+            let left = touching
+                .last()
+                .map_or(address, |&(left, _)| left.min(address));
+            let right = touching.first().map_or(end, |&(_, right)| right.max(end));
+            for (start, _) in touching {
+                covered.remove(&start);
+            }
+            covered.insert(left, right);
+        }
+        let mut affected = Vec::new();
+        for (&left, &right) in &covered {
+            affected.extend(
+                self.ranges
+                    .range(..right)
+                    .rev()
+                    .take_while(|(start, old)| **start + old.bytes.len() as u64 > left)
+                    .map(|(&start, _)| start),
+            );
+        }
+        affected.sort_unstable();
+        affected.dedup();
+        for start in affected {
+            let old = self.ranges.remove(&start).unwrap();
+            let old_end = start + old.bytes.len() as u64;
+            let first = covered
+                .range(..=start)
+                .next_back()
+                .map_or(start, |(&left, _)| left);
+            let mut cursor = start;
+            for (&left, &right) in covered.range(first..old_end) {
+                if left > cursor {
+                    let range = (cursor - start) as usize..(left - start) as usize;
+                    self.ranges.insert(
+                        cursor,
+                        OwnedRange::new(old.writer, old.generation, old.bytes[range].to_vec()),
+                    );
+                }
+                cursor = cursor.max(right);
+            }
+            if cursor < old_end {
+                self.ranges.insert(
+                    cursor,
+                    OwnedRange::new(
+                        old.writer,
+                        old.generation,
+                        old.bytes[(cursor - start) as usize..].to_vec(),
+                    ),
+                );
+            }
+        }
+        pieces.sort_unstable_by_key(|piece| piece.0);
+        for (address, writer, generation, bytes) in pieces {
+            self.write(writer, generation, address, bytes);
+        }
+    }
+
     /// Merge adjacent ranges one target wrote since `first_generation`; their write order is settled.
     fn coalesce(&mut self, first_generation: u64) {
         let mut merged = BTreeMap::new();
@@ -570,6 +662,63 @@ impl Ownership {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batched_owner_writes_match_sequential_writes() {
+        let mut seed = 0x1234_5678_9abc_def0_u64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let writers = [image(0, 64, 2, false), image(0, 64, 2, true)];
+        let state = |owners: &Ownership| {
+            let ranges: Vec<_> = owners
+                .ranges
+                .iter()
+                .map(|(&a, r)| (a, r.writer, r.generation, r.bytes.clone()))
+                .collect();
+            (ranges, owners.foreign.clone())
+        };
+        for case in 0..5_000 {
+            let span = [32, 256, 4096][case % 3];
+            let mut owners = Ownership::default();
+            for _ in 0..next(6) {
+                let (address, len) = (next(span), 1 + next(span / 2));
+                let bytes = vec![next(256) as u8; len as usize];
+                owners.write(writers[next(2) as usize], 1 + next(3), address, bytes);
+            }
+            if next(2) == 0 {
+                owners.coalesce(1 + next(4));
+            }
+            let mut address = 0;
+            for _ in 0..next(4) {
+                address += next(span / 4 + 1);
+                let end = address + 1 + next(8);
+                owners.foreign.push(address..end);
+                address = end;
+            }
+            let writes: Vec<_> = (0..next(40))
+                .map(|i| {
+                    let (address, len) = (next(span), next(span / 4 + 1));
+                    let generation = if next(4) == 0 {
+                        1 + next(3)
+                    } else {
+                        4 + i / (1 + next(4))
+                    };
+                    let bytes = (0..len).map(|_| next(256) as u8).collect();
+                    (writers[next(2) as usize], generation, address, bytes)
+                })
+                .collect();
+            let mut sequential = owners.clone();
+            for (writer, generation, address, bytes) in writes.clone() {
+                sequential.write(writer, generation, address, bytes);
+            }
+            owners.write_all(writes);
+            assert!(state(&owners) == state(&sequential), "case {case}");
+        }
+    }
 
     #[test]
     fn writeback_coverage_is_independent_of_gpu_alpha() {
@@ -2484,6 +2633,7 @@ impl Coherence {
             .pending
             .partition_point(|write| write.generation <= generation);
         let mut pending = std::mem::take(&mut self.pending);
+        let mut writes = Vec::with_capacity(end);
         for write in pending.drain(..end) {
             self.invalidate_hidden(write.address, write.bytes.len());
             if let Some((rows, length)) = write.invalidate {
@@ -2510,9 +2660,9 @@ impl Coherence {
                 }
                 index += length;
             }
-            self.owners
-                .write(write.writer, write.generation, write.address, write.bytes);
+            writes.push((write.writer, write.generation, write.address, write.bytes));
         }
+        self.owners.write_all(writes);
         self.pending = pending;
     }
 
