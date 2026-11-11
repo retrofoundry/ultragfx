@@ -671,7 +671,13 @@ fn assert_local_fog_equations(
                             64,
                         );
                         let actual = pixel(&pixels, 64, 32, 32);
-                        let expected = if force || cycles == 1 {
+                        let expected = if cycles == 0 && a == A_IN && b == B_1MA && alpha == 255 {
+                            if fog_in_p {
+                                fog
+                            } else {
+                                input
+                            }
+                        } else if force || cycles == 1 {
                             shifted[usize::from(!fog_in_p)]
                         } else if fog_in_p {
                             fog
@@ -730,6 +736,7 @@ fn fog_input_and_zero_alpha_use_complementary_b() {
     let rows = [
         (0, [[200, 100, 50], [20, 70, 140]]),
         (128, [[110, 85, 95], [110, 85, 95]]),
+        (254, [[25, 70, 137], [194, 99, 52]]),
         (255, [[25, 70, 137], [194, 99, 52]]),
     ];
     for a in [A_IN, A_0] {
@@ -892,6 +899,49 @@ fn fog_blender_hardware_memory_rgb_fallback() {
 }
 
 #[test]
+fn blender_partial_reject_selects_final_p() {
+    for fallback in [false, true] {
+        for (p, expected) in [
+            (CLR_IN, [40, 104, 200]),
+            (CLR_FOG, [216, 56, 24]),
+            (CLR_BL, [80, 144, 208]),
+            (CLR_MEM, [24, 72, 120]),
+        ] {
+            for m in [CLR_IN, CLR_MEM] {
+                for cycles in [0, 1] {
+                    let final_mux = if cycles == 0 {
+                        gbl_c1(p, A_IN, m, B_1MA)
+                    } else {
+                        gbl_c1(CLR_IN, A_0, CLR_IN, B_1) | gbl_c2(p, A_IN, m, B_1MA)
+                    };
+                    assert_hardware_blender(
+                        final_mux | FORCE_BL | G_ZS_PRIM,
+                        cycles,
+                        expected,
+                        fallback,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn blender_partial_reject_keeps_first_cycle_arithmetic() {
+    for fallback in [false, true] {
+        assert_hardware_blender(
+            gbl_c1(CLR_FOG, A_IN, CLR_IN, B_1MA)
+                | gbl_c2(CLR_IN, A_IN, CLR_MEM, B_1MA)
+                | FORCE_BL
+                | G_ZS_PRIM,
+            1,
+            [210, 57, 29],
+            fallback,
+        );
+    }
+}
+
+#[test]
 fn fog_blender_second_cycle_consumes_first_result() {
     for fallback in [false, true] {
         assert_hardware_blender(
@@ -939,4 +989,14 @@ fn fog_blender_copy_ignores_blend_rgb_input() {
 #[test]
 fn fog_blender_copy_ignores_memory_rgb_input() {
     assert_hardware_blender(0x44D1_4044, 2, [255, 255, 255], true);
+}
+
+#[test]
+fn fog_blender_copy_ignores_partial_reject() {
+    assert_hardware_blender(
+        gbl_c1(CLR_BL, A_IN, CLR_IN, B_1MA) | FORCE_BL,
+        2,
+        [255, 255, 255],
+        true,
+    );
 }
