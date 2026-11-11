@@ -3293,10 +3293,11 @@ impl Coherence {
         height: u32,
         restore_from: Option<u32>,
     ) -> BTreeMap<usize, [u8; 4]> {
-        let mut pixels = BTreeMap::new();
         if !writer.supported() {
-            return pixels;
+            return BTreeMap::new();
         }
+        let mut pixels = Vec::new();
+        let mut owner: Option<(u64, &OwnedRange)> = None;
         let size = writer.pixel_bytes();
         let end = writer.address + u64::from(writer.layout.width) * u64::from(height) * size as u64;
         let ranges: Vec<_> = if let Some(row) = restore_from {
@@ -3323,20 +3324,27 @@ impl Coherence {
                 ..((end - writer.address) as usize).div_ceil(size)
             {
                 let address = writer.address + (pixel * size) as u64;
-                let bytes: Option<Vec<_>> =
-                    (address..address + size as u64)
-                        .map(|byte| {
-                            self.owners.ranges.range(..=byte).next_back().and_then(
-                                |(&start, range)| {
-                                    range
-                                        .writer
-                                        .supported()
-                                        .then(|| range.bytes.get((byte - start) as usize).copied())
-                                        .flatten()
-                                },
-                            )
+                let bytes: Option<Vec<_>> = (address..address + size as u64)
+                    .map(|byte| {
+                        if !owner.is_some_and(|(start, range)| {
+                            (start..start + range.bytes.len() as u64).contains(&byte)
+                        }) {
+                            owner = self
+                                .owners
+                                .ranges
+                                .range(..=byte)
+                                .next_back()
+                                .map(|(&start, range)| (start, range));
+                        }
+                        owner.and_then(|(start, range)| {
+                            range
+                                .writer
+                                .supported()
+                                .then(|| range.bytes.get((byte - start) as usize).copied())
+                                .flatten()
                         })
-                        .collect();
+                    })
+                    .collect();
                 let Some(bytes) = bytes else {
                     continue;
                 };
@@ -3359,10 +3367,10 @@ impl Coherence {
                         ]
                     }
                 };
-                pixels.insert(pixel, rgba);
+                pixels.push((pixel, rgba));
             }
         }
-        pixels
+        pixels.into_iter().collect()
     }
 }
 
