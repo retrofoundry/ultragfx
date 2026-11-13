@@ -237,7 +237,10 @@ impl Presentation {
         let frame = if target.is_none() {
             match self.surface.acquire() {
                 Ok(Some(frame)) => Some(frame),
-                Ok(None) => return Ok(None),
+                Ok(None) => {
+                    self.profiling.count("presentation.occluded", 1);
+                    return Ok(None);
+                }
                 Err(PresentError::SurfaceLost) => {
                     self.needs_configure = true;
                     return Err(PresentError::SurfaceLost);

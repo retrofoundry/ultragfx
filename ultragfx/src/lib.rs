@@ -1873,7 +1873,10 @@ impl Renderer {
                     return Err(PresentError::SurfaceLost); // caller retries next frame
                 }
                 wgpu::CurrentSurfaceTexture::Timeout => return Err(PresentError::Timeout),
-                wgpu::CurrentSurfaceTexture::Occluded => return Ok(()), // nothing to show
+                wgpu::CurrentSurfaceTexture::Occluded => {
+                    self.inner.profiling.count("presentation.occluded", 1);
+                    return Ok(()); // nothing to show
+                }
                 wgpu::CurrentSurfaceTexture::Validation => return Err(PresentError::DeviceLost),
             }
         };
