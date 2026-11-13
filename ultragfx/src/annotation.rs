@@ -12,7 +12,7 @@ mod composed;
 
 use composed::ComposedView;
 
-pub const ANNOTATION_ABI_VERSION: u32 = 3;
+pub const ANNOTATION_ABI_VERSION: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct DrawIdentity {
@@ -94,6 +94,8 @@ pub struct BillboardRecipe {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum TransformPolicy {
     Interpolate,
+    /// Interpolate that keeps each endpoint's non-rigid residual instead of rejecting it.
+    InterpolateResidual,
     StaticWorld,
     HoldModel,
     BillboardHold(BillboardRecipe),

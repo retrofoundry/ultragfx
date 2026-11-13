@@ -59,7 +59,7 @@ twice that interval as headroom; Nightmare Creatures normally runs at 60 Hz.
 Longer loading, pause or window-mode stalls must not become interpolated motion
 or additional latency.
 
-`annotation::ANNOTATION_ABI_VERSION` is 3; the host checks it during registration.
+`annotation::ANNOTATION_ABI_VERSION` is 4; the host checks it during registration.
 `Renderer::submit_task` and the
 64-bit native `unsafe submit_task_host` execute the ordinary canonical task and
 return an owned `interpolation::TaskHandle`. `TaskSubmission` supplies a unique
@@ -185,7 +185,7 @@ and binds its slot. Each vertex retains its effective M and part, including
 vertices cached from earlier scopes. A triangle can join different slots, such
 as torso 17 and shoulder 10. A missing slot binding holds the source.
 
-Policies are `Interpolate`, `StaticWorld`, `HoldModel`,
+Policies are `Interpolate`, `InterpolateResidual`, `StaticWorld`, `HoldModel`,
 `BillboardHold(BillboardRecipe)`, `ScreenSpace` and `Hold`:
 
 - Interpolate blends effective M using translation, scale and shortest-path
@@ -203,6 +203,14 @@ Policies are `Interpolate`, `StaticWorld`, `HoldModel`,
   a per-draw DecompositionRejected restriction and keeps A's effective M under
   the phase camera. World triangles with XY/Z screen overrides report source-level
   UnsupportedTopology; ScreenSpace remains discrete.
+- InterpolateResidual is for guests whose models are not rigid on hardware, such
+  as fixed-point skeletons that truncate at every joint. It skips the
+  orthogonality bound and blends each endpoint as `K·R`: R is the same
+  Gram–Schmidt rotation, slerped, and `K = M₃·Rᵀ` keeps the endpoint's scale,
+  shear and truncation residual, lerped entrywise. For a rotation and scale K is
+  diagonal, so this matches Interpolate. Reflections and singular transforms are
+  still rejected. Both sides must declare it; otherwise the scope reports
+  PolicyChanged.
 - StaticWorld requires identity M and applies the phase camera.
 - HoldModel keeps A's effective per-vertex M and applies phase V/P.
 - BillboardHold interpolates the supplied world anchor, scale, local Z spin
