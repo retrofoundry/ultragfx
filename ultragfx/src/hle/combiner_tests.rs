@@ -110,8 +110,8 @@ fn state(cycles: [[u32; 8]; 2], cycle_type: u32) -> Rdp {
         .write_block(&[32, 48, 64, 112, 32, 48, 64, 112], 0, 0, 0, 1, 3);
     rdp.tmem_bank
         .write_block(&[176, 192, 208, 240, 176, 192, 208, 240], 1, 0, 0, 1, 3);
-    for i in 0..2 {
-        rdp.tiles[i] = TileDescriptor {
+    for (i, tile) in rdp.tiles.iter_mut().enumerate().take(2) {
+        *tile = TileDescriptor {
             fmt: 0,
             siz: 3,
             width: 2,

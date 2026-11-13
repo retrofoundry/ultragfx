@@ -456,8 +456,7 @@ impl Rsp {
             let key = (self.light_version, mv);
             if self.last_light_key != Some(key) {
                 self.cur_light_index = scene.lights_table.len() as u32;
-                for k in 0..self.num_dir as usize {
-                    let (dir, col) = self.lights[k];
+                for &(dir, col) in &self.lights[..self.num_dir as usize] {
                     scene.lights_table.push((fold_direction(mv, dir), col));
                 }
                 scene.lights_table.push(([0.0, 0.0, 0.0], self.ambient_col)); // ambient last
