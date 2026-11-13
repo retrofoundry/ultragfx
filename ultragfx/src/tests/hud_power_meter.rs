@@ -134,8 +134,7 @@ fn hud_power_meter_stays_square() {
     };
 
     let (mut xl, mut xh, mut yl, mut yh) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-    for i in 0..4 {
-        let rp = res.scene.raw_pos[i];
+    for rp in &res.scene.raw_pos[..4] {
         let clip = mul_row_vec4([rp[0], rp[1], rp[2], 1.0], mvp);
         let (nx, ny) = fold(clip);
         xl = xl.min(nx);
