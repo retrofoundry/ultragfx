@@ -59,7 +59,6 @@ twice that interval as headroom; Nightmare Creatures normally runs at 60 Hz.
 Longer loading, pause or window-mode stalls must not become interpolated motion
 or additional latency.
 
-`annotation::ANNOTATION_ABI_VERSION` is 4; the host checks it during registration.
 `Renderer::submit_task` and the
 64-bit native `unsafe submit_task_host` execute the ordinary canonical task and
 return an owned `interpolation::TaskHandle`. `TaskSubmission` supplies a unique

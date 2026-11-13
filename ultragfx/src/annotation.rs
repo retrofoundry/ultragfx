@@ -12,8 +12,6 @@ mod composed;
 
 use composed::ComposedView;
 
-pub const ANNOTATION_ABI_VERSION: u32 = 4;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct DrawIdentity {
     pub namespace: u64,
