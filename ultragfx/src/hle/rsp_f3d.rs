@@ -692,7 +692,7 @@ mod phase3_tests {
             result.scene.render_modes[0],
             crate::hle::blender::decode_render_mode(
                 render_mode,
-                G_CYC_2CYCLE << 20,
+                1 << 19 | G_CYC_2CYCLE << 20,
                 result.geometry_mode,
             )
         );

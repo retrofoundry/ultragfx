@@ -2238,7 +2238,7 @@ mod rect_encoding_tests {
                     r.scene.render_modes,
                     vec![crate::hle::blender::decode_render_mode(
                         mode1 | mode2,
-                        cycle << 20,
+                        1 << 19 | cycle << 20,
                         0
                     )]
                 );
