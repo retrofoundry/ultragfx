@@ -1069,6 +1069,7 @@ impl SceneRenderer {
                 continue;
             }
             let upload = self.upload_draws(device, target);
+            let mut copy_words = Vec::new();
             let replay_stamps = self.coherence.is_some();
             let stamp_pipelines: Vec<_> = target
                 .operations
@@ -1420,6 +1421,17 @@ impl SceneRenderer {
                         });
                         if color.is_some_and(touches) || depth_writer.is_some_and(touches) {
                             if let Some(coherence) = &mut self.coherence {
+                                encode_copy_words(
+                                    device,
+                                    &mut encoder,
+                                    &mut self.framebuffer_copies,
+                                    &self.textured_fb,
+                                    coherence,
+                                    target,
+                                    &upload,
+                                    &mut copy_words,
+                                    (native_w, native_h, native_allocation_height),
+                                );
                                 coherence.snapshot(
                                     device,
                                     &mut encoder,
@@ -1733,53 +1745,7 @@ impl SceneRenderer {
                         .copy_material(slot)
                         .and_then(|index| copy_bindings.get(&index).map(|(binding, _)| binding))
                     {
-                        let texture =
-                            device.create_texture(&super::framebuffers::color_descriptor(
-                                "copy-guest-words",
-                                (native_w, native_allocation_height),
-                            ));
-                        let view = texture.create_view(&Default::default());
-                        let pipeline = self
-                            .framebuffer_copies
-                            .word_pipeline(device, &self.textured_fb)
-                            .clone();
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("copy-guest-words"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                    store: wgpu::StoreOp::Store,
-                                },
-                                depth_slice: None,
-                            })],
-                            depth_stencil_attachment: None,
-                            timestamp_writes: None,
-                            occlusion_query_set: None,
-                            multiview_mask: None,
-                        });
-                        pass.set_pipeline(&pipeline);
-                        pass.set_viewport(0.0, 0.0, native_w as f32, native_h as f32, 0.0, 1.0);
-                        let (x, y, w, h) = target.operations[slot].scissor;
-                        if w != 0 && h != 0 {
-                            pass.set_scissor_rect(x, y, w, h);
-                            pass.set_vertex_buffer(
-                                0,
-                                upload.rectangles.as_ref().unwrap().slice(..),
-                            );
-                            pass.set_bind_group(0, &binding.bind_group, &[]);
-                            pass.set_bind_group(1, &upload.uniforms, &[(slot * 256) as u32]);
-                            let vertex = target.rect_indices[slot] * 6;
-                            pass.draw(vertex..vertex + 6, 0..1);
-                        }
-                        drop(pass);
-                        self.coherence.as_mut().unwrap().snapshot_copy_words(
-                            device,
-                            &mut encoder,
-                            &texture,
-                            slot,
-                        );
+                        copy_words.push((slot, binding.bind_group.clone()));
                     }
                 }
                 if replay_stamps {
@@ -1817,6 +1783,19 @@ impl SceneRenderer {
             let writes_depth = target.operations.iter().any(OperationInputs::writes_depth);
             if let Some(TargetId::Guest(address)) = depth_id.filter(|_| writes_depth) {
                 self.target_descriptors.written(address, true);
+            }
+            if let Some(coherence) = &mut self.coherence {
+                encode_copy_words(
+                    device,
+                    &mut encoder,
+                    &mut self.framebuffer_copies,
+                    &self.textured_fb,
+                    coherence,
+                    target,
+                    &upload,
+                    &mut copy_words,
+                    (native_w, native_h, native_allocation_height),
+                );
             }
             if let (Some(coherence), Some(coverage)) = (&mut self.coherence, &coverage_texture) {
                 if !target.operations[ownership_start..].iter().any(|op| {
@@ -1970,6 +1949,76 @@ pub(super) fn clear_color(
         occlusion_query_set: None,
         multiview_mask: None,
     });
+}
+
+/// Draws each pending copy slot's guest words into its own band of one texture, one pass per
+/// texture, and hands each band to write-back under the slot.
+#[allow(clippy::too_many_arguments)]
+fn encode_copy_words(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    copies: &mut super::framebuffers::copies::Copies,
+    textured: &super::TexturedPipeline,
+    coherence: &mut super::framebuffers::coherence::Coherence,
+    target: &TargetInputs,
+    upload: &DrawUpload,
+    slots: &mut Vec<(usize, wgpu::BindGroup)>,
+    (width, height, band): (u32, u32, u32),
+) {
+    if slots.is_empty() {
+        return;
+    }
+    let pipeline = copies.word_pipeline(device, textured).clone();
+    let per_texture = (device.limits().max_texture_dimension_2d / band) as usize;
+    for slots in std::mem::take(slots).chunks(per_texture) {
+        let texture = device.create_texture(&super::framebuffers::color_descriptor(
+            "copy-guest-words",
+            (width, band * slots.len() as u32),
+        ));
+        let view = texture.create_view(&Default::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("copy-guest-words"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline);
+        for (index, (slot, bind_group)) in slots.iter().enumerate() {
+            let top = band * index as u32;
+            let (x, y, w, h) = target.operations[*slot].scissor;
+            if w == 0 || h == 0 {
+                continue;
+            }
+            pass.set_viewport(0.0, top as f32, width as f32, height as f32, 0.0, 1.0);
+            pass.set_scissor_rect(x, top + y, w, h);
+            pass.set_vertex_buffer(0, upload.rectangles.as_ref().unwrap().slice(..));
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_bind_group(1, &upload.uniforms, &[(*slot * 256) as u32]);
+            let vertex = target.rect_indices[*slot] * 6;
+            pass.draw(vertex..vertex + 6, 0..1);
+        }
+        drop(pass);
+        for (index, (slot, _)) in slots.iter().enumerate() {
+            coherence.snapshot_copy_words(
+                device,
+                encoder,
+                &texture,
+                band * index as u32,
+                band,
+                *slot,
+            );
+        }
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

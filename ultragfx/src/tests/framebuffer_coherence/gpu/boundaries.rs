@@ -220,6 +220,53 @@ fn aliased_source_and_repeated_target_visits_keep_prior_copy_words() {
 }
 
 #[test]
+fn copy_from_the_target_sees_its_earlier_copy_words() {
+    for fallback in [false, true] {
+        for scale in [1, 2] {
+            let mut r = renderer(fallback);
+            r.reconfigure(crate::RendererConfig {
+                resolution_multiplier: scale,
+                ..r.config
+            });
+            r.set_guest_writeback_with_encoding(true, crate::FramebufferEncoding::BigEndian);
+            let mut memory = Memory(vec![0; OUTPUT as usize + 64]);
+            let mut dl = Vec::new();
+            image(&mut dl, FB, 4, 1, 0, 2);
+            dl.extend([
+                (0xef000030 | G_TC_FILT, CVG_DST_SAVE | IM_RD),
+                combine(3, 3),
+                gdp_set_prim_color(0, 0, 0x13558dff),
+                gdp_fill_rectangle(0, 0, 16, 4),
+            ]);
+            run_compatibility(&mut r, &mut memory, built(DlBuilder::new(), dl));
+            // Row 0 of `guest_bytes/last-writer.rgba16`. Column 1 there is an undithered overwrite;
+            // magic dither gives the same word at threshold 6 (row 3, column 2 of the capture).
+            let dithered = [0x1ae5, 0x12a3, 0x1ae5, 0x12a3];
+            assert_words(
+                &memory,
+                FB,
+                &dithered,
+                crate::FramebufferEncoding::BigEndian,
+            );
+            let mut dl = Vec::new();
+            image(&mut dl, OUTPUT, 4, 1, 0, 2);
+            load_copy(&mut dl, FB, 4, 1);
+            copy_rect(&mut dl, 0, 2, 1, 0);
+            load_copy(&mut dl, OUTPUT, 4, 1);
+            copy_rect(&mut dl, 2, 2, 1, 0);
+            run_compatibility(&mut r, &mut memory, built(DlBuilder::new(), dl));
+            assert!(r.inner.diagnostics.is_empty(), "{:?}", r.inner.diagnostics);
+            assert_words(
+                &memory,
+                OUTPUT,
+                &dithered,
+                crate::FramebufferEncoding::BigEndian,
+            );
+        }
+    }
+}
+
+#[test]
 fn decal_readers_and_copy_observe_immediate_depth_replay() {
     for fallback in [false, true] {
         for scale in [1, 2] {
