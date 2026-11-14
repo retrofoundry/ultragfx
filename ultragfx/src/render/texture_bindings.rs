@@ -231,7 +231,6 @@ impl BindingBuilder<'_> {
                 TextureSource::Framebuffer(request) => {
                     let (view, scale) = self.copies.texture(
                         self.device,
-                        self.queue,
                         request,
                         self.profiling,
                         self.presentation,

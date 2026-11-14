@@ -65,24 +65,29 @@ fn request(rdp: &Rdp, tile: &TileDescriptor, tlut: u8) -> Arc<FramebufferTexture
 }
 
 fn pixels(request: &Arc<FramebufferTexture>) -> Vec<[u8; 4]> {
+    decode(&[request]).remove(0)
+}
+
+fn decode(requests: &[&Arc<FramebufferTexture>]) -> Vec<Vec<[u8; 4]>> {
     let (device, queue) = crate::render::headless_device_forced_fallback();
     let recorder = Recorder::new(crate::profiling::Mode::Counters);
     let mut copies = Copies::default();
-    copies.begin(&device, request.tags.copies.iter().cloned(), 1, false);
-    copies.texture(&device, &queue, request, &recorder, false);
-    let output = copies
-        .pending
-        .values()
-        .flatten()
-        .next()
-        .unwrap()
-        .job
-        .texture
-        .clone();
-    copies.texture(&device, &queue, request, &recorder, false);
-    assert_eq!(copies.pending.values().map(Vec::len).sum::<usize>(), 1);
+    let copied = &requests[0].tags.copies;
+    copies.begin(&device, copied.iter().cloned(), 1, false);
+    let outputs: Vec<_> = requests
+        .iter()
+        .map(|request| {
+            let (view, _) = copies.texture(&device, request, &recorder, false);
+            copies.texture(&device, request, &recorder, false);
+            view.texture().clone()
+        })
+        .collect();
+    assert_eq!(
+        copies.pending.values().map(Vec::len).sum::<usize>(),
+        requests.len()
+    );
     let mut encoder = device.create_command_encoder(&Default::default());
-    for copy in &request.tags.copies {
+    for copy in copied {
         let source = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -133,41 +138,53 @@ fn pixels(request: &Arc<FramebufferTexture>) -> Vec<[u8; 4]> {
     }
     assert!(copies.pending.is_empty());
     assert!(copies.failed.is_empty());
-    let stride = (output.width() * 4).next_multiple_of(256);
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: u64::from(stride) * u64::from(output.height()),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    encoder.copy_texture_to_buffer(
-        output.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(stride),
-                rows_per_image: None,
-            },
-        },
-        output.size(),
-    );
+    let buffers: Vec<_> = outputs
+        .iter()
+        .map(|output| {
+            let stride = (output.width() * 4).next_multiple_of(256);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(stride) * u64::from(output.height()),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                output.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(stride),
+                        rows_per_image: None,
+                    },
+                },
+                output.size(),
+            );
+            (buffer, stride)
+        })
+        .collect();
     queue.submit([encoder.finish()]);
-    let (tx, rx) = std::sync::mpsc::channel();
-    buffer.map_async(wgpu::MapMode::Read, .., move |result| {
-        tx.send(result).unwrap()
-    });
-    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-    rx.recv().unwrap().unwrap();
-    let mapped = buffer.get_mapped_range(..);
-    mapped
-        .chunks_exact(stride as usize)
-        .flat_map(|row| {
-            row[..output.width() as usize * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .copied()
+    outputs
+        .iter()
+        .zip(buffers)
+        .map(|(output, (buffer, stride))| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+                tx.send(result).unwrap()
+            });
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            rx.recv().unwrap().unwrap();
+            let mapped = buffer.get_mapped_range(..);
+            mapped
+                .chunks_exact(stride as usize)
+                .flat_map(|row| {
+                    row[..output.width() as usize * 4]
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .copied()
+                })
+                .collect()
         })
         .collect()
 }
@@ -178,11 +195,12 @@ fn framebuffer_decode_complete_pairs_keep_rgba_and_ia_precision() {
     copy(&mut rdp, 0, 1);
     let rgba = request(&rdp, &tile(0, 2, 4, 1), 0);
     assert!(!rgba.materialize);
-    assert_eq!(pixels(&rgba), PIXELS);
     let ia = request(&rdp, &tile(3, 2, 4, 1), 0);
     assert!(!ia.materialize);
+    let decoded = decode(&[&rgba, &ia]);
+    assert_eq!(decoded[0], PIXELS);
     assert_eq!(
-        pixels(&ia),
+        decoded[1],
         [
             [19, 19, 19, 89],
             [67, 67, 67, 108],
@@ -248,7 +266,7 @@ fn framebuffer_decode_multiple_copies_and_cross_copy_pair() {
 fn framebuffer_decode_uploads_preserve_interleaved_copy_bytes_and_source_order() {
     use crate::hle::{framebuffer_load::Tags, texture_request::EncodedTextureRequest};
 
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, _) = crate::render::headless_device_forced_fallback();
     let mut rdp = Rdp::default();
     copy(&mut rdp, 0, 1);
     let recipe = request(&rdp, &tile(0, 2, 4, 1), 0).encoded.recipe().clone();
@@ -400,19 +418,14 @@ fn framebuffer_decode_uploads_preserve_interleaved_copy_bytes_and_source_order()
                         commands.push((buffer.clone(), guest_offset as u64));
                     }
                 }
-                let (_, actual_scale) = copies.texture(
-                    &device,
-                    &queue,
-                    &request,
-                    &Recorder::default(),
-                    presentation,
-                );
+                let (_, actual_scale) =
+                    copies.texture(&device, &request, &Recorder::default(), presentation);
                 assert_eq!(actual_scale, effective);
                 assert_eq!(copies.pending.len(), 1);
                 let jobs = &copies.pending[&3];
                 assert_eq!(jobs.len(), 1);
-                assert_eq!(jobs[0].job.upload.0, expected);
-                assert_eq!(jobs[0].job.upload.1.as_slice(), uniforms);
+                assert_eq!(jobs[0].input, expected);
+                assert_eq!(jobs[0].params.as_slice(), uniforms);
                 assert_eq!(jobs[0].sources, commands);
             }
         }

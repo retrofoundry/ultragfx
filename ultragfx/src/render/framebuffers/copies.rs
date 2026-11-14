@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use super::super::texture_decode::{DecodeJob, DecodePipeline};
+use super::super::texture_decode::{count_uploads, DecodePipeline, PARAM_BYTES};
 use crate::hle::{
     framebuffer_load::{FramebufferCopy, FramebufferTexture},
     texture_request::EncodedInput,
@@ -19,6 +19,7 @@ pub(crate) struct Copies {
     pipeline: Option<DecodePipeline>,
     word_pipeline: Option<wgpu::RenderPipeline>,
     failed: HashMap<usize, crate::DiagKind>,
+    device: Option<wgpu::Device>,
 }
 
 struct Snapshot {
@@ -62,8 +63,12 @@ pub(crate) fn image_layout(copy: &FramebufferCopy, scale: u32) -> Option<(Vec<Im
 }
 
 struct PendingDecode {
-    job: DecodeJob,
+    input: Vec<u8>,
+    params: [u8; PARAM_BYTES as usize],
+    extent: [u32; 2],
+    view: wgpu::TextureView,
     sources: Vec<(wgpu::Buffer, u64)>,
+    bound: Option<(wgpu::BindGroup, wgpu::Buffer, u64)>,
 }
 
 pub(crate) fn key(copy: &Arc<FramebufferCopy>) -> usize {
@@ -147,6 +152,7 @@ impl Copies {
             .retain(|_, snapshot| snapshot.owner.strong_count() != 0);
         self.failed
             .retain(|key, _| self.snapshots.contains_key(key));
+        self.device = Some(device.clone());
         self.requests.clear();
         self.pending.clear();
         self.order.clear();
@@ -195,7 +201,6 @@ impl Copies {
     pub fn texture(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         request: &Arc<FramebufferTexture>,
         profiling: &Recorder,
         presentation: bool,
@@ -303,19 +308,22 @@ impl Copies {
         let pipeline = self
             .pipeline
             .get_or_insert_with(|| DecodePipeline::new(device));
-        let job = pipeline.create_job_input(
+        let (params, view, extent) = pipeline.framebuffer_output(
             device,
-            queue,
             &request.encoded,
             profiling,
-            None,
-            Some((bytes, request.materialize, scale, metadata as u32)),
+            request.materialize,
+            scale,
+            metadata as u32,
         );
-        let view = job.view.clone();
-        self.pending
-            .entry(after)
-            .or_default()
-            .push(PendingDecode { job, sources });
+        self.pending.entry(after).or_default().push(PendingDecode {
+            input: bytes,
+            params,
+            extent,
+            view: view.clone(),
+            sources,
+            bound: None,
+        });
         self.requests.insert(id, (view.clone(), scale));
         (view, scale)
     }
@@ -519,24 +527,103 @@ impl Copies {
         after: usize,
         profiling: &Recorder,
     ) {
+        self.bind_pending(profiling);
         if let Some(pending) = self.pending.remove(&after) {
-            let mut jobs = Vec::with_capacity(pending.len());
-            for PendingDecode { job, sources } in pending {
-                for (source, offset) in sources {
-                    encoder.copy_buffer_to_buffer(
-                        &source,
-                        0,
-                        &job.staging.input,
-                        offset,
-                        source.size(),
-                    );
+            for job in &pending {
+                let (_, input, base) = job.bound.as_ref().unwrap();
+                for (source, offset) in &job.sources {
+                    encoder.copy_buffer_to_buffer(source, 0, input, base + offset, source.size());
                 }
-                jobs.push(job);
             }
-            self.pipeline
-                .as_ref()
-                .unwrap()
-                .encode(encoder, &jobs, profiling);
+            self.pipeline.as_ref().unwrap().encode(
+                encoder,
+                pending
+                    .iter()
+                    .map(|job| (&job.bound.as_ref().unwrap().0, job.extent)),
+                profiling,
+            );
+        }
+    }
+
+    // Each job's bind group covers only its own range of the shared input buffer, and `texture`
+    // laid out its copy sources inside that range, so no job's shader reads another job's bytes.
+    fn bind_pending(&mut self, profiling: &Recorder) {
+        let mut unbound: Vec<_> = self
+            .pending
+            .values_mut()
+            .flatten()
+            .filter(|pending| pending.bound.is_none())
+            .collect();
+        if unbound.is_empty() {
+            return;
+        }
+        let device = self.device.as_ref().unwrap();
+        let pipeline = self.pipeline.as_ref().unwrap();
+        let limits = device.limits();
+        let input_align = u64::from(limits.min_storage_buffer_offset_alignment);
+        let params_align =
+            PARAM_BYTES.next_multiple_of(u64::from(limits.min_uniform_buffer_offset_alignment));
+        while !unbound.is_empty() {
+            let mut input_size = 0;
+            let mut offsets = Vec::new();
+            for pending in &unbound {
+                let end = (input_size + pending.input.len() as u64).next_multiple_of(input_align);
+                if !offsets.is_empty() && end > limits.max_buffer_size {
+                    break;
+                }
+                offsets.push(input_size);
+                input_size = end;
+            }
+            let input = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("texture-decode-input"),
+                size: input_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: true,
+            });
+            let params = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("texture-decode-params"),
+                size: params_align * offsets.len() as u64,
+                usage: wgpu::BufferUsages::UNIFORM,
+                mapped_at_creation: true,
+            });
+            profiling.buffer("texture_decode_input", input.size(), 0);
+            profiling.buffer("texture_decode_uniform", params.size(), 0);
+            let jobs: Vec<_> = unbound.drain(..offsets.len()).collect();
+            for (index, (pending, &offset)) in jobs.iter().zip(&offsets).enumerate() {
+                input
+                    .slice(offset..offset + pending.input.len() as u64)
+                    .get_mapped_range_mut()
+                    .copy_from_slice(&pending.input);
+                let param = params_align * index as u64;
+                params
+                    .slice(param..param + PARAM_BYTES)
+                    .get_mapped_range_mut()
+                    .copy_from_slice(&pending.params);
+            }
+            input.unmap();
+            params.unmap();
+            count_uploads(
+                profiling,
+                jobs.iter().map(|pending| pending.input.len() as u64).sum(),
+                jobs.len() as u64,
+            );
+            for (index, (pending, offset)) in jobs.into_iter().zip(offsets).enumerate() {
+                let bind_group = pipeline.bind_group(
+                    device,
+                    wgpu::BufferBinding {
+                        buffer: &input,
+                        offset,
+                        size: wgpu::BufferSize::new(pending.input.len() as u64),
+                    },
+                    wgpu::BufferBinding {
+                        buffer: &params,
+                        offset: params_align * index as u64,
+                        size: wgpu::BufferSize::new(PARAM_BYTES),
+                    },
+                    &pending.view,
+                );
+                pending.bound = Some((bind_group, input.clone(), offset));
+            }
         }
     }
 }
