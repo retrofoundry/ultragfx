@@ -13,7 +13,7 @@
       "id": "replacement-2x-mirror-three-point",
       "width": 320,
       "height": 240,
-      "expected_sha256": "689c1c26bd72e07b83e1de18e0bc0432f2ad7e7a7c9a2423f1e755ed86b95c12",
+      "expected_sha256": "385deb5d2a503c02b236e651b21df12b14057fdcd0883e9650882fcfc5f2c137",
       "before_sha256": "3cbb764a504d598ab9321276780d1644893b459c5f21152e75a2a87c3d94caa3",
       "mask_sha256": "0619b0a354af4a163ccbf77e37de26d0b7f4fa5813a13b44aa57d886424c416f"
     },
@@ -29,7 +29,7 @@
       "id": "replacement-2x-three-point",
       "width": 320,
       "height": 240,
-      "expected_sha256": "f3819e02f379e893962b089271a17cb221793c848cc04913c96146794a1e8ae8",
+      "expected_sha256": "923d8bad87669e0b043b895af2892b84ba3b051b27a16fe261703bcb18051b69",
       "before_sha256": "3cbb764a504d598ab9321276780d1644893b459c5f21152e75a2a87c3d94caa3",
       "mask_sha256": "0619b0a354af4a163ccbf77e37de26d0b7f4fa5813a13b44aa57d886424c416f"
     },
