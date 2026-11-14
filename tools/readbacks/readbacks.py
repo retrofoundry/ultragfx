@@ -184,7 +184,8 @@ def authenticate_rows(root, actual, expected, windows, *, roles=("render", "cpu-
 
 
 def load_capture(root, inventory, source_sha, run_id, *, allow_incomplete=False,
-                 supplemental_inventory=None, require_gpu_decode=None, require_replacements=None):
+                 supplemental_inventory=None, require_gpu_decode=None, require_replacements=None,
+                 replacement_inventory=None):
     root = Path(root)
     manifest = json.loads(artifact_file(root, "manifest.json").read_text(encoding="utf-8"))
     if manifest["schema"] != 1:
@@ -226,16 +227,23 @@ def load_capture(root, inventory, source_sha, run_id, *, allow_incomplete=False,
         require_gpu_decode=require_gpu_decode, configurations=inventory.get("gpu_decode_configurations"))
     import replacements
     manifest["_replacements"] = replacements.load(root, manifest, allow_incomplete=allow_incomplete, require=require_replacements,
+                                                 frozen=replacement_inventory,
                                                  configurations=inventory.get("replacement_configurations"))
     return manifest, rows
 
 
 def compare(base, candidate, inventory, base_sha, candidate_sha, base_run_id, candidate_run_id,
-            *, allow_incomplete=False, supplemental_inventory=None, require_gpu_decode=None, require_replacements=None):
+            *, allow_incomplete=False, supplemental_inventory=None, require_gpu_decode=None, require_replacements=None,
+            base_replacement_inventory=None, replacement_inventory=None):
+    import replacements
+    base_frozen = replacements.inventory() if base_replacement_inventory is None else base_replacement_inventory
+    frozen = replacements.inventory() if replacement_inventory is None else replacement_inventory
+    declared = replacements.changes(base_frozen, frozen)
     parent, parent_rows = load_capture(base, inventory, base_sha, base_run_id, allow_incomplete=allow_incomplete,
-                                     supplemental_inventory=supplemental_inventory)
+                                     supplemental_inventory=supplemental_inventory, replacement_inventory=base_frozen)
     head, head_rows = load_capture(candidate, inventory, candidate_sha, candidate_run_id, allow_incomplete=allow_incomplete,
-                                  supplemental_inventory=supplemental_inventory, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
+                                  supplemental_inventory=supplemental_inventory, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
+                                  replacement_inventory=frozen)
     if head["base_sha"] != base_sha:
         raise ValueError("candidate base SHA does not match requested base")
     for field in ["runtime", "harness_sha256"]:
@@ -250,7 +258,8 @@ def compare(base, candidate, inventory, base_sha, candidate_sha, base_run_id, ca
         not result["missing_rows"] and not result["errors"] for result in list(gpu_decode.values()) + list(replacements.values()))
     report = {"passed": complete, "complete": complete, "missing_rows": missing, "failures": failures, "gpu_decode": gpu_decode, "replacements": replacements,
               "threshold": 0, "base_sha": base_sha, "candidate_sha": candidate_sha,
-              "base_run_id": str(base_run_id), "candidate_run_id": str(candidate_run_id), "rows": []}
+              "base_run_id": str(base_run_id), "candidate_run_id": str(candidate_run_id), "rows": [],
+              "replacement_changes": declared}
     for key, row in head_rows.items():
         if key not in parent_rows:
             continue

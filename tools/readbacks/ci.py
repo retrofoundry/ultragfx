@@ -287,10 +287,10 @@ def save_gpu_decode_manifest(output, manifest, inventory=None):
     declaration.update(manifest_file=path.name, manifest_sha256=file_hash(path))
 
 
-def save_manifest(output, manifest):
+def save_manifest(output, manifest, replacement_inventory=None):
     manifest["rows"], manifest["errors"] = collect_rows(output)
     save_gpu_decode_manifest(output, manifest)
-    replacements.save(output, manifest)
+    replacements.save(output, manifest, replacement_inventory)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
@@ -308,7 +308,12 @@ def test_dependency_graph(metadata, checkout):
     } for node in nodes], key=lambda node: node["id"])
 
 
-def capture(checkout, output, base_sha, harness_checkout, inventory=None):
+def committed_replacement_inventory(checkout, sha):
+    # The harness overlay replaces the base's working copy, so read the commit itself.
+    return json.loads(command_output(["git", "show", f"{sha}:{replacements.INVENTORY}"], checkout))
+
+
+def capture(checkout, output, base_sha, harness_checkout, inventory=None, replacement_inventory=None):
     inventory = INVENTORY if inventory is None else inventory
     checkout, output = checkout.resolve(), output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -361,7 +366,7 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None):
         shutil.copyfile(checkout / GPU_DECODE_TEST, output / "gpu-decode-source.rs")
     if manifest["replacements"]["source_test_sha256"] is not None:
         shutil.copyfile(checkout / replacements.SOURCE, output / "replacement-source.rs")
-    save_manifest(output, manifest)
+    save_manifest(output, manifest, replacement_inventory)
     target = tempfile.TemporaryDirectory(prefix="readback-target-", dir=checkout) if platform.system() == "Windows" else None
     try:
         for config, configuration in manifest["configurations"].items():
@@ -420,10 +425,10 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None):
                 "build_log": f"{config}/build.log", "test_log": f"{config}/test.log",
                 "binaries": binaries, "environment": {key: env[key] for key in ["ULTRAGFX_GOLDEN_OUTPUT", "ULTRAGFX_DECODE_OUTPUT", "ULTRAGFX_GPU_DECODE_OUTPUT", "ULTRAGFX_RESIDENCY_OUTPUT", "ULTRAGFX_REPLACEMENT_OUTPUT", "CARGO_TARGET_DIR"] if key in env},
             }
-            save_manifest(output, manifest)
+            save_manifest(output, manifest, replacement_inventory)
     finally:
         try:
-            save_manifest(output, manifest)
+            save_manifest(output, manifest, replacement_inventory)
         finally:
             if target is not None:
                 target.cleanup()
@@ -494,14 +499,14 @@ def download_artifact(repository, run_id, artifact_name, destination):
     archive.unlink()
 
 
-def fetch_base(repository, base_sha, artifact_name, destination, inventory=None):
+def fetch_base(repository, base_sha, artifact_name, destination, inventory=None, replacement_inventory=None):
     inventory = INVENTORY if inventory is None else inventory
     runs = gh_json(f"repos/{repository}/actions/workflows/validate.yml/runs?branch=main&event=push&status=success&head_sha={base_sha}&per_page=100")
     for run in runs["workflow_runs"]:
         if run["head_sha"] != base_sha or run["conclusion"] != "success" or run["event"] != "push":
             continue
         download_artifact(repository, str(run["id"]), artifact_name, destination)
-        load_capture(destination, inventory, base_sha, str(run["id"]))
+        load_capture(destination, inventory, base_sha, str(run["id"]), replacement_inventory=replacement_inventory)
         return str(run["id"])
     raise ValueError(f"no complete main artifact for exact base {base_sha}")
 
@@ -519,10 +524,12 @@ def gate(args):
         return
     history = []
     base = output / "downloaded-base"
+    base_replacements = committed_replacement_inventory(args.base_checkout, args.base_sha)
     try:
         load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
-        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory)
-        report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"], run_id, manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
+        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory, base_replacements)
+        report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"], run_id, manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
+                         base_replacement_inventory=base_replacements)
         if not report["passed"]:
             (output / "cross-run-comparison.json").write_text(json.dumps(report, indent=2) + "\n")
             raise ValueError("cross-run RGBA delta; recapture both revisions on this runner")
@@ -532,13 +539,16 @@ def gate(args):
         overlay_provenance = overlay(args.base_checkout.resolve(), args.checkout.resolve(), args.base_sha)
         (output / "bootstrap-overlay.json").write_text(json.dumps(overlay_provenance, indent=2) + "\n")
         base = output / "bootstrap-base"
-        base_manifest = capture(args.base_checkout, base, args.base_sha, args.checkout, inventory)
+        base_manifest = capture(args.base_checkout, base, args.base_sha, args.checkout, inventory, base_replacements)
         try:
             report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"],
-                             base_manifest["run_id"], manifest["run_id"], allow_incomplete=True, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
+                             base_manifest["run_id"], manifest["run_id"], allow_incomplete=True, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
+                             base_replacement_inventory=base_replacements)
         except (ValueError, KeyError, OSError) as error:
             report = {"passed": False, "complete": False, "error": str(error)}
     (output / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
+    for change in report.get("replacement_changes", []):
+        print(f"declared replacement change: {change['id']} ({change['change']})")
     if not report["passed"]:
         failures = [f"{label}: {failure}" for label, entries in report.get("failures", {}).items()
                     for failure in entries]

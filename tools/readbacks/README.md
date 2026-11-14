@@ -85,9 +85,16 @@ through `ULTRAGFX_REPLACEMENT_OUTPUT` into that configuration's `replacements`
 directory. Each row keeps its RGBA output with expected, before and change-mask
 bytes. The loader checks those three against the frozen inventory hashes, requires
 the output to equal the expected bytes, and recomputes the mask. A copy of the
-source test travels with the artifact as `replacement-source.rs`, and the base
-harness overlay may carry the inventory. Missing rows fail or leave the comparison
-incomplete in the same way as GPU decode rows.
+source test travels with the artifact as `replacement-source.rs`. Missing rows fail
+or leave the comparison incomplete in the same way as GPU decode rows.
+
+Each side is held to its own commit's inventory: the candidate to its checkout's
+file, the base to `git show <base_sha>:tools/tmem/replacement-inventory.json`, since
+the harness overlay replaces the base's working copy. A row whose frozen entry differs
+between the two is a declared change. `comparison.json` lists each one under
+`replacement_changes` as added, removed or changed, with both entries, and the job log
+names it; it doesn't fail the gate. A side whose output differs from its own inventory
+still fails.
 
 Every comparison uses all four RGBA channels, threshold zero and zero differing
 pixels. The existing tolerance-two golden assertions still run. A missing adapter,

@@ -11,6 +11,18 @@ def inventory():
     return json.loads((Path(__file__).resolve().parents[2] / INVENTORY).read_text(encoding="utf-8"))
 
 
+def changes(base, candidate):
+    old = {row["id"]: row for row in base["rows"]}
+    new = {row["id"]: row for row in candidate["rows"]}
+    listed = []
+    for id in sorted(old.keys() | new.keys()):
+        if old.get(id) == new.get(id):
+            continue
+        kind = "added" if id not in old else "removed" if id not in new else "changed"
+        listed.append({"id": id, "change": kind, "base": old.get(id), "candidate": new.get(id)})
+    return listed
+
+
 def requirement(checkout, configurations=("all-features",)):
     source = checkout / SOURCE
     return {"version": 1, "source_test_sha256": file_hash(source) if source.is_file() else None,
