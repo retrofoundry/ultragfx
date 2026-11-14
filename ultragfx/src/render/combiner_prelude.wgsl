@@ -350,6 +350,14 @@ fn tile_coordinate(tile: TileSampling, uv: vec2<f32>, high_resolution: bool) -> 
     if high_resolution {
         return shifted - vec2<f32>(tile.bounds.xy) / 4.0;
     }
+    if combiner.is_rect != 0u {
+        // Rectangle coordinates lie on a 1/1024-texel grid per output pixel, which the RDP
+        // truncates to S10.5; upscaled passes keep the finer fraction triangles get.
+        let scale = f32(max(combiner.raster.x, 1u));
+        let fraction = select(32.0, 128.0, scale > 1.0);
+        let exact = round(shifted * 1024.0 * scale);
+        return floor(exact * fraction / (1024.0 * scale)) / fraction - vec2<f32>(tile.bounds.xy) / 4.0;
+    }
     return round(shifted * 128.0) / 128.0 - vec2<f32>(tile.bounds.xy) / 4.0;
 }
 
@@ -491,6 +499,10 @@ fn tile_plan(index: u32, coordinates: SampleCoordinates, cycle: u32, dimensions:
     }
     let scaled = tile.image.z != 1u && tile.image.w > 1u;
     if scaled { coordinate *= f32(tile.image.w); }
+    if high_resolution && combiner.is_rect != 0u {
+        // Rectangles sample on texel edges, where float noise would otherwise pick the texel before.
+        coordinate = round(coordinate * 256.0) / 256.0;
+    }
     let base = vec2<i32>(floor(coordinate));
     var plan: TilePlan;
     plan.taps = tile_taps(tile, base);
@@ -623,10 +635,15 @@ fn eval_combiner(in: VsOut) -> CycleResult {
     let uv_scale = combiner.inv_tex_size.xy * vec2<f32>(tile_sampling[0].image.xy);
     let target_uv = texcoord * uv_scale;
     var uv = SampleCoordinates(target_uv, target_uv);
+    if combiner.is_rect != 0u {
+        // The RDP samples a rectangle at each pixel's top-left corner, not its centre.
+        uv.unsnapped -= 0.5 * (ddx_uv + ddy_uv) * uv_scale;
+        uv.snapped = uv.unsnapped;
+    }
     if combiner.raster.x > 1u && combiner.raster.z != 0u {
         let m = f32(combiner.raster.x);
-        let delta = in.clip_position.xy - (floor(in.clip_position.xy / m) + 0.5) * m;
-        uv.snapped -= (delta.x * ddx_uv + delta.y * ddy_uv) * uv_scale;
+        let delta = in.clip_position.xy - floor(in.clip_position.xy / m) * m;
+        uv.snapped = target_uv - (delta.x * ddx_uv + delta.y * ddy_uv) * uv_scale;
     }
 
     if combiner.primitive_depth.w != 0u {

@@ -455,8 +455,8 @@ fn scaled_expected(filter: u32, mirror: bool) -> Vec<u8> {
                 let value = if filter == 0 {
                     sample(0, 0, c)
                 } else {
-                    // Pixel centres give 2 * (1/8 + (i + 1/2)/2) = i + 3/4.
-                    (sample(1, 1, c) * 2 + sample(1, 0, c) + sample(0, 1, c)) / 4
+                    // Pixel corners give 2 * (1/8 + i/2) = i + 1/4.
+                    (sample(0, 0, c) * 2 + sample(1, 0, c) + sample(0, 1, c)) / 4
                 };
                 expected[((24 + y) * 320 + 16 + x) * 4 + c] = value as u8;
             }
@@ -466,24 +466,24 @@ fn scaled_expected(filter: u32, mirror: bool) -> Vec<u8> {
 }
 
 #[test]
-fn replacement_scaled_expectations_include_pixel_centers() {
+fn replacement_scaled_expectations_include_pixel_corners() {
     for (mirror, samples) in [
         (
             false,
             vec![
-                (0, 0, [37, 48, 23, 69]),
-                (5, 0, [156, 48, 74, 137]),
-                (0, 5, [37, 184, 57, 120]),
+                (0, 0, [23, 32, 13, 55]),
+                (5, 0, [156, 32, 70, 131]),
+                (0, 5, [23, 184, 51, 112]),
                 (5, 5, [156, 184, 108, 188]),
             ],
         ),
         (
             true,
             vec![
-                (0, 0, [37, 48, 23, 69]),
+                (0, 0, [23, 32, 13, 55]),
                 (3, 3, [100, 120, 68, 132]),
-                (4, 0, [79, 48, 41, 93]),
-                (5, 5, [51, 64, 33, 83]),
+                (4, 0, [93, 32, 43, 95]),
+                (5, 5, [65, 80, 43, 97]),
             ],
         ),
     ] {

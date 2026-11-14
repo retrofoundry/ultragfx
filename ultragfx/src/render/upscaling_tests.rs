@@ -1164,12 +1164,13 @@ fn identity_texrect_phase_uses_both_signed_derivatives() {
                                 } else {
                                     (x - 2, y - top)
                                 };
-                                let s = if negative_s { 4 - s } else { 5 + s };
-                                let t = if negative_t {
-                                    4 - t - u32::from(fractional_y)
+                                let (s, t) = if flip {
+                                    (s + u32::from(fractional_y), t)
                                 } else {
-                                    5 + t + u32::from(fractional_y)
+                                    (s, t + u32::from(fractional_y))
                                 };
+                                let s = if negative_s { 5 - s } else { 5 + s };
+                                let t = if negative_t { 5 - t } else { 5 + t };
                                 [(s * 12) as u8, (t * 16) as u8, 0, 255]
                             });
                         }
@@ -1232,9 +1233,9 @@ fn filtered_fractional_phase_and_intentionally_scaled_rects() {
                     for x in 2 * scale..6 * scale {
                         let position = |p: u32| {
                             if step.unsigned_abs() == 1024 {
-                                (p / scale - 2) as f32 + 0.5
+                                (p / scale - 2) as f32
                             } else {
-                                (p as f32 + 0.5) / scale as f32 - 2.0
+                                p as f32 / scale as f32 - 2.0
                             }
                         };
                         let (s, t) = if flip {
@@ -1243,7 +1244,9 @@ fn filtered_fractional_phase_and_intentionally_scaled_rects() {
                             (position(x), position(y))
                         };
                         let coordinate = |p: f32| {
-                            ((5.25 + p * f32::from(step) / 1024.0) * 128.0).round() / 128.0
+                            let grid = 1024.0 * scale as f32;
+                            let exact = ((5.25 + p * f32::from(step) / 1024.0) * grid).round();
+                            (exact * 128.0 / grid).floor() / 128.0
                         };
                         let expected = [
                             (coordinate(s) * 12.0).round() as u8,
@@ -1458,18 +1461,16 @@ fn non_square_replacement_copy_uses_target_rate_and_unrounded_coordinates() {
                         2047 => 63.0 / 128.0,
                         _ => unreachable!(),
                     };
-                    let s = f64::from(base_s) / 32.0
-                        + ((x as f64 + 0.5) / f64::from(factor) - 2.0) * slope;
-                    let t = 169.0 / 32.0 + (y as f64 + 0.5) / f64::from(factor) - 2.0;
-                    let rounding = if factor == 1 { 1.0 / 256.0 } else { 0.0 };
-                    if texel_boundary_distance(s + rounding, 8.0, slope, factor) < 1.0 / 64.0
-                        || texel_boundary_distance(t + rounding, 8.0, 1.0, factor) < 1.0 / 64.0
+                    let s = f64::from(base_s) / 32.0 + (x as f64 / f64::from(factor) - 2.0) * slope;
+                    let t = 169.0 / 32.0 + y as f64 / f64::from(factor) - 2.0;
+                    if texel_boundary_distance(s, 8.0, slope, factor) < 1.0 / 64.0
+                        || texel_boundary_distance(t, 8.0, 1.0, factor) < 1.0 / 64.0
                     {
                         return None;
                     }
                     let coordinate = |v: f64| {
                         if factor == 1 {
-                            (v * 128.0).round_ties_even() / 128.0
+                            ((v * 1024.0).round() / 32.0).floor() / 32.0
                         } else {
                             v
                         }
@@ -1577,9 +1578,9 @@ fn precision_and_snapping_follow_resolved_texel_mip_and_detail_roles() {
                     }
                     let p = |v: u32| {
                         if !enhanced && step == 1024 {
-                            (v / scale - 2) as f64 + 0.5
+                            (v / scale - 2) as f64
                         } else {
-                            (v as f64 + 0.5) / f64::from(scale) - 2.0
+                            v as f64 / f64::from(scale) - 2.0
                         }
                     };
                     let slope = if precision {
@@ -1589,10 +1590,8 @@ fn precision_and_snapping_follow_resolved_texel_mip_and_detail_roles() {
                     };
                     let coordinate = |v: u32| f64::from(base) / 32.0 + p(v) * slope;
                     let rate = if enhanced { 8.0 } else { 1.0 };
-                    let rounding = if enhanced { 0.0 } else { 1.0 / 256.0 };
                     if [x, y].into_iter().any(|v| {
-                        texel_boundary_distance(coordinate(v) + rounding, rate, slope, scale)
-                            < 1.0 / 64.0
+                        texel_boundary_distance(coordinate(v), rate, slope, scale) < 1.0 / 64.0
                     }) {
                         return None;
                     }
@@ -1604,8 +1603,7 @@ fn precision_and_snapping_follow_resolved_texel_mip_and_detail_roles() {
                             255,
                         ])
                     } else {
-                        let texel =
-                            |v| ((coordinate(v) * 128.0).round_ties_even() / 128.0).floor() as u8;
+                        let texel = |v| coordinate(v).floor() as u8;
                         Some([texel(x) * 12, texel(y) * 16, 0, 255])
                     }
                 });
@@ -2437,8 +2435,8 @@ fn retained_snapshot_uses_its_source_scale_after_reconfigure() {
     let output = read_texture(&device, &queue, texture);
     for y in 0..16 {
         for x in 0..16 {
-            let sx = ((x as f32 + 0.5) * 1.5).floor() as u32;
-            let sy = ((y as f32 + 0.5) * 1.5).floor() as u32;
+            let sx = (x as f32 * 1.5).floor() as u32;
+            let sy = (y as f32 * 1.5).floor() as u32;
             assert_eq!(
                 &output[((y * 32 + x) * 4) as usize..][..4],
                 &before[(((27 + sy) * 96 + 27 + sx) * 4) as usize..][..4]

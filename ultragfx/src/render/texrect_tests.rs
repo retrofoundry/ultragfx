@@ -145,10 +145,10 @@ fn texrect_fractional_bounds_follow_reference() {
                 assert_eq!(q[2].uv, [2.9375, -8.03125]);
                 let q = quad(&decode([x, y, 38, 45], [11, -13], [333, -777], cycle, true));
                 assert_mask(&q, [2, 3, 10, 12]);
-                assert_eq!(q[0].uv, [0.34375, -1.1875]);
-                assert_eq!(q[5].uv, [0.34375, -7.28125]);
-                assert_eq!(q[2].uv, [3.25, -7.28125]);
-                assert_eq!(q[1].uv, [3.25, -1.1875]);
+                assert_eq!(q[0].uv, [0.65625, -0.40625]);
+                assert_eq!(q[5].uv, [0.65625, -6.5]);
+                assert_eq!(q[2].uv, [3.5625, -6.5]);
+                assert_eq!(q[1].uv, [3.5625, -0.40625]);
             }
         }
     }
@@ -354,7 +354,7 @@ fn coverage_rect_sampling_origin() {
             for y in 0..64 {
                 for x in 0..64 {
                     let expected = if (8..16).contains(&x) && (8..16).contains(&y) {
-                        let (s, t) = if flip { (y - 7, x - 7) } else { (x - 7, y - 7) };
+                        let (s, t) = if flip { (y - 8, x - 8) } else { (x - 8, y - 8) };
                         [(s * 8) as u8, (t * 8) as u8, 64, 255]
                     } else {
                         [13, 13, 20, 255]

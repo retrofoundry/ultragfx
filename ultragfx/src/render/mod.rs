@@ -777,18 +777,24 @@ fn texrect_quad(
     } else {
         (width, height)
     };
-    // rt64 drawRect truncates endpoints to S10.5 and advances T for any fractional upper Y.
+    // rt64 drawRect truncates endpoints to S10.5. A fractional upper Y advances the axis that
+    // steps per row, which is S under FLIP.
     let endpoint = |base: i16, step: i64, pixels: i64| {
         (((i64::from(base) << 7) + step * (pixels << 2)) >> 7) as f32 / 32.0
     };
-    let t_offset = if !copy_mode && rect.uly & 3 != 0 {
-        (dt >> 5) as f32 / 32.0
+    let row_offset = if !copy_mode && rect.uly & 3 != 0 {
+        ((if flip { ds } else { dt }) >> 5) as f32 / 32.0
     } else {
         0.0
     };
-    let s0 = f32::from(base.0) / 32.0;
+    let (s_offset, t_offset) = if flip {
+        (row_offset, 0.0)
+    } else {
+        (0.0, row_offset)
+    };
+    let s0 = f32::from(base.0) / 32.0 + s_offset;
     let t0 = f32::from(base.1) / 32.0 + t_offset;
-    let s1 = endpoint(base.0, ds, sw);
+    let s1 = endpoint(base.0, ds, sw) + s_offset;
     let t1 = endpoint(base.1, dt, th) + t_offset;
     let uv = if flip {
         [[s0, t0], [s0, t1], [s1, t1], [s1, t0]]
