@@ -596,6 +596,19 @@ type FogPixelCase = (u8, u8, u8, [[u8; 3]; 2]);
 const INPUT_RGB: [u8; 3] = [200, 100, 50];
 const FOG_RGB: [u8; 3] = [20, 70, 140];
 
+type BlenderTarget = (wgpu::Device, wgpu::Queue, bool, SceneRenderer);
+
+fn blender_target(fallback: bool) -> BlenderTarget {
+    let (device, queue, dual) = if fallback {
+        let (device, queue) = headless_device_forced_fallback();
+        (device, queue, false)
+    } else {
+        headless_device()
+    };
+    let renderer = SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 64, dual);
+    (device, queue, dual, renderer)
+}
+
 fn assert_local_fog_equations(
     a: u32,
     b: u32,
@@ -603,15 +616,20 @@ fn assert_local_fog_equations(
     fog: [u8; 3],
     cases: &[FogPixelCase],
 ) {
-    for fallback in [false, true] {
-        let (device, queue, dual) = if fallback {
-            let (device, queue) = headless_device_forced_fallback();
-            (device, queue, false)
-        } else {
-            headless_device()
-        };
-        let mut renderer =
-            SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 64, dual);
+    let mut targets = [blender_target(false), blender_target(true)];
+    assert_local_fog_equations_on(&mut targets, a, b, input, fog, cases);
+}
+
+fn assert_local_fog_equations_on(
+    targets: &mut [BlenderTarget; 2],
+    a: u32,
+    b: u32,
+    input: [u8; 3],
+    fog: [u8; 3],
+    cases: &[FogPixelCase],
+) {
+    for (fallback, (device, queue, dual, renderer)) in [false, true].into_iter().zip(targets) {
+        let dual = *dual;
         for &(alpha, fog_alpha, shade_alpha, shifted) in cases {
             for (cycles, force) in [(0, false), (0, true), (1, false), (1, true)] {
                 for fog_in_p in [true, false] {
@@ -663,14 +681,8 @@ fn assert_local_fog_equations(
                             (0xBF00_0000, 0x0000_0a14),
                             (0xBF00_0000, 0x0000_141e),
                         ]);
-                        let pixels = render_to_pixels(
-                            &device,
-                            &queue,
-                            &mut renderer,
-                            &scene(&commands),
-                            64,
-                            64,
-                        );
+                        let pixels =
+                            render_to_pixels(device, queue, renderer, &scene(&commands), 64, 64);
                         let actual = pixel(&pixels, 64, 32, 32);
                         let expected = if cycles == 0 && a == A_IN && b == B_1MA && alpha == 255 {
                             if fog_in_p {
@@ -754,6 +766,7 @@ fn fog_input_and_zero_alpha_use_complementary_b() {
 
 #[test]
 fn fog_local_alpha_and_noncomplementary_b_follow_blender_rounding() {
+    let mut targets = [blender_target(false), blender_target(true)];
     for (b, rows) in [
         (
             B_1,
@@ -785,7 +798,7 @@ fn fog_local_alpha_and_noncomplementary_b_follow_blender_rounding() {
                     )
                 })
                 .collect();
-            assert_local_fog_equations(a, b, INPUT_RGB, FOG_RGB, &cases);
+            assert_local_fog_equations_on(&mut targets, a, b, INPUT_RGB, FOG_RGB, &cases);
         }
     }
 }
@@ -805,14 +818,23 @@ fn fog_blender_matches_the_hardware_worked_example() {
 }
 
 fn assert_hardware_blender(mode: u32, cycles: u32, expected: [u8; 3], fallback: bool) {
-    let (device, queue, dual) = if fallback {
-        let (device, queue) = headless_device_forced_fallback();
-        (device, queue, false)
-    } else {
-        headless_device()
-    };
+    assert_hardware_blender_on(
+        &mut blender_target(fallback),
+        mode,
+        cycles,
+        expected,
+        fallback,
+    );
+}
+
+fn assert_hardware_blender_on(
+    (device, queue, dual, renderer): &mut BlenderTarget,
+    mode: u32,
+    cycles: u32,
+    expected: [u8; 3],
+    fallback: bool,
+) {
     eprintln!("blender mode={mode:#010x} cycles={cycles} fallback={fallback} dual={dual}");
-    let mut renderer = SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 64, dual);
     for decal in [false, true] {
         let commands = [
             (0xBA00_1402, 0),
@@ -860,7 +882,7 @@ fn assert_hardware_blender(mode: u32, cycles: u32, expected: [u8; 3], fallback: 
             // Exercise the COPY shader gate without the interpreter's mandatory texture setup.
             result.scene.materials.last_mut().unwrap().cycle_type = 2;
         }
-        let pixels = render_to_pixels(&device, &queue, &mut renderer, &result.scene, 64, 64);
+        let pixels = render_to_pixels(device, queue, renderer, &result.scene, 64, 64);
         assert_eq!(
             pixel(&pixels, 64, 32, 32)[..3],
             expected,
@@ -902,6 +924,7 @@ fn fog_blender_hardware_memory_rgb_fallback() {
 #[test]
 fn blender_partial_reject_selects_final_p() {
     for fallback in [false, true] {
+        let mut target = blender_target(fallback);
         for (p, expected) in [
             (CLR_IN, [40, 104, 200]),
             (CLR_FOG, [216, 56, 24]),
@@ -915,7 +938,8 @@ fn blender_partial_reject_selects_final_p() {
                     } else {
                         gbl_c1(CLR_IN, A_0, CLR_IN, B_1) | gbl_c2(p, A_IN, m, B_1MA)
                     };
-                    assert_hardware_blender(
+                    assert_hardware_blender_on(
+                        &mut target,
                         final_mux | FORCE_BL | G_ZS_PRIM,
                         cycles,
                         expected,
