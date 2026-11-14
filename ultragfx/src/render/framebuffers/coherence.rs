@@ -499,8 +499,9 @@ impl Ownership {
 
     /// Same result as calling `write` for each of `writes` in order, but splits each existing range
     /// once; a task's row writes over the previous task's coalesced range would otherwise recopy its
-    /// tail per row.
-    pub fn write_all(&mut self, writes: Vec<(Writer, u64, u64, Vec<u8>)>) {
+    /// tail per row. With `fuse_from`, the result matches only after `coalesce(fuse_from)`: abutting
+    /// pieces are joined by its rule first, so thousands of runs don't each pass through the map.
+    pub fn write_all(&mut self, writes: Vec<(Writer, u64, u64, Vec<u8>)>, fuse_from: Option<u64>) {
         let mut covered = BTreeMap::<u64, u64>::new();
         let mut pieces = Vec::new();
         for (writer, generation, address, bytes) in writes.into_iter().rev() {
@@ -584,8 +585,31 @@ impl Ownership {
             }
         }
         pieces.sort_unstable_by_key(|piece| piece.0);
+        let mut open: Option<(u64, Writer, u64, Vec<u8>)> = None;
         for (address, writer, generation, bytes) in pieces {
-            self.write(writer, generation, address, bytes);
+            match &mut open {
+                Some((start, run_writer, run_generation, run))
+                    if fuse_from.is_some_and(|first| {
+                        *run_writer == writer
+                            && *run_generation >= first
+                            && generation >= first
+                            && *start + run.len() as u64 == address
+                    }) =>
+                {
+                    *run_generation = (*run_generation).max(generation);
+                    run.extend_from_slice(&bytes);
+                }
+                _ => {
+                    if let Some((start, writer, generation, bytes)) =
+                        open.replace((address, writer, generation, bytes))
+                    {
+                        self.write(writer, generation, start, bytes);
+                    }
+                }
+            }
+        }
+        if let Some((start, writer, generation, bytes)) = open {
+            self.write(writer, generation, start, bytes);
         }
     }
 
@@ -715,8 +739,14 @@ mod tests {
             for (writer, generation, address, bytes) in writes.clone() {
                 sequential.write(writer, generation, address, bytes);
             }
-            owners.write_all(writes);
+            let first_generation = 1 + next(5);
+            let mut fused = owners.clone();
+            fused.write_all(writes.clone(), Some(first_generation));
+            owners.write_all(writes, None);
             assert!(state(&owners) == state(&sequential), "case {case}");
+            sequential.coalesce(first_generation);
+            fused.coalesce(first_generation);
+            assert!(state(&fused) == state(&sequential), "fused case {case}");
         }
     }
 
@@ -739,7 +769,7 @@ mod tests {
         let mut coherence = Coherence::new(FramebufferEncoding::BigEndian);
         let writer = image(0, 1, 2, false);
         coherence.fill(writer, (0, 0, 1, 1), 0x12311231);
-        coherence.commit_pending(u64::MAX);
+        coherence.commit_pending(u64::MAX, None);
         let mode = crate::hle::RenderMode::default();
         let draw = CoverageDraw {
             combiner: super::super::writeback::Combiner::new(
@@ -827,7 +857,7 @@ mod tests {
         let mut coherence = Coherence::new(FramebufferEncoding::BigEndian);
         let writer = image(0, 1, 2, false);
         coherence.fill(writer, (0, 0, 1, 1), 0xf801f801);
-        coherence.commit_pending(u64::MAX);
+        coherence.commit_pending(u64::MAX, None);
         let mode = crate::hle::decode_render_mode(
             n64_gbi::consts::FORCE_BL
                 | n64_gbi::consts::gbl_c1(
@@ -885,7 +915,7 @@ mod tests {
         let stamps: [u8; 8] = bytemuck::cast([0u32, 0]);
         let geometry = ReplayGeometry::new(std::slice::from_ref(&draw), &[]);
         coherence.replay(writer, &[draw], (1, 0), &geometry, (&stamps, &[0; 4]), None);
-        coherence.commit_pending(u64::MAX);
+        coherence.commit_pending(u64::MAX, None);
         assert_eq!(coherence.stored_coverage_code(0), None);
         assert_eq!(coherence.owners.ranges[&0].bytes, [0x12, 0x31]);
     }
@@ -900,7 +930,7 @@ mod tests {
                         let mut coherence = Coherence::new(FramebufferEncoding::BigEndian);
                         let writer = image(0, 2, 2, false);
                         coherence.fill(writer, (0, 0, 2, 2), 0x12311231);
-                        coherence.commit_pending(u64::MAX);
+                        coherence.commit_pending(u64::MAX, None);
                         let mode = crate::hle::RenderMode {
                             image_read: true,
                             cvg_dst: destination,
@@ -967,16 +997,16 @@ mod tests {
         let mut coherence = Coherence::new(FramebufferEncoding::BigEndian);
         let writer = image(0, 2, 2, false);
         coherence.fill(writer, (0, 0, 2, 1), 0x12311231);
-        coherence.commit_pending(u64::MAX);
+        coherence.commit_pending(u64::MAX, None);
         coherence
             .release_changed(&crate::RdramImage::new(&[0x12, 0x30, 0x12, 0x31]))
             .unwrap();
         assert_eq!(coherence.stored_coverage_code(0), None);
         assert_eq!(coherence.stored_coverage_code(2), Some(7));
         coherence.fill(writer, (0, 0, 2, 1), 0x12311231);
-        coherence.commit_pending(u64::MAX);
+        coherence.commit_pending(u64::MAX, None);
         coherence.fill(image(1, 1, 1, false), (0, 0, 1, 1), 0xff000000);
-        coherence.commit_pending(u64::MAX);
+        coherence.commit_pending(u64::MAX, None);
         assert_eq!(coherence.stored_coverage_code(0), None);
         assert_eq!(coherence.stored_coverage_code(2), Some(7));
     }
@@ -2644,7 +2674,7 @@ impl Coherence {
         }
     }
 
-    fn commit_pending(&mut self, generation: u64) {
+    fn commit_pending(&mut self, generation: u64, fuse_from: Option<u64>) {
         self.pending.sort_by_key(|write| write.generation);
         let end = self
             .pending
@@ -2679,7 +2709,7 @@ impl Coherence {
             }
             writes.push((write.writer, write.generation, write.address, write.bytes));
         }
-        self.owners.write_all(writes);
+        self.owners.write_all(writes, fuse_from);
         self.pending = pending;
     }
 
@@ -2921,7 +2951,7 @@ impl Coherence {
     pub fn resolve(&mut self, device: &wgpu::Device) {
         let mut scratch = std::mem::take(&mut self.resolve_scratch);
         for snapshot in std::mem::take(&mut self.snapshots) {
-            self.commit_pending(snapshot.generation);
+            self.commit_pending(snapshot.generation, None);
             if let Some(readback) = snapshot.native_triangles {
                 let (writer, _) = snapshot.color.unwrap();
                 let bytes = readback.read(device);
@@ -3236,7 +3266,8 @@ impl Coherence {
                 }
             }
         }
-        self.commit_pending(u64::MAX);
+        // Joined runs match sequential writes only after `coalesce`; nothing reads `owners` between.
+        self.commit_pending(u64::MAX, Some(self.first_generation));
         self.owners.coalesce(self.first_generation);
         self.hidden.retain(|_, bits| bits.iter().any(|&c| c != 255));
         self.resolve_scratch = scratch;
