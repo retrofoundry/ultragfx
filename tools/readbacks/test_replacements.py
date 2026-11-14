@@ -5,7 +5,7 @@ import unittest
 
 import readbacks
 import replacements
-from test_readbacks import CaptureCase
+from test_readbacks import BASE, HEAD, CaptureCase
 
 
 class ReplacementReadbacks(CaptureCase):
@@ -134,3 +134,63 @@ class ReplacementReadbacks(CaptureCase):
                                          m["rows"][0].update(mask_sha256=digest)))
         with self.assertRaisesRegex(ValueError, "change mask differs"):
             self.load()
+
+
+class ReplacementComparison(CaptureCase):
+    def setUp(self):
+        super().setUp()
+        self.checkout = self.root / "checkout"
+        source = self.checkout / replacements.SOURCE
+        source.parent.mkdir(parents=True)
+        source.write_text("independent replacement test")
+
+    def provide(self, capture, expected, frozen_expected=None):
+        directory = capture / "all-features/replacements"
+        directory.mkdir(parents=True)
+        blobs = {"expected": expected, "before": bytes([1, 2, 3, 255]), "mask": b"\1"}
+        row = {"id": "tile", "width": 1, "height": 1}
+        for kind, value in blobs.items():
+            (directory / f"tile.{kind}.bin").write_bytes(value)
+            row[kind + "_sha256"] = hashlib.sha256(value).hexdigest()
+        if frozen_expected is not None:
+            row["expected_sha256"] = hashlib.sha256(frozen_expected).hexdigest()
+        (directory / "tile.bin").write_bytes(expected)
+        (directory / "tile.input.bin").write_bytes(b"owned fixture and registration")
+        manifest = json.loads((capture / "manifest.json").read_text())
+        (directory / "tile.json").write_text(json.dumps(
+            {"id": "tile", "width": 1, "height": 1, "channels": "RGBA", "stage": "final", "role": "replacement",
+             "blend_path": "none", "test_id": "replacement", "adapter": manifest["rows"][0]["adapter"]}))
+        shutil.copyfile(self.checkout / replacements.SOURCE, capture / "replacement-source.rs")
+        frozen = {"version": 1, "rows": [row]}
+        manifest["replacements"] = replacements.requirement(self.checkout)
+        replacements.save(capture, manifest, frozen)
+        (capture / "manifest.json").write_text(json.dumps(manifest))
+        return frozen
+
+    def compare(self, base_frozen, frozen):
+        return readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20", require_replacements=True,
+                                 base_replacement_inventory=base_frozen, replacement_inventory=frozen)
+
+    def test_declared_change_passes_and_is_listed(self):
+        base_frozen = self.provide(self.base, bytes([17, 33, 65, 71]))
+        frozen = self.provide(self.head, bytes([18, 33, 65, 71]))
+        report = self.compare(base_frozen, frozen)
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["replacement_changes"], [
+            {"id": "tile", "change": "changed", "base": base_frozen["rows"][0], "candidate": frozen["rows"][0]}])
+        grown = dict(frozen, rows=frozen["rows"] + [dict(frozen["rows"][0], id="new")])
+        self.assertEqual([(c["id"], c["change"]) for c in replacements.changes(frozen, grown)], [("new", "added")])
+        self.assertEqual([(c["id"], c["change"]) for c in replacements.changes(grown, frozen)], [("new", "removed")])
+        self.assertEqual(replacements.changes(frozen, frozen), [])
+
+    def test_candidate_must_equal_its_own_inventory(self):
+        base_frozen = self.provide(self.base, bytes([17, 33, 65, 71]))
+        frozen = self.provide(self.head, bytes([18, 33, 65, 71]), frozen_expected=bytes([17, 33, 65, 71]))
+        with self.assertRaisesRegex(ValueError, "frozen replacement expected mismatch"):
+            self.compare(base_frozen, frozen)
+
+    def test_base_must_equal_its_own_inventory(self):
+        base_frozen = self.provide(self.base, bytes([17, 33, 65, 71]), frozen_expected=bytes([18, 33, 65, 71]))
+        frozen = self.provide(self.head, bytes([18, 33, 65, 71]))
+        with self.assertRaisesRegex(ValueError, "frozen replacement expected mismatch"):
+            self.compare(base_frozen, frozen)

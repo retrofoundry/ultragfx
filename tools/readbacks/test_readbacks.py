@@ -121,7 +121,7 @@ class ConfigurationGates(CaptureCase):
                     name = f"readbacks-{runner}-{config}" + (f"-{section}" if section else "")
                     captured = []
 
-                    def capture(checkout, destination, base_sha, harness_checkout, inventory):
+                    def capture(checkout, destination, base_sha, harness_checkout, inventory, replacement_inventory=None):
                         captured.append(checkout)
                         shutil.copytree(checkout, destination)
                         manifest = json.loads((destination / "manifest.json").read_text())
@@ -165,6 +165,7 @@ class ConfigurationGates(CaptureCase):
                         arguments.extend(["--section", section])
                     with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
                             patch.object(ci, "capture", capture), patch.object(ci, "overlay", return_value={}), \
+                            patch.object(ci, "committed_replacement_inventory", return_value=ci.replacements.inventory()), \
                             patch.object(ci, "gh_json", api), patch.object(ci, "download_artifact", download):
                         result = ci.main()
                     self.assertEqual(result, 0 if scenario in ["download", "bootstrap"] else 1)
@@ -228,7 +229,7 @@ class ExactReadbacks(CaptureCase):
                 output = self.root / ("gate-" + failed_side.name)
                 captured = []
 
-                def capture(checkout, destination, base_sha, harness_checkout, inventory):
+                def capture(checkout, destination, base_sha, harness_checkout, inventory, replacement_inventory=None):
                     captured.append(checkout)
                     shutil.copytree(checkout, destination)
                     return json.loads((destination / "manifest.json").read_text())
@@ -238,6 +239,7 @@ class ExactReadbacks(CaptureCase):
                              "--artifact-name", "readbacks-windows-latest"]
                 with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
                         patch.object(ci, "capture", capture), patch.object(ci, "overlay", return_value={}), \
+                        patch.object(ci, "committed_replacement_inventory", return_value=ci.replacements.inventory()), \
                         patch.object(ci, "fetch_base", side_effect=ValueError("missing base artifact")):
                     self.assertEqual(ci.main(), 1)
                 self.assertEqual(captured, [self.head, self.base])
