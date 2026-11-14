@@ -445,8 +445,8 @@ fn snapshot_taken_at_three_survives_live_switch_to_two() {
     );
     for y in 0..16 {
         for x in 0..16 {
-            let sx = ((x as f32 + 0.5) * 1.5).floor() as u32;
-            let sy = ((y as f32 + 0.5) * 1.5).floor() as u32;
+            let sx = (x as f32 * 1.5).floor() as u32;
+            let sy = (y as f32 * 1.5).floor() as u32;
             assert_eq!(
                 &output[((y * 64 + x) * 4) as usize..][..4],
                 &before[((sy * 96 + sx) * 4) as usize..][..4]

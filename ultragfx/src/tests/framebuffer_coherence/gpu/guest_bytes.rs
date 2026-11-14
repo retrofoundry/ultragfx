@@ -514,3 +514,100 @@ fn guest_bytes_tp_none_triangles_sample_halved_screen_linear_coordinates() {
         }
     }
 }
+
+#[test]
+fn guest_bytes_texture_rectangles_sample_pixel_corners() {
+    // Odd S sets red and odd T sets green, so each pixel names the texel it read.
+    let texels = (0..32u16)
+        .flat_map(|t| {
+            (0..64u16)
+                .flat_map(move |s| (((s & 1) * 31) << 11 | ((t & 1) * 31) << 6 | 1).to_be_bytes())
+        })
+        .collect::<Vec<_>>();
+    // [filter, ulx, uly, lrx, lry in quarter pixels, s, t in 1/32 texel, DsDx, DtDy, flip]. The
+    // console reads s + (x - x0) * DsDx at each pixel's left edge, so 0.5 texel still reads texel 0
+    // and a 1:1 bilinear rectangle reads its texels unblended. Under FLIP S steps per row, and a
+    // fractional uly adds one step to it.
+    let cases = [
+        [0, 32, 16, 160, 80, 16, 16, 1024, 1024, 0],
+        [2, 192, 16, 320, 80, 0, 0, 1024, 1024, 0],
+        [0, 32, 96, 288, 160, 0, 0, 512, 1024, 0],
+        [0, 352, 98, 480, 160, 0, 0, 1024, 512, 1u32],
+    ];
+    let expected = |case: usize, x: u32, y: u32| {
+        let [_, ulx, uly, ..] = cases[case];
+        let (i, j) = (x - ulx.div_ceil(4), y - uly.div_ceil(4));
+        let (s, t) = match case {
+            0 | 1 => (i, j),
+            2 => (i / 2, j),
+            _ => (j + 1, i / 2),
+        };
+        [s & 1, t & 1]
+    };
+    for scale in [1, 2, 4] {
+        let mut r = renderer(true);
+        r.reconfigure(crate::RendererConfig {
+            resolution_multiplier: scale,
+            ..r.config
+        });
+        r.set_guest_writeback_with_encoding(true, crate::FramebufferEncoding::BigEndian);
+        let mut memory = Memory(vec![0; OUTPUT as usize + 320 * 240 * 2]);
+        let mut b = DlBuilder::new();
+        let texture = b.bytes(16, &texels);
+        let mut dl = Vec::new();
+        image(&mut dl, FB, 128, 40, 0, 2);
+        dl.extend([
+            combine(1, 1),
+            (0xfd100000, texture),
+            (0xf5100000, 0x07014060),
+            gdp_load_sync(),
+            (0xf3000000, 0x077ff080),
+            gdp_pipe_sync(),
+            (0xf5102000, 0x00014060),
+            (0xf2000000, 0x000fc07c),
+        ]);
+        for [filter, ulx, uly, lrx, lry, s, t, dsdx, dtdy, flip] in cases {
+            dl.extend([gdp_pipe_sync(), (0xef000cf0 | filter << 12, 0x0f0a4000)]);
+            dl.extend(gsp_texture_rectangle(
+                ulx,
+                uly,
+                lrx,
+                lry,
+                0,
+                s,
+                t,
+                dsdx,
+                dtdy,
+                flip != 0,
+            ));
+        }
+        run(&mut r, &mut memory, built(b, dl));
+        let image = pixels(&mut r, FB, 128 * scale, 40 * scale);
+        for (case, &[_, ulx, uly, lrx, lry, ..]) in cases.iter().enumerate() {
+            for y in uly.div_ceil(4)..lry.div_ceil(4) {
+                for x in ulx.div_ceil(4)..lrx.div_ceil(4) {
+                    let [red, green] = expected(case, x, y);
+                    let at = FB as usize + ((y * 128 + x) * 2) as usize;
+                    let word = u16::from_be_bytes([memory.0[at], memory.0[at + 1]]);
+                    assert_eq!(
+                        [u32::from(word >> 11), u32::from(word >> 6 & 31)],
+                        [red * 31, green * 31],
+                        "case {case}, write-back ({x}, {y}), scale {scale}"
+                    );
+                    // The upscaled image samples the same texel across each native pixel.
+                    if case < 3 {
+                        for sub in 0..scale * scale {
+                            let (px, py) = (x * scale + sub % scale, y * scale + sub / scale);
+                            let at = ((py * 128 * scale + px) * 4) as usize;
+                            assert_eq!(
+                                [image[at], image[at + 1]],
+                                [red as u8 * 255, green as u8 * 255],
+                                "case {case}, presented ({px}, {py}), scale {scale}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
