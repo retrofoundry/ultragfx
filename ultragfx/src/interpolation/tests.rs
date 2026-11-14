@@ -2132,6 +2132,57 @@ fn interpolate_restrictions_keep_only_the_affected_scope_in_a_world_pose() {
 }
 
 #[test]
+fn residual_policy_interpolates_sheared_models_that_interpolate_rejects() {
+    for policy in [
+        TransformPolicy::Interpolate,
+        TransformPolicy::InterpolateResidual,
+    ] {
+        let mut r = renderer(1);
+        let mut phases = r.phase_renderer();
+        let mut fa = fixture(
+            &[transform(0.0, -12.0, 0.0), transform(0.0, 12.0, 0.0)],
+            identity(),
+            projection(),
+        );
+        let mut fb = fixture(
+            &[transform(0.0, -4.0, 0.0), transform(0.0, 4.0, 0.0)],
+            identity(),
+            projection(),
+        );
+        for (f, y) in [(&mut fa, -12.0), (&mut fb, -4.0)] {
+            let call = invocation_address(&f.annotations.draws[0]) as usize;
+            let leaf =
+                u32::from_be_bytes(f.built.rdram[call + 4..call + 8].try_into().unwrap()) as usize;
+            let model =
+                u32::from_be_bytes(f.built.rdram[leaf + 4..leaf + 8].try_into().unwrap()) as usize;
+            let mut shear = transform(0.0, y, 0.0);
+            shear[0][1] = 0.5;
+            f.built.rdram[model..model + 64].copy_from_slice(&mtx_to_bytes(shear));
+            for draw in &mut f.annotations.draws {
+                draw.policy = policy;
+            }
+        }
+        let identity = fa.annotations.draws[0].identity;
+        let ta = task(&mut r, fa, 1, 1, true);
+        let ca = canonical(&mut r);
+        let a = source(&mut r, ta);
+        let tb = task(&mut r, fb, 2, 1, true);
+        let cb = canonical(&mut r);
+        let b = source(&mut r, tb);
+        let expected = if policy == TransformPolicy::Interpolate {
+            restricted(RestrictionReason::DecompositionRejected, &[identity])
+        } else {
+            INTERPOLATED
+        };
+        let mid = phase(&mut phases, &a, &b, 0.5, expected);
+        assert_ne!(mid, ca);
+        assert_ne!(mid, cb);
+        assert_eq!(phase(&mut phases, &a, &b, 0.0, PhaseResult::Endpoint), ca);
+        assert_eq!(phase(&mut phases, &a, &b, 1.0, PhaseResult::Endpoint), cb);
+    }
+}
+
+#[test]
 fn restrictions_count_scopes_and_bound_identity_samples_in_submission_order() {
     let mut r = renderer(1);
     let mut phases = r.phase_renderer();

@@ -1,12 +1,50 @@
 use crate::hle::math::Mat4;
 
+type Basis = [[f32; 3]; 3];
+
 pub(super) fn linear(a: Mat4, b: Mat4, t: f32) -> Mat4 {
     std::array::from_fn(|i| std::array::from_fn(|j| a[i][j] + (b[i][j] - a[i][j]) * t))
 }
 
 pub(crate) fn rigid(a: Mat4, b: Mat4, t: f32) -> Option<Mat4> {
-    let (sa, mut qa) = decompose(a)?;
+    let (sa, qa) = decompose(a)?;
     let (sb, qb) = decompose(b)?;
+    let mut result = slerp(qa, qb, t);
+    for i in 0..3 {
+        let scale = sa[i] + (sb[i] - sa[i]) * t;
+        for value in &mut result[i][..3] {
+            *value *= scale;
+        }
+        result[3][i] = a[3][i] + (b[3][i] - a[3][i]) * t;
+    }
+    Some(result)
+}
+
+/// Blends `K · R` per endpoint, where R is the Gram–Schmidt rotation and `K = M · Rᵀ` keeps
+/// whatever the guest's matrix has beyond rotation and scale, so no rigidity tolerance applies.
+pub(crate) fn residual(a: Mat4, b: Mat4, t: f32) -> Option<Mat4> {
+    let (_, ra, qa) = frame(a, false)?;
+    let (_, rb, qb) = frame(b, false)?;
+    let rotation = slerp(qa, qb, t);
+    let stretch =
+        |m: Mat4, r: Basis, i: usize, k: usize| (0..3).map(|j| m[i][j] * r[k][j]).sum::<f32>();
+    let k: Basis = std::array::from_fn(|i| {
+        std::array::from_fn(|k| {
+            let ka = stretch(a, ra, i, k);
+            ka + (stretch(b, rb, i, k) - ka) * t
+        })
+    });
+    let mut result = rotation;
+    for i in 0..3 {
+        for j in 0..3 {
+            result[i][j] = (0..3).map(|n| k[i][n] * rotation[n][j]).sum();
+        }
+        result[3][i] = a[3][i] + (b[3][i] - a[3][i]) * t;
+    }
+    Some(result)
+}
+
+fn slerp(mut qa: [f32; 4], qb: [f32; 4], t: f32) -> Mat4 {
     let mut dot: f32 = qa.into_iter().zip(qb).map(|(a, b)| a * b).sum();
     if dot < 0.0 {
         qa = qa.map(|v| -v);
@@ -25,7 +63,7 @@ pub(crate) fn rigid(a: Mat4, b: Mat4, t: f32) -> Option<Mat4> {
     let norm = q.into_iter().map(|v| v * v).sum::<f32>().sqrt();
     q = q.map(|v| v / norm);
     let [x, y, z, w] = q;
-    let mut result = [
+    [
         [
             1.0 - 2.0 * (y * y + z * z),
             2.0 * (x * y + z * w),
@@ -45,18 +83,14 @@ pub(crate) fn rigid(a: Mat4, b: Mat4, t: f32) -> Option<Mat4> {
             0.0,
         ],
         [0.0, 0.0, 0.0, 1.0],
-    ];
-    for i in 0..3 {
-        let scale = sa[i] + (sb[i] - sa[i]) * t;
-        for value in &mut result[i][..3] {
-            *value *= scale;
-        }
-        result[3][i] = a[3][i] + (b[3][i] - a[3][i]) * t;
-    }
-    Some(result)
+    ]
 }
 
 fn decompose(m: Mat4) -> Option<([f32; 3], [f32; 4])> {
+    frame(m, true).map(|(scales, _, q)| (scales, q))
+}
+
+fn frame(m: Mat4, rigid: bool) -> Option<([f32; 3], Basis, [f32; 4])> {
     if !m.iter().flatten().all(|x| x.is_finite())
         || m[0][3] != 0.0
         || m[1][3] != 0.0
@@ -78,14 +112,17 @@ fn decompose(m: Mat4) -> Option<([f32; 3], [f32; 4])> {
     }
     let mut r: [[f32; 3]; 3] =
         std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] / scales[i]));
-    // Truncating three signed 16.16 components bounds each row's error by sqrt(3) / 2^16.
-    let row_error = 3.0_f32.sqrt() / 65536.0;
-    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
-        let ei = row_error / scales[i];
-        let ej = row_error / scales[j];
-        let tolerance = ei + ej + ei * ej + 8.0 * f32::EPSILON;
-        if tolerance >= 1.0 || (0..3).map(|k| r[i][k] * r[j][k]).sum::<f32>().abs() > tolerance {
-            return None;
+    if rigid {
+        // Truncating three signed 16.16 components bounds each row's error by sqrt(3) / 2^16.
+        let row_error = 3.0_f32.sqrt() / 65536.0;
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+            let ei = row_error / scales[i];
+            let ej = row_error / scales[j];
+            let tolerance = ei + ej + ei * ej + 8.0 * f32::EPSILON;
+            if tolerance >= 1.0 || (0..3).map(|k| r[i][k] * r[j][k]).sum::<f32>().abs() > tolerance
+            {
+                return None;
+            }
         }
     }
     let projection = (0..3).map(|k| r[0][k] * r[1][k]).sum::<f32>();
@@ -127,7 +164,7 @@ fn decompose(m: Mat4) -> Option<([f32; 3], [f32; 4])> {
         q[3] = (r[j][k] - r[k][j]) / s;
         q
     };
-    Some((scales, q))
+    Some((scales, r, q))
 }
 
 fn basis_matrix(basis: [[f32; 3]; 3]) -> Mat4 {
@@ -312,6 +349,48 @@ mod tests {
             assert!(decompose(invalid).is_none());
             assert!(rigid(invalid, invalid, 0.5).is_none());
         }
+    }
+
+    #[test]
+    fn residual_blend_keeps_shear_rigid_rejects() {
+        let (s, c) = 0.4_f32.sin_cos();
+        let mut a = [
+            [0.25 * c, 0.25 * s, 0.0, 0.0],
+            [-0.25 * s, 0.25 * c, 0.0, 0.0],
+            [0.0, 0.0, 0.25, 0.0],
+            [1.0, 2.0, 3.0, 1.0],
+        ];
+        a[0][2] = 0.01;
+        let mut b = a;
+        b[3] = [5.0, -2.0, 3.0, 1.0];
+        assert!(rigid(a, b, 0.5).is_none());
+        for (t, end) in [(0.0, a), (1.0, b)] {
+            let m = residual(a, b, t).unwrap();
+            for (got, want) in m.iter().flatten().zip(end.iter().flatten()) {
+                assert!((got - want).abs() < 1e-6, "{t}: {m:?} != {end:?}");
+            }
+        }
+        let mid = residual(a, b, 0.5).unwrap();
+        assert_eq!(mid[3], [3.0, 0.0, 3.0, 1.0]);
+        assert!((mid[0][2] - 0.01).abs() < 1e-6);
+
+        let turned = [
+            [0.0, 2.0, 0.0, 0.0],
+            [-3.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 4.0, 0.0],
+            [8.0, -4.0, 2.0, 1.0],
+        ];
+        for t in [0.25, 0.5, 0.75] {
+            let r = rigid(identity(), turned, t).unwrap();
+            let k = residual(identity(), turned, t).unwrap();
+            for (r, k) in r.iter().flatten().zip(k.iter().flatten()) {
+                assert!((r - k).abs() < 1e-5, "{t}: {r} != {k}");
+            }
+        }
+
+        let mut reflection = a;
+        reflection[2][2] = -0.25;
+        assert!(residual(reflection, reflection, 0.5).is_none());
     }
 
     #[test]

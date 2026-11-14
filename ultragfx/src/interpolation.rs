@@ -229,6 +229,7 @@ struct PhaseDraw {
 
 enum ModelMatch {
     Interpolate(usize),
+    Residual(usize),
     Billboard(BillboardRecipe, BillboardRecipe),
 }
 
@@ -632,14 +633,25 @@ fn correspondence(a: &Scene, b: &Scene) -> Option<Correspondence> {
         let scope_camera = camera(br, bdraws);
         let restriction = if matches!(
             annotation.policy,
-            TransformPolicy::Interpolate | TransformPolicy::BillboardHold(_)
+            TransformPolicy::Interpolate
+                | TransformPolicy::InterpolateResidual
+                | TransformPolicy::BillboardHold(_)
         ) {
             match matched {
                 None => Some(RestrictionReason::NoMatch),
                 Some(bi) => {
                     let bp = br.sidecar.draws[bi].policy;
                     match (annotation.policy, bp) {
-                        (TransformPolicy::Interpolate, TransformPolicy::Interpolate) => {
+                        (TransformPolicy::Interpolate, TransformPolicy::Interpolate)
+                        | (
+                            TransformPolicy::InterpolateResidual,
+                            TransformPolicy::InterpolateResidual,
+                        ) => {
+                            let blend = if annotation.policy == TransformPolicy::Interpolate {
+                                math::rigid
+                            } else {
+                                math::residual
+                            };
                             if adraws.len() != bdraws.len()
                                 || adraws.iter().zip(bdraws).any(|(&ad, &bd)| {
                                     (0..3).any(|corner| {
@@ -656,7 +668,7 @@ fn correspondence(a: &Scene, b: &Scene) -> Option<Correspondence> {
                                 Some(RestrictionReason::TopologyChanged)
                             } else if adraws.iter().zip(bdraws).any(|(&ad, &bd)| {
                                 (0..3).any(|corner| {
-                                    math::rigid(
+                                    blend(
                                         ar.draws[ad].vertices[corner].transform.unwrap().model,
                                         br.draws[bd].vertices[corner].transform.unwrap().model,
                                         0.5,
@@ -728,6 +740,7 @@ fn correspondence(a: &Scene, b: &Scene) -> Option<Correspondence> {
             let model = if restriction.is_none() {
                 match annotation.policy {
                     TransformPolicy::Interpolate => Some(ModelMatch::Interpolate(bdraws[i])),
+                    TransformPolicy::InterpolateResidual => Some(ModelMatch::Residual(bdraws[i])),
                     TransformPolicy::BillboardHold(a) => {
                         let TransformPolicy::BillboardHold(b) =
                             br.sidecar.draws[matched.unwrap()].policy
@@ -763,6 +776,12 @@ fn phase_scene(a: &Scene, b: &Scene, correspondence: &Correspondence, t: f32) ->
             let at = a.transform.unwrap();
             let model = match draw.model {
                 Some(ModelMatch::Interpolate(bi)) => math::rigid(
+                    at.model,
+                    br.draws[bi].vertices[corner].transform.unwrap().model,
+                    t,
+                )
+                .unwrap(),
+                Some(ModelMatch::Residual(bi)) => math::residual(
                     at.model,
                     br.draws[bi].vertices[corner].transform.unwrap().model,
                     t,
