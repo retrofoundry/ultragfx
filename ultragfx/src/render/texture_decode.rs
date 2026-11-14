@@ -1,12 +1,10 @@
-use std::borrow::Cow;
-
 use crate::{
     hle::texture_request::{EncodedInput, EncodedTextureRequest},
     profiling::Recorder,
 };
 
 const SHADER: &str = include_str!("texture_decode.wgsl");
-const PARAM_BYTES: u64 = 64;
+pub(crate) const PARAM_BYTES: u64 = 64;
 
 pub(crate) struct DecodePipeline {
     pipeline: wgpu::ComputePipeline,
@@ -25,8 +23,6 @@ impl DecodeStaging {
 }
 
 pub(crate) struct DecodeJob {
-    #[cfg(test)]
-    pub(crate) upload: (Vec<u8>, [u8; PARAM_BYTES as usize]),
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub staging: DecodeStaging,
@@ -155,37 +151,14 @@ impl DecodePipeline {
         profiling: &Recorder,
         staging: Option<DecodeStaging>,
     ) -> DecodeJob {
-        self.create_job_input(device, queue, request, profiling, staging, None)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn create_job_input(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        request: &EncodedTextureRequest,
-        profiling: &Recorder,
-        staging: Option<DecodeStaging>,
-        framebuffer: Option<(Vec<u8>, bool, u32, u32)>,
-    ) -> DecodeJob {
         let EncodedInput::Tmem(bank) = request.input();
-        let mut input = Cow::Borrowed(&bank[..]);
-        let mut params = DecodeParams::new(request);
-        if let Some((bytes, materialize, scale, metadata)) = framebuffer {
-            params.words[3][0] = metadata;
-            params.words[3][3] = scale;
-            params.words[0][0] *= scale;
-            params.words[0][1] *= scale;
-            input = Cow::Owned(bytes);
-            params.words[3][1] = 1024;
-            params.words[3][2] = u32::from(materialize);
-        }
+        let params = DecodeParams::new(request);
         let staging = staging
-            .filter(|v| v.capacity() >= input.len() as u64)
+            .filter(|v| v.capacity() >= bank.len() as u64)
             .unwrap_or_else(|| {
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("texture-decode-input"),
-                    size: input.len() as u64,
+                    size: bank.len() as u64,
                     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
@@ -202,17 +175,51 @@ impl DecodePipeline {
                     params,
                 }
             });
-        queue.write_buffer(&staging.input, 0, &input);
+        queue.write_buffer(&staging.input, 0, &bank[..]);
         queue.write_buffer(&staging.params, 0, &params.bytes());
-        profiling.count(
-            "buffer.texture_decode_input.upload_bytes",
-            input.len() as u64,
+        count_uploads(profiling, bank.len() as u64, 1);
+        let (texture, view, extent) = self.output(device, &params, profiling);
+        let bind_group = self.bind_group(
+            device,
+            staging.input.as_entire_buffer_binding(),
+            staging.params.as_entire_buffer_binding(),
+            &view,
         );
-        profiling.count("buffer.texture_decode_uniform.upload_bytes", PARAM_BYTES);
-        profiling.count("tmem.decode_input_upload_calls", 1);
-        profiling.count("tmem.decode_uniform_upload_calls", 1);
-        profiling.count("tmem.decode_input_upload_bytes", input.len() as u64);
-        profiling.count("tmem.decode_uniform_upload_bytes", PARAM_BYTES);
+        DecodeJob {
+            texture,
+            view,
+            staging,
+            bind_group,
+            extent,
+        }
+    }
+
+    pub(crate) fn framebuffer_output(
+        &self,
+        device: &wgpu::Device,
+        request: &EncodedTextureRequest,
+        profiling: &Recorder,
+        materialize: bool,
+        scale: u32,
+        metadata: u32,
+    ) -> ([u8; PARAM_BYTES as usize], wgpu::TextureView, [u32; 2]) {
+        let mut params = DecodeParams::new(request);
+        params.words[3][0] = metadata;
+        params.words[3][3] = scale;
+        params.words[0][0] *= scale;
+        params.words[0][1] *= scale;
+        params.words[3][1] = 1024;
+        params.words[3][2] = u32::from(materialize);
+        let (_, view, extent) = self.output(device, &params, profiling);
+        (params.bytes(), view, extent)
+    }
+
+    fn output(
+        &self,
+        device: &wgpu::Device,
+        params: &DecodeParams,
+        profiling: &Recorder,
+    ) -> (wgpu::Texture, wgpu::TextureView, [u32; 2]) {
         let extent = [params.words[0][0], params.words[0][1]];
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("texture-decode-output"),
@@ -236,42 +243,44 @@ impl DecodePipeline {
             u64::from(extent[0]) * u64::from(extent[1]) * 4,
         );
         let view = texture.create_view(&Default::default());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        (texture, view, extent)
+    }
+
+    pub(crate) fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        input: wgpu::BufferBinding,
+        params: wgpu::BufferBinding,
+        view: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("texture-decode"),
             layout: &self.layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: staging.input.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(input),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: staging.params.as_entire_binding(),
+                    resource: wgpu::BindingResource::Buffer(params),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(view),
                 },
             ],
-        });
-        DecodeJob {
-            #[cfg(test)]
-            upload: (input.to_vec(), params.bytes()),
-            texture,
-            view,
-            staging,
-            bind_group,
-            extent,
-        }
+        })
     }
 
-    pub(crate) fn encode(
+    pub(crate) fn encode<'a>(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        jobs: &[DecodeJob],
+        jobs: impl IntoIterator<Item = (&'a wgpu::BindGroup, [u32; 2])>,
         profiling: &Recorder,
     ) {
-        if jobs.is_empty() {
+        let mut jobs = jobs.into_iter().peekable();
+        if jobs.peek().is_none() {
             return;
         }
         profiling.count("tmem.decode_compute_passes", 1);
@@ -280,12 +289,30 @@ impl DecodePipeline {
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.pipeline);
-        for job in jobs {
-            pass.set_bind_group(0, &job.bind_group, &[]);
-            pass.dispatch_workgroups(job.extent[0].div_ceil(8), job.extent[1].div_ceil(8), 1);
+        for (bind_group, extent) in jobs {
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups(extent[0].div_ceil(8), extent[1].div_ceil(8), 1);
             profiling.count("tmem.decode_dispatches", 1);
         }
     }
+}
+
+impl DecodeJob {
+    pub(crate) fn dispatch(&self) -> (&wgpu::BindGroup, [u32; 2]) {
+        (&self.bind_group, self.extent)
+    }
+}
+
+pub(crate) fn count_uploads(profiling: &Recorder, input_bytes: u64, jobs: u64) {
+    profiling.count("buffer.texture_decode_input.upload_bytes", input_bytes);
+    profiling.count(
+        "buffer.texture_decode_uniform.upload_bytes",
+        PARAM_BYTES * jobs,
+    );
+    profiling.count("tmem.decode_input_upload_calls", 1);
+    profiling.count("tmem.decode_uniform_upload_calls", 1);
+    profiling.count("tmem.decode_input_upload_bytes", input_bytes);
+    profiling.count("tmem.decode_uniform_upload_bytes", PARAM_BYTES * jobs);
 }
 
 #[cfg(test)]
@@ -328,7 +355,11 @@ pub(crate) async fn readback_requests(
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("texture-decode-readback"),
     });
-    pipeline.encode(&mut encoder, &jobs, &profiling);
+    pipeline.encode(
+        &mut encoder,
+        jobs.iter().map(DecodeJob::dispatch),
+        &profiling,
+    );
     let buffers: Vec<_> = jobs
         .iter()
         .map(|job| {

@@ -196,7 +196,11 @@ impl TextureResources {
     }
 
     pub fn encode(&self, encoder: &mut wgpu::CommandEncoder, profiling: &Recorder) {
-        self.pipeline.encode(encoder, &self.jobs, profiling);
+        self.pipeline.encode(
+            encoder,
+            self.jobs.iter().map(DecodeJob::dispatch),
+            profiling,
+        );
     }
 
     pub fn submitted(&mut self, queue: &wgpu::Queue, profiling: &Recorder) {
