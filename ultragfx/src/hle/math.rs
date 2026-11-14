@@ -12,6 +12,51 @@ pub fn identity() -> Mat4 {
     ]
 }
 
+/// The identity as the RSP's 16 s15.16 words, row-major.
+pub const FX_IDENTITY: [i32; 16] = [
+    0x10000, 0, 0, 0, 0, 0x10000, 0, 0, 0, 0, 0x10000, 0, 0, 0, 0, 0x10000,
+];
+
+/// The RSP's 48-bit accumulator.
+fn acc48(acc: i64) -> i64 {
+    acc << 16 >> 16
+}
+
+/// `mtx_multiply` in f3dex2.s: each term floored to s15.16 before the sum (`vmadl` keeps the
+/// high half of frac×frac), the integer half read out with `vmadh`'s s16 clamp and the fraction
+/// with `vmadn`'s. Rows 2 and 3 read their fraction at the last term's `vmadn`, before its
+/// int×int `vmadh`, so it is clamped against that partial sum.
+pub fn mul_fx(a: [i32; 16], b: [i32; 16]) -> [i32; 16] {
+    std::array::from_fn(|ij| {
+        let (i, j) = (ij / 4, ij % 4);
+        let full = acc48(
+            (0..4)
+                .map(|k| (i64::from(a[i * 4 + k]) * i64::from(b[k * 4 + j])) >> 16)
+                .sum(),
+        );
+        let early = if i < 2 {
+            full
+        } else {
+            acc48(full - ((i64::from(a[i * 4 + 3] >> 16) * i64::from(b[12 + j] >> 16)) << 16))
+        };
+        let frac = match early >> 16 {
+            h if h > 0x7fff => 0xffff,
+            h if h < -0x8000 => 0,
+            _ => early & 0xffff,
+        };
+        (((full >> 16).clamp(-0x8000, 0x7fff) << 16) | frac) as i32
+    })
+}
+
+/// `VTX_W_INT`: W summed exactly from the MVP's last column, its integer half clamped to s16.
+pub fn w_int_fx(pos: [i16; 3], m: [i32; 16]) -> i16 {
+    let acc = i64::from(m[15])
+        + (0..3)
+            .map(|r| i64::from(pos[r]) * i64::from(m[r * 4 + 3]))
+            .sum::<i64>();
+    (acc48(acc) >> 16).clamp(i16::MIN.into(), i16::MAX.into()) as i16
+}
+
 /// Row-vector * matrix: out[c] = sum_k v[k] * m[k][c].
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn mul_row_vec4(v: [f32; 4], m: Mat4) -> [f32; 4] {

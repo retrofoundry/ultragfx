@@ -128,6 +128,20 @@ impl<'a> HostMemory<'a> {
     unsafe fn read_unaligned<T: Copy>(address: u64) -> T {
         unsafe { ptr::read_unaligned(address as *const T) }
     }
+
+    /// Callers check the 64-byte span first.
+    fn fixed_matrix_words(&self, address: u64) -> [i32; 16] {
+        std::array::from_fn(|k| {
+            let word_index = (k / 2) as u64;
+            let integer = unsafe { Self::read_unaligned::<u32>(address + word_index * 4) };
+            let fraction = unsafe { Self::read_unaligned::<u32>(address + (8 + word_index) * 4) };
+            if k % 2 == 0 {
+                ((integer & 0xffff_0000) | (fraction >> 16)) as i32
+            } else {
+                ((integer << 16) | (fraction & 0xffff)) as i32
+            }
+        })
+    }
 }
 
 impl Rdram for HostMemory<'_> {
@@ -254,22 +268,18 @@ impl Rdram for HostMemory<'_> {
                 }
             }
             GbiDataFormat::Fixed => {
-                for (row_index, row) in matrix.iter_mut().enumerate() {
-                    for column_pair in 0..2 {
-                        let word_index = (row_index * 2 + column_pair) as u64;
-                        let integer =
-                            unsafe { Self::read_unaligned::<u32>(address + word_index * 4) };
-                        let fraction =
-                            unsafe { Self::read_unaligned::<u32>(address + (8 + word_index) * 4) };
-                        row[column_pair * 2] =
-                            (((integer & 0xffff_0000) | (fraction >> 16)) as i32) as f32 / 65536.0;
-                        row[column_pair * 2 + 1] =
-                            (((integer << 16) | (fraction & 0xffff)) as i32) as f32 / 65536.0;
-                    }
+                let words = self.fixed_matrix_words(address);
+                for (k, cell) in matrix.iter_mut().flatten().enumerate() {
+                    *cell = words[k] as f32 / 65536.0;
                 }
             }
         }
         Ok(matrix)
+    }
+
+    fn read_matrix_words(&self, address: u64) -> Result<Option<[i32; 16]>, MemoryError> {
+        self.checked_span(address, 64)?;
+        Ok(Some(self.fixed_matrix_words(address)))
     }
 
     fn vertex_stride(&self, format: GbiDataFormat) -> Result<u64, MemoryError> {

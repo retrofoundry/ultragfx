@@ -183,6 +183,14 @@ pub trait Rdram {
     fn read_bytes(&self, address: u64, length: usize) -> Result<Cow<'_, [u8]>, MemoryError>;
     fn read_matrix(&self, address: u64, format: GbiDataFormat) -> Result<Matrix, MemoryError>;
 
+    /// Returns a Fixed-format matrix as its 16 s15.16 words, row-major, which F3DZEX's W branch
+    /// needs to compute W as the RSP does. Backends without them leave this at its default and
+    /// the branch uses the float matrix; wrappers must forward this to preserve their backend's
+    /// words.
+    fn read_matrix_words(&self, _address: u64) -> Result<Option<[i32; 16]>, MemoryError> {
+        Ok(None)
+    }
+
     /// Decodes the fields consumed by the requested background command.
     fn read_obj_bg(&self, address: u64, _kind: ObjBgKind) -> Result<ObjBg, MemoryError> {
         Err(memory_error(address, 0, MemoryErrorKind::UnsupportedFormat))
@@ -364,18 +372,20 @@ impl<'a> RdramImage<'a> {
         Ok(Cow::Owned(bytes))
     }
 
-    fn decode_matrix(&self, address: u64) -> Result<Matrix, MemoryError> {
+    fn decode_matrix_words(&self, address: u64) -> Result<[i32; 16], MemoryError> {
         let bytes = self.read_data(address, 64)?;
-        let mut matrix = [[0.0; 4]; 4];
-        for (row_index, row) in matrix.iter_mut().enumerate() {
-            for (column_index, cell) in row.iter_mut().enumerate() {
-                let k = row_index * 4 + column_index;
-                let integer = i16::from_be_bytes([bytes[k * 2], bytes[k * 2 + 1]]) as i32;
-                let fraction = u16::from_be_bytes([bytes[32 + k * 2], bytes[33 + k * 2]]) as i32;
-                *cell = ((integer << 16) | fraction) as f32 / 65536.0;
-            }
-        }
-        Ok(matrix)
+        Ok(std::array::from_fn(|k| {
+            let integer = i16::from_be_bytes([bytes[k * 2], bytes[k * 2 + 1]]) as i32;
+            let fraction = u16::from_be_bytes([bytes[32 + k * 2], bytes[33 + k * 2]]) as i32;
+            (integer << 16) | fraction
+        }))
+    }
+
+    fn decode_matrix(&self, address: u64) -> Result<Matrix, MemoryError> {
+        let words = self.decode_matrix_words(address)?;
+        Ok(std::array::from_fn(|row| {
+            std::array::from_fn(|column| words[row * 4 + column] as f32 / 65536.0)
+        }))
     }
 
     fn range(&self, address: u64, length: u64) -> Result<Range<usize>, MemoryError> {
@@ -477,6 +487,10 @@ impl Rdram for RdramImage<'_> {
                 MemoryErrorKind::UnsupportedFormat,
             )),
         }
+    }
+
+    fn read_matrix_words(&self, address: u64) -> Result<Option<[i32; 16]>, MemoryError> {
+        self.decode_matrix_words(address).map(Some)
     }
 
     fn read_vertex(&self, address: u64, format: GbiDataFormat) -> Result<RawVertex, MemoryError> {
