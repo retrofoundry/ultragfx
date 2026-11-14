@@ -808,6 +808,14 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
                 if let Some(observed) = &mut observed {
                     observed.push_word(pc1, &cmd1);
                 }
+                // F3DEX2 dispatches the texrect's E1 like any other, so it replaces the latch.
+                if matches!(
+                    ucode,
+                    crate::hle::gbi::GbiUcode::F3dex2 | crate::hle::gbi::GbiUcode::F3dex2NoN
+                ) && cmd1.w0 >> 24 == crate::hle::consts::G_RDPHALF_1 as u32
+                {
+                    rdphalf_1 = Some(cmd1.w1_addr);
+                }
                 if ucode == crate::hle::gbi::GbiUcode::S2dex2
                     && op == crate::hle::consts::G_TEXRECT
                     && cmd1.w0 >> 24 == 0x04

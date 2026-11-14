@@ -1590,7 +1590,7 @@ fn conditional_control_modifyvtx_and_quad_have_one_step_per_dispatch() {
         gsp_modifyvertex(0, 0x1c, 1 << 16),
     ];
     commands.extend(gsp_branch_less_z_raw(target, 0, 0));
-    commands.extend(gsp_branch_less_z_raw(target, 0, u32::MAX));
+    commands.extend(gsp_branch_less_z_raw(target, 0, (1 << 16) + 1));
     commands.push(gsp_enddl());
     let entry = b.list("main", &commands) as u64 + 8;
     let built = b.finish("main");

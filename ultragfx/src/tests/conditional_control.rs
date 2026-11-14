@@ -245,15 +245,20 @@ fn culldl_ignores_face_mode_and_clipratio() {
 
 #[test]
 fn branchz_below_equal_above() {
-    // Identity projection and the default viewport put z=0 at raw screen Z=511.
-    for (threshold, taken) in [
-        (0x01fe_ffff, false),
-        (0x01ff_0000, true),
-        (0x01ff_0001, true),
-        (0xffff_ffff, true),
+    // Identity projection and the default viewport put z=0 at raw screen Z=511 and z=-2 at -511,
+    // which the microcode stores as 0. It branches when the wrapped 32-bit vertex Z minus the
+    // threshold is negative.
+    for (z, threshold, taken) in [
+        (0, 0x01fe_ffff, false),
+        (0, 0x01ff_0000, false),
+        (0, 0x01ff_0001, true),
+        (0, 0xffff_ffff, false),
+        (0, 0x8000_0000, true),
+        (-2, 0, false),
+        (-2, 0x8000_0000, true),
     ] {
         let mut b = DlBuilder::new();
-        let v = vertex(&mut b, &[[0, 0, 0]]);
+        let v = vertex(&mut b, &[[0, 0, z]]);
         let target = b.list("target", &[MARK, END]);
         let entry = b.list(
             "main",
@@ -281,8 +286,9 @@ fn branchz_uses_load_viewport_and_modified_z() {
     for (modify, taken) in [
         (None, false),
         (Some(0x0031_ffff), true),
-        (Some(0x0032_0000), true),
+        (Some(0x0032_0000), false),
         (Some(0x0032_0001), false),
+        (Some(0xffff_0000), true),
     ] {
         let mut b = DlBuilder::new();
         let v = vertex(&mut b, &[[0, 0, 1]]);
@@ -368,6 +374,37 @@ fn branchz_requires_half1_each_task() {
 }
 
 #[test]
+fn texrect_half1_feeds_the_branch_but_an_out_of_range_vertex_rejects() {
+    // Swap 3404's compass list: the minimap texrect's E1 (s = t = 0) is the last one before a
+    // BRANCH_Z whose vertex index is out of range.
+    let mut b = DlBuilder::new();
+    let entry = b.list(
+        "main",
+        &[
+            (0xff10_0003, 0x1000),
+            (0xe401_0010, 0),
+            (HALF, 0),
+            (0xf100_0000, 0x0400_0400),
+            (0x0404_2a07, 0x062a_2a06),
+            MARK,
+            END,
+        ],
+    );
+    let r = walk(b, &offsets(entry, &[0, 1, 2, 3, 4]));
+    assert_eq!(r.scene, crate::hle::Scene::default());
+    assert_eq!(
+        r.diags,
+        vec![crate::Diagnostic {
+            at: entry as u64 + 32,
+            kind: crate::DiagKind::InvalidConditionalVertex {
+                opcode: crate::hle::consts::G_BRANCH_Z,
+                index: 1283,
+            },
+        }]
+    );
+}
+
+#[test]
 fn branchz_segmented_target_returns_to_original_caller() {
     let mut b = DlBuilder::new();
     let v = vertex(&mut b, &[[0, 0, 0]]);
@@ -416,9 +453,9 @@ fn half1_then_texrect_then_branch() {
         &[
             (0xff10_0003, 0x1000),
             gsp_vertex(0, 1, v),
-            (HALF, target),
-            (0xe401_0010, 0),
             (HALF, 0xffff_fff0),
+            (0xe401_0010, 0),
+            (HALF, target),
             (0xf100_0000, 0x0400_0400),
             (BRANCH, 512 << 16),
             (0x0100_1002, 0xffff_fff0),
@@ -614,7 +651,7 @@ fn conditional_invalid_transform_rejects_task() {
 #[test]
 fn conditional_homogeneous_projection() {
     for (x, z, threshold, culled, taken) in [
-        (2.0, 0.0, 511 << 16, false, true),
+        (2.0, 0.0, (511 << 16) + 1, false, true),
         (2.25, 0.0, 511 << 16, true, false),
         (0.0, 1.0, 766 << 16, false, false),
         (0.0, 1.0, 767 << 16, false, true),
