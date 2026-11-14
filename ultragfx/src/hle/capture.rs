@@ -509,28 +509,40 @@ trait DecodeMemory {
                 MemoryErrorKind::UnsupportedFormat,
             ));
         }
-        let bytes = self.bytes(address, 64)?;
-        let word = |off: usize, n: usize| self.layout().word(&bytes[off..off + n]) as u32;
         let mut out = [[0.0; 4]; 4];
-        for (k, v) in out.iter_mut().flatten().enumerate() {
-            *v = match format {
-                DataFormat::Float => f32::from_bits(word(k * 4, 4)),
-                DataFormat::Fixed => {
-                    let (hi, lo) = match self.layout().fixed_matrix_packing {
-                        FixedMatrixPacking::SplitHalfwords => (word(k * 2, 2), word(32 + k * 2, 2)),
-                        FixedMatrixPacking::PackedWords => {
-                            let shift = if k.is_multiple_of(2) { 16 } else { 0 };
-                            (
-                                (word(k / 2 * 4, 4) >> shift) & 0xffff,
-                                (word(32 + k / 2 * 4, 4) >> shift) & 0xffff,
-                            )
-                        }
-                    };
-                    ((hi << 16 | lo) as i32) as f32 / 65536.0
+        match format {
+            DataFormat::Float => {
+                let bytes = self.bytes(address, 64)?;
+                for (k, v) in out.iter_mut().flatten().enumerate() {
+                    *v = f32::from_bits(self.layout().word(&bytes[k * 4..k * 4 + 4]) as u32);
                 }
-            };
+            }
+            DataFormat::Fixed => {
+                let words = self.matrix_words(address)?;
+                for (k, v) in out.iter_mut().flatten().enumerate() {
+                    *v = words[k] as f32 / 65536.0;
+                }
+            }
         }
         Ok(out)
+    }
+
+    fn matrix_words(&self, address: u64) -> std::result::Result<[i32; 16], MemoryError> {
+        let bytes = self.bytes(address, 64)?;
+        let word = |off: usize, n: usize| self.layout().word(&bytes[off..off + n]) as u32;
+        Ok(std::array::from_fn(|k| {
+            let (hi, lo) = match self.layout().fixed_matrix_packing {
+                FixedMatrixPacking::SplitHalfwords => (word(k * 2, 2), word(32 + k * 2, 2)),
+                FixedMatrixPacking::PackedWords => {
+                    let shift = if k.is_multiple_of(2) { 16 } else { 0 };
+                    (
+                        (word(k / 2 * 4, 4) >> shift) & 0xffff,
+                        (word(32 + k / 2 * 4, 4) >> shift) & 0xffff,
+                    )
+                }
+            };
+            (hi << 16 | lo) as i32
+        }))
     }
 
     fn vertex(
@@ -705,6 +717,14 @@ impl<R: Rdram> Rdram for RecordingRdram<'_, R> {
         let matrix = self.source(self.inner.read_matrix(address, format))?;
         self.bytes(address, 64)?;
         Ok(matrix)
+    }
+    fn read_matrix_words(
+        &self,
+        address: u64,
+    ) -> std::result::Result<Option<[i32; 16]>, MemoryError> {
+        let words = self.source(self.inner.read_matrix_words(address))?;
+        self.bytes(address, 64)?;
+        Ok(words)
     }
     fn vertex_stride(&self, format: DataFormat) -> std::result::Result<u64, MemoryError> {
         self.inner.vertex_stride(format)
@@ -1005,6 +1025,12 @@ impl Rdram for ReplayRdram<'_> {
         format: DataFormat,
     ) -> std::result::Result<Mat4, MemoryError> {
         self.matrix(address, format)
+    }
+    fn read_matrix_words(
+        &self,
+        address: u64,
+    ) -> std::result::Result<Option<[i32; 16]>, MemoryError> {
+        self.matrix_words(address).map(Some)
     }
     fn vertex_stride(&self, format: DataFormat) -> std::result::Result<u64, MemoryError> {
         if self.layout().address_space == AddressSpace::Image && format == DataFormat::Float {

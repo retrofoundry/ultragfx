@@ -3,7 +3,9 @@
 
 use crate::hle::gbi::f3dex2::F3DEX2_CONSTS;
 use crate::hle::interp::checked_span;
-use crate::hle::math::{identity, mul4, mul_col_vec3, mul_row_vec4, Mat4};
+use crate::hle::math::{
+    identity, mul4, mul_col_vec3, mul_fx, mul_row_vec4, w_int_fx, Mat4, FX_IDENTITY,
+};
 use crate::hle::mem::Rdram;
 use crate::hle::mem::{MemoryError, MemoryErrorKind};
 pub use crate::scene::{
@@ -37,7 +39,7 @@ pub struct Rsp {
     pub(crate) obj_render_mode: u32,
     /// The MVP and its table index that the microcode keeps in DMEM: the last one a vertex load
     /// computed or a force wrote.
-    dmem_mvp: (Mat4, u32),
+    dmem_mvp: (Mat4, Option<[i32; 16]>, u32),
     pub(crate) profiling: crate::profiling::Recorder,
     cache_global_index: [u32; RSP_MAX_VERTICES],
     loaded: [bool; RSP_MAX_VERTICES],
@@ -49,6 +51,11 @@ pub struct Rsp {
     model_stack_size: usize,
     viewproj: Mat4,
     mvp: Mat4,
+    // The RSP's s15.16 words for the matrices above, for F3DZEX's W branch. None in Float
+    // format or once a matrix came from a backend without words.
+    model_stack_fx: [Option<[i32; 16]>; RSP_MATRIX_STACK_SIZE],
+    viewproj_fx: Option<[i32; 16]>,
+    mvp_fx: Option<[i32; 16]>,
     vp_scale: [f32; 3],
     vp_trans: [f32; 3],
     geom: u32,
@@ -93,7 +100,7 @@ impl Default for Rsp {
             annotations: None,
             microcode: crate::Microcode::F3dex2,
             obj_render_mode: 0,
-            dmem_mvp: (identity(), 0),
+            dmem_mvp: (identity(), Some(FX_IDENTITY), 0),
             profiling: Default::default(),
             cache_global_index: [0u32; RSP_MAX_VERTICES],
             loaded: [false; RSP_MAX_VERTICES],
@@ -105,6 +112,9 @@ impl Default for Rsp {
             model_stack_size: 1,
             viewproj: identity(),
             mvp: identity(),
+            model_stack_fx: [Some(FX_IDENTITY); RSP_MATRIX_STACK_SIZE],
+            viewproj_fx: Some(FX_IDENTITY),
+            mvp_fx: Some(FX_IDENTITY),
             // Default: a full-screen FB_WIDTH x FB_HEIGHT viewport (half-extent = center).
             vp_scale: [FB_WIDTH / 2.0, FB_HEIGHT / 2.0, 511.0 / DEPTH_RANGE],
             vp_trans: [FB_WIDTH / 2.0, FB_HEIGHT / 2.0, 511.0 / DEPTH_RANGE],
@@ -217,7 +227,7 @@ impl Rsp {
                 self.lookat_axes = [[0.0; 3]; 2];
                 self.lookat_version += 1;
                 self.texture_state = TextureState::default();
-                (self.mvp, self.cur_mvp_index) = self.dmem_mvp;
+                (self.mvp, self.mvp_fx, self.cur_mvp_index) = self.dmem_mvp;
             }
             crate::hle::gbi::GbiUcode::S2dex2 => self.obj_render_mode = 0,
             crate::hle::gbi::GbiUcode::F3d => {}
@@ -225,7 +235,7 @@ impl Rsp {
     }
 
     pub(crate) fn prepare_vertex(&mut self) {
-        self.dmem_mvp = (self.mvp, self.cur_mvp_index);
+        self.dmem_mvp = (self.mvp, self.mvp_fx, self.cur_mvp_index);
     }
 
     pub fn geometry_mode(&self) -> u32 {
@@ -293,6 +303,9 @@ impl Rsp {
 
     fn recompute_mvp(&mut self) {
         self.mvp = mul4(self.model_stack[self.model_stack_size - 1], self.viewproj);
+        self.mvp_fx = self.model_stack_fx[self.model_stack_size - 1]
+            .zip(self.viewproj_fx)
+            .map(|(model, viewproj)| mul_fx(model, viewproj));
         // Append a new MVP table entry (dedup against the last to avoid trivial growth).
         if self.mvp_table.last() != Some(&self.mvp) {
             self.mvp_table.push(self.mvp);
@@ -302,12 +315,18 @@ impl Rsp {
 
     pub fn matrix<M: Rdram>(&mut self, mem: &M, addr: u64, params: u8) -> Result<(), MemoryError> {
         let m = mem.read_matrix(addr, self.data_format)?;
+        let m_fx = self.fixed_words(mem, addr)?;
         let is_proj = params & self.consts.g_mtx_projection != 0;
         let is_load = params & self.consts.g_mtx_load != 0;
         let is_push = params & self.consts.g_mtx_push != 0;
         if is_proj {
             // Projection is single (no stack), per spec §3.
             self.viewproj = if is_load { m } else { mul4(m, self.viewproj) };
+            self.viewproj_fx = if is_load {
+                m_fx
+            } else {
+                m_fx.zip(self.viewproj_fx).map(|(m, p)| mul_fx(m, p))
+            };
         } else {
             // Modelview stack: push copies the
             // current top, then LOAD/MUL always writes the (new) top — even when the push
@@ -315,6 +334,8 @@ impl Rsp {
             if is_push && self.model_stack_size < RSP_MATRIX_STACK_SIZE {
                 self.model_stack[self.model_stack_size] =
                     self.model_stack[self.model_stack_size - 1];
+                self.model_stack_fx[self.model_stack_size] =
+                    self.model_stack_fx[self.model_stack_size - 1];
                 self.model_stack_size += 1;
             }
             let top = self.model_stack_size - 1;
@@ -322,6 +343,12 @@ impl Rsp {
                 m
             } else {
                 mul4(m, self.model_stack[top])
+            };
+            self.model_stack_fx[top] = if is_load {
+                m_fx
+            } else {
+                m_fx.zip(self.model_stack_fx[top])
+                    .map(|(m, top)| mul_fx(m, top))
             };
         }
         if let Some(capture) = &mut self.annotations {
@@ -336,12 +363,20 @@ impl Rsp {
     /// their state.
     pub fn force_matrix<M: Rdram>(&mut self, mem: &M, addr: u64) -> Result<(), MemoryError> {
         self.mvp = mem.read_matrix(addr, self.data_format)?;
+        self.mvp_fx = self.fixed_words(mem, addr)?;
         if self.mvp_table.last() != Some(&self.mvp) {
             self.mvp_table.push(self.mvp);
         }
         self.cur_mvp_index = (self.mvp_table.len() - 1) as u32;
-        self.dmem_mvp = (self.mvp, self.cur_mvp_index);
+        self.dmem_mvp = (self.mvp, self.mvp_fx, self.cur_mvp_index);
         Ok(())
+    }
+
+    fn fixed_words<M: Rdram>(&self, mem: &M, addr: u64) -> Result<Option<[i32; 16]>, MemoryError> {
+        match self.data_format {
+            crate::hle::mem::GbiDataFormat::Fixed => mem.read_matrix_words(addr),
+            crate::hle::mem::GbiDataFormat::Float => Ok(None),
+        }
     }
 
     /// G_POPMTX: pop `count` modelview frames, never below 1.
@@ -558,7 +593,10 @@ impl Rsp {
                 })
             });
             // VTX_W_INT: the vmadh integer half of W, floored and saturated to 16 bits.
-            self.w_int[slot] = self.clip_codes[slot].map(|_| clip[3].floor() as i16);
+            let w_int = self.mvp_fx.map_or(clip[3].floor() as i16, |mvp| {
+                w_int_fx([x as i16, y as i16, z as i16], mvp)
+            });
+            self.w_int[slot] = self.clip_codes[slot].map(|_| w_int);
             scene.raw_pos.push(v.pos);
             scene.modify_flags.push(0);
             scene.modify_screen.push([0.0; 4]);

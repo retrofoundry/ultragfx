@@ -64,6 +64,9 @@ impl Rdram for Traced<'_> {
     ) -> Result<crate::hle::math::Mat4, crate::MemoryError> {
         Rdram::read_matrix(&self.image, address, format)
     }
+    fn read_matrix_words(&self, address: u64) -> Result<Option<[i32; 16]>, crate::MemoryError> {
+        self.image.read_matrix_words(address)
+    }
 }
 
 fn walk(b: DlBuilder, expected_offsets: &[u64]) -> InterpResult {
@@ -324,6 +327,86 @@ fn branchw_compares_floored_w_as_the_rsp_does() {
         }
         let r = walk_as(b, &expected, [GbiUcode::F3dzexNoN; 2]);
         assert!(r.diags.is_empty(), "{w} {threshold:x}: {:?}", r.diags);
+    }
+}
+
+fn fixed_matrix(b: &mut DlBuilder, words: &[(usize, i32)]) -> u32 {
+    let mut matrix = crate::hle::math::FX_IDENTITY;
+    for &(k, word) in words {
+        matrix[k] = word;
+    }
+    let integers = matrix.iter().flat_map(|w| ((w >> 16) as i16).to_be_bytes());
+    let fractions = matrix.iter().flat_map(|&w| (w as u16).to_be_bytes());
+    b.bytes(16, &integers.chain(fractions).collect::<Vec<_>>())
+}
+
+#[test]
+fn branchw_takes_w_from_the_rsps_fixed_point_mvp() {
+    // In each case the f32 transform floors W to the other side of the threshold.
+    for (case, projection, modelview, x, threshold, taken) in [
+        // 799 + 0xffff/65536 decodes to 800.0 in f32.
+        ("decode", &[(15, 0x031f_ffff)][..], &[][..], 0, 800, true),
+        // 2048 + 7/65536 decodes to 2048.0, so taking 7/65536 off lands at 2047.99988.
+        (
+            "dot product",
+            &[(3, -1), (15, (2048 << 16) + 7)][..],
+            &[][..],
+            7,
+            2048,
+            false,
+        ),
+        // 1.5 * (86 + 1/65536) + 1.5 * (86 - 1/65536) is 258, but each term floors first.
+        (
+            "per-term floor",
+            &[(11, 0x0056_0001), (15, 0x0055_ffff)][..],
+            &[(14, 0x0001_8000), (15, 0x0001_8000)][..],
+            0,
+            258,
+            true,
+        ),
+        // 200 * 256 saturates to 32767.99998 before the vertex subtracts 100.
+        (
+            "saturated element",
+            &[(3, -0x0001_0000), (15, 256 << 16)][..],
+            &[(15, 200 << 16)][..],
+            100,
+            32700,
+            true,
+        ),
+        // Row 3 takes its fraction before the last int×int product, so 200 * 256 reads 32767.0.
+        (
+            "row 3 read-out",
+            &[(3, -0x8000), (15, 256 << 16)][..],
+            &[(15, 200 << 16)][..],
+            1,
+            32767,
+            true,
+        ),
+    ] {
+        let mut b = DlBuilder::new();
+        let v = vertex(&mut b, &[[x, 0, 0]]);
+        let projection = fixed_matrix(&mut b, projection);
+        let modelview = fixed_matrix(&mut b, modelview);
+        let target = b.list("target", &[MARK, END]);
+        let entry = b.list(
+            "main",
+            &[
+                gsp_matrix(projection, true, true, false),
+                gsp_matrix(modelview, false, true, false),
+                gsp_vertex(3, 1, v),
+                (HALF, target),
+                (0x0400_f006, threshold),
+                END,
+            ],
+        );
+        let mut expected = offsets(entry, &[0, 1, 2, 3, 4]);
+        if taken {
+            expected.extend([target as u64, target as u64 + 8]);
+        } else {
+            expected.push(entry as u64 + 40);
+        }
+        let r = walk_as(b, &expected, [GbiUcode::F3dzexNoN; 2]);
+        assert!(r.diags.is_empty(), "{case}: {:?}", r.diags);
     }
 }
 
