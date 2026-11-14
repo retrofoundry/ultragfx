@@ -57,6 +57,8 @@ pub struct RenderMode {
     pub fog: bool,
     pub alpha_compare: AlphaCompare,
     pub cvg_x_alpha: bool,
+    /// G_TP_NONE (othermode_h bit 19 clear): triangles sample without the perspective divide.
+    pub texture_no_perspective: bool,
 }
 
 /// Decode the RDP othermode low word into a `RenderMode`. `geom` supplies the G_FOG bit.
@@ -109,6 +111,7 @@ pub fn decode_render_mode(other_mode_l: u32, other_mode_h: u32, geom: u32) -> Re
         fog: (geom & crate::hle::consts::G_FOG != 0) || fog_from_mux,
         alpha_compare,
         cvg_x_alpha: other_mode_l & CVG_X_ALPHA != 0,
+        texture_no_perspective: other_mode_h & (1 << 19) == 0,
     }
 }
 

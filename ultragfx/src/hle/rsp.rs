@@ -705,11 +705,32 @@ impl Rsp {
         for slot in [a, b, c] {
             self.used[slot as usize] = true;
         }
-        let (mut a, b, mut c) = (a, b, c);
+        let (mut a, mut b, mut c) = (a, b, c);
         // Cull-front: swap a<->c so the single binary cull state culls front faces.
         // The GPU rasterizer does the area test.
         if cull == self.consts.g_cull_front {
             std::mem::swap(&mut a, &mut c);
+        }
+        // The microcode divides a G_TP_NONE triangle's S/W by its largest 1/W, and the shader
+        // takes that 1/W from the first vertex.
+        if scene
+            .render_modes
+            .get(render_mode_index as usize)
+            .is_some_and(|mode| mode.texture_no_perspective)
+        {
+            let w = |slot: u32| {
+                let vertex = self.cache_global_index[slot as usize] as usize;
+                let [x, y, z] = scene.raw_pos[vertex];
+                mul_row_vec4(
+                    [x, y, z, 1.0],
+                    self.mvp_table[scene.mtx_index[vertex] as usize],
+                )[3]
+            };
+            let q = [a, b, c].map(|slot| 1.0 / w(slot));
+            let first = (0..3).max_by(|&i, &j| q[i].total_cmp(&q[j])).unwrap();
+            let mut slots = [a, b, c];
+            slots.rotate_left(first);
+            [a, b, c] = slots;
         }
         let kind = if cull != 0 {
             CullKind::Cull
@@ -849,6 +870,7 @@ impl Rsp {
         };
         rdp.other_mode_h = (rdp.other_mode_h & !mask) | data;
         rdp.texture_conversion_set |= (mask | data) & (7 << 9) != 0;
+        rdp.texture_perspective_set |= (mask | data) & (1 << 19) != 0;
     }
 
     pub fn set_texture_image(
@@ -1156,6 +1178,7 @@ fn render_mode_for_run(
     if !rsp.retain_native_policy {
         mode.key_enabled = false;
     }
+    mode.texture_no_perspective &= rdp.texture_perspective_set;
     mode
 }
 

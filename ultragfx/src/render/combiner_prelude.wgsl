@@ -16,6 +16,12 @@ struct VsOut {
     @location(0) color: vec4<f32>,
     @location(1) uv:    vec2<f32>,
     @location(2) @interpolate(linear) unclamped_z: f32,
+    // G_TP_NONE: the RDP samples half of the microcode's S/W divided by the triangle's largest 1/W,
+    // interpolated across the screen. `q` is the first vertex's 1/W, which `Rsp::draw_tri` makes
+    // the largest. GL backends read `flat` from the last vertex, so there a G_TP_NONE triangle with
+    // varying W divides by the wrong 1/W.
+    @location(3) @interpolate(linear) uv_np: vec2<f32>,
+    @location(4) @interpolate(flat) q: f32,
 };
 
 struct DepthOutput {
@@ -49,6 +55,8 @@ fn vs_main(in: VsIn) -> VsOut {
     }
     out.color = in.color;
     out.uv = in.uv;
+    out.q = 1.0 / in.position.w;
+    out.uv_np = in.uv * (0.5 * out.q);
     return out;
 }
 
@@ -87,6 +95,7 @@ struct Combiner {
     primitive_depth: vec4<u32>,
     native_scale: vec4<f32>,
     raster:          vec4<u32>,
+    texture_mode:    vec4<u32>, // .x = 1 for G_TP_NONE triangles
 };
 
 @group(0) @binding(0) var tex0:  texture_2d<f32>;
@@ -608,10 +617,11 @@ fn eval_combiner(in: VsOut) -> CycleResult {
     // branch below — WGSL `dpdx`/`dpdy` must not sit behind non-uniform control flow. `in.uv` is
     // the texel-space level-0 triangle texcoord (see compute_lod's doc comment for why no extra
     // tcScale is needed).
-    let ddx_uv = dpdx(in.uv);
-    let ddy_uv = dpdy(in.uv);
+    let texcoord = select(in.uv, in.uv_np / in.q, combiner.texture_mode.x != 0u);
+    let ddx_uv = dpdx(texcoord);
+    let ddy_uv = dpdy(texcoord);
     let uv_scale = combiner.inv_tex_size.xy * vec2<f32>(tile_sampling[0].image.xy);
-    let target_uv = in.uv * uv_scale;
+    let target_uv = texcoord * uv_scale;
     var uv = SampleCoordinates(target_uv, target_uv);
     if combiner.raster.x > 1u && combiner.raster.z != 0u {
         let m = f32(combiner.raster.x);

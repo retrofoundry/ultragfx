@@ -338,3 +338,179 @@ fn guest_bytes_copy_to_eight_bit_targets_uses_guest_samples() {
         );
     }
 }
+
+fn texel_quad(corners: [[i32; 3]; 4]) -> [VtxColored; 4] {
+    let st = [[0, 0], [0, 512], [1024, 512], [1024, 0]];
+    std::array::from_fn(|i| VtxColored {
+        x: corners[i][0] as i16,
+        y: corners[i][1] as i16,
+        z: corners[i][2] as i16,
+        flag: 0,
+        s: st[i][0],
+        t: st[i][1],
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+    })
+}
+
+fn ortho_quad(x: i32, y: i32) -> [VtxColored; 4] {
+    texel_quad(
+        [[x, y], [x, y + 32], [x + 64, y + 32], [x + 64, y]].map(|[x, y]| [x - 160, 120 - y, 0]),
+    )
+}
+
+fn depth_quad(x: i32, y: i32, z: [i32; 4]) -> [VtxColored; 4] {
+    let screen = [[x, y], [x, y + 32], [x + 64, y + 32], [x + 64, y]];
+    texel_quad(std::array::from_fn(|i| {
+        let [x, y] = screen[i];
+        [(x - 160) * z[i] / 128, (120 - y) * z[i] / 128, z[i]]
+    }))
+}
+
+fn receding_quad(x: i32, y: i32, left: i32, right: i32) -> [VtxColored; 4] {
+    let half = 16 * left / 128;
+    let (xl, xr) = ((x - 160) * left / 128, (x + 64 - 160) * right / 128);
+    let (yl, yr) = ((104 - y) * left / 128, (104 - y) * right / 128);
+    texel_quad([
+        [xl, yl + half, left],
+        [xl, yl - half, left],
+        [xr, yr - half, right],
+        [xr, yr + half, right],
+    ])
+}
+
+fn tp_none_task() -> Built {
+    let mut b = DlBuilder::new();
+    let texels = (0..32u16)
+        .flat_map(|t| {
+            (0..64u16).flat_map(move |s| {
+                let blue = if s >= 32 { 31 } else { 0 };
+                ((s & 31) << 11 | t << 6 | blue << 1 | 1).to_be_bytes()
+            })
+        })
+        .collect::<Vec<_>>();
+    let texture = b.bytes(16, &texels);
+    let viewport = b.viewport(Vp {
+        vscale: [512, 512, 511, 0],
+        vtrans: [640, 480, 511, 0],
+    });
+    let ortho = b.matrix([
+        [1.0 / 128.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0 / 128.0, 0.0, 0.0],
+        [0.0; 4],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    let perspective = b.matrix([
+        [0.25, 0.0, 0.0, 0.0],
+        [0.0, 0.25, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.25],
+        [0.0; 4],
+    ]);
+    let identity = b.matrix([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]);
+    let persp_flat = b.vertices(&ortho_quad(40, 16));
+    let none_flat = b.vertices(&ortho_quad(128, 16));
+    let persp_receding = b.vertices(&receding_quad(216, 16, 256, 768));
+    let none_receding = b.vertices(&receding_quad(40, 64, 256, 768));
+    let none_origin = b.vertices(&ortho_quad(216, 64));
+    let none_equal_w = b.vertices(&receding_quad(40, 112, 400, 400));
+    let none_split = b.vertices(&depth_quad(128, 112, [256, 768, 768, 768]));
+    let quad = |address| [gsp_vertex(0, 4, address), gsp_2triangles(0, 1, 2, 0, 2, 3)];
+    // The words of the display list the console ran; see guest_bytes/README.md.
+    let mut dl = vec![
+        (0xff10013f, FB),
+        (0xed000000, 0x005003c0),
+        (0xef300000, 0),
+        (0xf7000000, 0x001f001f),
+        (0xf64fc3bc, 0),
+        (0xe7000000, 0),
+        (0xef080cf0, 0x0f0a4000),
+        (0xfcffffff, 0xfffcf279),
+        (0xfd100000, texture),
+        (0xf5100000, 0x07014060),
+        (0xe6000000, 0),
+        (0xf3000000, 0x077ff080),
+        (0xe7000000, 0),
+        (0xf5102000, 0x00014060),
+        (0xf2000000, 0x000fc07c),
+        (0xd9000000, 0),
+        (0xd7000002, 0xffffffff),
+        gsp_persp_normalize(0xffff),
+        gsp_viewport(viewport),
+        gsp_matrix(ortho, true, true, false),
+        gsp_matrix(identity, false, true, false),
+    ];
+    dl.extend(quad(persp_flat));
+    dl.extend([(0xe7000000, 0), (0xe3000c00, 0)]);
+    dl.extend(quad(none_flat));
+    dl.extend([
+        (0xe4300180, 0x00200100),
+        (0xe1000000, 0),
+        (0xf1000000, 0x02000200),
+        (0xe7000000, 0),
+        (0xf2020010, 0x0011c08c),
+    ]);
+    dl.extend(quad(none_origin));
+    dl.extend([
+        (0xe7000000, 0),
+        (0xf2000000, 0x000fc07c),
+        gsp_matrix(perspective, true, true, false),
+    ]);
+    dl.extend(quad(none_receding));
+    dl.extend(quad(none_equal_w));
+    dl.extend([
+        gsp_vertex(0, 4, none_split),
+        gsp_2triangles(0, 1, 3, 1, 2, 3),
+        (0xe7000000, 0),
+        (0xe3000c00, 0x00080000),
+    ]);
+    dl.extend(quad(persp_receding));
+    built(b, dl)
+}
+
+#[test]
+fn guest_bytes_tp_none_triangles_sample_halved_screen_linear_coordinates() {
+    let expected = include_bytes!("../../guest_bytes/tex-persp.rgba16");
+    for scale in [1, 2, 4] {
+        let mut r = renderer(true);
+        r.reconfigure(crate::RendererConfig {
+            resolution_multiplier: scale,
+            ..r.config
+        });
+        r.set_guest_writeback_with_encoding(true, crate::FramebufferEncoding::BigEndian);
+        let mut memory = Memory(vec![0; OUTPUT as usize + 320 * 240 * 2]);
+        run(&mut r, &mut memory, tp_none_task());
+        // T and cases A, C, D and G differ from the console by sub-texel phases that G_TP_NONE
+        // handling doesn't cause (A shows the T one under G_TP_PERSP). E is the rectangle control.
+        for (case, [x0, y0], mask, diagonal) in [
+            (1, [128, 16], 0xf83e, [0, 0, 64, 32]),
+            (4, [128, 64], 0xffff, [0, 0, 64, 32]),
+            (5, [216, 64], 0xf83e, [0, 0, 64, 32]),
+            (7, [128, 112], 0xffff, [0, 32, 64, 0]),
+        ] {
+            let mut differing = 0;
+            for y in 1..31 {
+                for x in 1..63 {
+                    let [ax, ay, bx, by] = diagonal.map(f64::from);
+                    let (cx, cy) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                    let cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+                    if cross.abs() < (bx - ax).hypot(by - ay) {
+                        continue;
+                    }
+                    let at = FB as usize + (((y0 + y) * 320 + x0 + x) * 2) as usize;
+                    let word = u16::from_be_bytes([memory.0[at], memory.0[at + 1]]);
+                    let i = (case * 2048 + y * 64 + x) as usize * 2;
+                    let console = u16::from_be_bytes([expected[i], expected[i + 1]]);
+                    differing += usize::from(word & mask != console & mask);
+                }
+            }
+            assert_eq!(differing, 0, "case {case}, scale {scale}");
+        }
+    }
+}
