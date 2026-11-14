@@ -2009,11 +2009,22 @@ impl Readback {
         texture: &wgpu::Texture,
         pixel_bytes: u32,
     ) -> Self {
+        Self::rows(device, encoder, texture, pixel_bytes, 0, texture.height())
+    }
+
+    fn rows(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        pixel_bytes: u32,
+        y: u32,
+        height: u32,
+    ) -> Self {
         let stride =
             (texture.width() * pixel_bytes).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("guest-writeback"),
-            size: u64::from(stride) * u64::from(texture.height()),
+            size: u64::from(stride) * u64::from(height),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -2021,7 +2032,7 @@ impl Readback {
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
+                origin: wgpu::Origin3d { x: 0, y, z: 0 },
                 aspect: if texture.format() == super::super::DEPTH_FORMAT {
                     wgpu::TextureAspect::DepthOnly
                 } else {
@@ -2033,17 +2044,21 @@ impl Readback {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(stride),
-                    rows_per_image: Some(texture.height()),
+                    rows_per_image: Some(height),
                 },
             },
-            texture.size(),
+            wgpu::Extent3d {
+                width: texture.width(),
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         Self {
             buffer,
             stride: stride as usize,
             pixel_bytes: pixel_bytes as usize,
             width: texture.width() as usize,
-            height: texture.height() as usize,
+            height: height as usize,
         }
     }
 
@@ -2373,10 +2388,12 @@ impl Coherence {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         texture: &wgpu::Texture,
+        y: u32,
+        height: u32,
         slot: usize,
     ) {
         self.copy_words
-            .insert(slot, Readback::new(device, encoder, texture, 4));
+            .insert(slot, Readback::rows(device, encoder, texture, 4, y, height));
     }
 
     #[allow(clippy::too_many_arguments)]
