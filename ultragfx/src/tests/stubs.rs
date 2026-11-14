@@ -290,11 +290,11 @@ impl crate::Rdram for CommandMemory<'_> {
 fn load_ucode_latch_preserves_full_address_across_calls_and_rects() {
     let commands = [
         (0xe100_0000, 0x1234_5678_ffff_fff0),
-        (0xde00_0000, 10 * 16),
         (CIMG.0, CIMG.1 as u64),
         (0xe401_0010, 0),
         (0xe100_0000, 0x0020_0040),
         (0xf100_0000, 0x0400_0400),
+        (0xde00_0000, 10 * 16),
         (0xdd00_07ff, 0x9876_5432_ffff_ffe0),
         (FILL.0, 0),
         (END.0, 0),

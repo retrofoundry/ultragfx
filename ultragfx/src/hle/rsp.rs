@@ -42,7 +42,7 @@ pub struct Rsp {
     cache_global_index: [u32; RSP_MAX_VERTICES],
     loaded: [bool; RSP_MAX_VERTICES],
     clip_codes: [Option<u8>; RSP_MAX_VERTICES],
-    screen_z: [Option<f64>; RSP_MAX_VERTICES],
+    screen_z: [Option<i32>; RSP_MAX_VERTICES],
     used: [bool; RSP_MAX_VERTICES],
     model_stack: [Mat4; RSP_MATRIX_STACK_SIZE],
     model_stack_size: usize,
@@ -541,7 +541,16 @@ impl Rsp {
                 let z = (f64::from(clip[2]) / f64::from(clip[3]) * f64::from(self.vp_scale[2])
                     + f64::from(self.vp_trans[2]))
                     * f64::from(DEPTH_RANGE);
-                z.is_finite().then_some(z)
+                // VTX_SCR_Z as F3DEX2 2.05 and later store it: s15.16 with the integer half
+                // clamped to >= 0 and the fraction kept.
+                z.is_finite().then(|| {
+                    let z = (z * 65536.0) as i32;
+                    if z < 0 {
+                        z & 0xffff
+                    } else {
+                        z
+                    }
+                })
             });
             scene.raw_pos.push(v.pos);
             scene.modify_flags.push(0);
@@ -616,7 +625,9 @@ impl Rsp {
             });
         }
         let z = self.screen_z[index as usize].ok_or(DiagKind::InvalidVertexTransform { index })?;
-        Ok(z <= f64::from(threshold) / 65536.0)
+        // The microcode subtracts the s15.16 threshold from the vertex's screen Z and branches
+        // when the wrapped 32-bit difference is negative.
+        Ok(z.wrapping_sub(threshold as i32) < 0)
     }
 
     /// Modify a loaded cache slot without changing vertices recorded by earlier draws.
@@ -674,7 +685,7 @@ impl Rsp {
             }
             0x1C => {
                 scene.modify_screen[gi][2] = value as f32 / (65536.0 * DEPTH_RANGE);
-                self.screen_z[slot] = self.screen_z[slot].map(|_| f64::from(value) / 65536.0);
+                self.screen_z[slot] = self.screen_z[slot].map(|_| value as i32);
                 scene.modify_flags[gi] |= 2;
             }
             _ => unreachable!(),
