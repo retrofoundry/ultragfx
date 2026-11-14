@@ -478,11 +478,11 @@ impl Fixture {
             ));
         }
         let non = self.tasks.iter().any(|task| {
-            task.microcode == Microcode::F3dex2NoN
+            task.microcode.unclipped_depth()
                 || task
                     .bindings
                     .iter()
-                    .any(|&(_, microcode)| microcode == Microcode::F3dex2NoN)
+                    .any(|&(_, microcode)| microcode.unclipped_depth())
         });
         let depth_clip = device
             .features()

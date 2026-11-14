@@ -43,6 +43,7 @@ pub struct Rsp {
     loaded: [bool; RSP_MAX_VERTICES],
     clip_codes: [Option<u8>; RSP_MAX_VERTICES],
     screen_z: [Option<i32>; RSP_MAX_VERTICES],
+    w_int: [Option<i16>; RSP_MAX_VERTICES],
     used: [bool; RSP_MAX_VERTICES],
     model_stack: [Mat4; RSP_MATRIX_STACK_SIZE],
     model_stack_size: usize,
@@ -98,6 +99,7 @@ impl Default for Rsp {
             loaded: [false; RSP_MAX_VERTICES],
             clip_codes: [None; RSP_MAX_VERTICES],
             screen_z: [None; RSP_MAX_VERTICES],
+            w_int: [None; RSP_MAX_VERTICES],
             used: [false; RSP_MAX_VERTICES],
             model_stack: [identity(); RSP_MATRIX_STACK_SIZE],
             model_stack_size: 1,
@@ -197,13 +199,16 @@ impl Rsp {
         self.loaded.fill(false);
         self.clip_codes.fill(None);
         self.screen_z.fill(None);
+        self.w_int.fill(None);
         self.used.fill(false);
         self.material_dirty = true;
         match ucode {
             // The load DMAs the data image over DMEM 0x180 onward, which resets geometry mode,
             // lights, lookat and texture state and marks the MVP valid. The matrices sit below
             // 0x180 and survive, so the MVP is the one last computed or forced into DMEM.
-            crate::hle::gbi::GbiUcode::F3dex2 | crate::hle::gbi::GbiUcode::F3dex2NoN => {
+            crate::hle::gbi::GbiUcode::F3dex2
+            | crate::hle::gbi::GbiUcode::F3dex2NoN
+            | crate::hle::gbi::GbiUcode::F3dzexNoN => {
                 self.geom = self.consts.g_clipping;
                 self.lights = [([0.0; 3], [0.0; 3]); 8];
                 self.ambient_col = [0.0; 3];
@@ -552,6 +557,8 @@ impl Rsp {
                     }
                 })
             });
+            // VTX_W_INT: the vmadh integer half of W, floored and saturated to 16 bits.
+            self.w_int[slot] = self.clip_codes[slot].map(|_| clip[3].floor() as i16);
             scene.raw_pos.push(v.pos);
             scene.modify_flags.push(0);
             scene.modify_screen.push([0.0; 4]);
@@ -624,10 +631,15 @@ impl Rsp {
                 index,
             });
         }
-        let z = self.screen_z[index as usize].ok_or(DiagKind::InvalidVertexTransform { index })?;
-        // The microcode subtracts the s15.16 threshold from the vertex's screen Z and branches
-        // when the wrapped 32-bit difference is negative.
-        Ok(z.wrapping_sub(threshold as i32) < 0)
+        // The microcode subtracts the threshold from the vertex's s15.16 screen Z, or for F3DZEX
+        // its sign-extended integer W, and branches when the wrapped 32-bit difference is negative.
+        let value = if self.microcode == crate::Microcode::F3dzexNoN {
+            self.w_int[index as usize].map(i32::from)
+        } else {
+            self.screen_z[index as usize]
+        };
+        let value = value.ok_or(DiagKind::InvalidVertexTransform { index })?;
+        Ok(value.wrapping_sub(threshold as i32) < 0)
     }
 
     /// Modify a loaded cache slot without changing vertices recorded by earlier draws.
@@ -753,7 +765,7 @@ impl Rsp {
         } else {
             CullKind::None
         };
-        let unclipped_depth = self.microcode == crate::Microcode::F3dex2NoN;
+        let unclipped_depth = self.microcode.unclipped_depth();
         let coalesces = |run: &DrawRun| {
             run.cull == kind
                 && run.unclipped_depth == unclipped_depth

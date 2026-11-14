@@ -57,6 +57,7 @@ mod native {
                 Microcode::F3d => "f3d",
                 Microcode::F3dex2 => "f3dex2",
                 Microcode::F3dex2NoN => "f3dex2_non",
+                Microcode::F3dzexNoN => "f3dzex_non",
                 Microcode::S2dex2 => "s2dex2",
             };
             write!(

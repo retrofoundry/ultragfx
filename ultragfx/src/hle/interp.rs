@@ -669,7 +669,9 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
                 Control::Return
             } else if matches!(
                 ucode,
-                crate::hle::gbi::GbiUcode::F3dex2 | crate::hle::gbi::GbiUcode::F3dex2NoN
+                crate::hle::gbi::GbiUcode::F3dex2
+                    | crate::hle::gbi::GbiUcode::F3dex2NoN
+                    | crate::hle::gbi::GbiUcode::F3dzexNoN
             ) && matches!(
                 op,
                 crate::hle::consts::G_CULLDL | crate::hle::consts::G_BRANCH_Z
@@ -723,6 +725,7 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
                                 ucode,
                                 crate::hle::gbi::GbiUcode::F3dex2
                                     | crate::hle::gbi::GbiUcode::F3dex2NoN
+                                    | crate::hle::gbi::GbiUcode::F3dzexNoN
                             ) {
                                 // F3DEX2 reloads the zeroed fog slot from its data image.
                                 rdp.fog_mul = 0;
@@ -767,6 +770,7 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
                                 ucode,
                                 crate::hle::gbi::GbiUcode::F3dex2
                                     | crate::hle::gbi::GbiUcode::F3dex2NoN
+                                    | crate::hle::gbi::GbiUcode::F3dzexNoN
                             ) {
                             WalkFlow::Branch
                         } else {
@@ -793,7 +797,9 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
             }
             if matches!(
                 ucode,
-                crate::hle::gbi::GbiUcode::F3dex2 | crate::hle::gbi::GbiUcode::F3dex2NoN
+                crate::hle::gbi::GbiUcode::F3dex2
+                    | crate::hle::gbi::GbiUcode::F3dex2NoN
+                    | crate::hle::gbi::GbiUcode::F3dzexNoN
             ) && matches!(
                 op,
                 crate::hle::consts::G_CULLDL | crate::hle::consts::G_BRANCH_Z
@@ -811,7 +817,9 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
                 // F3DEX2 dispatches the texrect's E1 like any other, so it replaces the latch.
                 if matches!(
                     ucode,
-                    crate::hle::gbi::GbiUcode::F3dex2 | crate::hle::gbi::GbiUcode::F3dex2NoN
+                    crate::hle::gbi::GbiUcode::F3dex2
+                        | crate::hle::gbi::GbiUcode::F3dex2NoN
+                        | crate::hle::gbi::GbiUcode::F3dzexNoN
                 ) && cmd1.w0 >> 24 == crate::hle::consts::G_RDPHALF_1 as u32
                 {
                     rdphalf_1 = Some(cmd1.w1_addr);

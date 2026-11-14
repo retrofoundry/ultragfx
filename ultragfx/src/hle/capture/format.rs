@@ -2,7 +2,7 @@ use super::*;
 use crate::{ClearPolicy, RendererConfig};
 
 const MAGIC: &[u8; 8] = b"UGFXCAP\0";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const LITTLE_ENDIAN: u32 = 0x0403_0201;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -386,6 +386,7 @@ fn microcode_id(microcode: Microcode) -> u32 {
         Microcode::F3d => 1,
         Microcode::S2dex2 => 2,
         Microcode::F3dex2NoN => 3,
+        Microcode::F3dzexNoN => 4,
     }
 }
 
@@ -395,6 +396,7 @@ fn decode_microcode(id: u32, version: u32) -> Result<Microcode> {
         1 => Ok(Microcode::F3d),
         2 if version >= 2 => Ok(Microcode::S2dex2),
         3 if version >= 2 => Ok(Microcode::F3dex2NoN),
+        4 if version >= 4 => Ok(Microcode::F3dzexNoN),
         _ => Err(invalid("microcode")),
     }
 }

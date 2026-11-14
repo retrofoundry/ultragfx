@@ -11,10 +11,18 @@ pub enum Microcode {
     F3dex2,
     /// F3DEX2 with depth clamping instead of near/far clipping.
     F3dex2NoN,
+    /// F3DZEX NoN, as in OoT: F3DEX2 NoN whose `G_BRANCH_Z` (opcode 0x04) tests the vertex's W.
+    F3dzexNoN,
     /// Original F3D microcode.
     F3d,
     /// S2DEX2 object and background microcode.
     S2dex2,
+}
+
+impl Microcode {
+    pub(crate) fn unclipped_depth(self) -> bool {
+        matches!(self, Microcode::F3dex2NoN | Microcode::F3dzexNoN)
+    }
 }
 
 impl From<Microcode> for GbiUcode {
@@ -22,6 +30,7 @@ impl From<Microcode> for GbiUcode {
         match m {
             Microcode::F3dex2 => GbiUcode::F3dex2,
             Microcode::F3dex2NoN => GbiUcode::F3dex2NoN,
+            Microcode::F3dzexNoN => GbiUcode::F3dzexNoN,
             Microcode::S2dex2 => GbiUcode::S2dex2,
             Microcode::F3d => GbiUcode::F3d,
         }
@@ -33,6 +42,7 @@ impl From<GbiUcode> for Microcode {
         match u {
             GbiUcode::F3dex2 => Microcode::F3dex2,
             GbiUcode::F3dex2NoN => Microcode::F3dex2NoN,
+            GbiUcode::F3dzexNoN => Microcode::F3dzexNoN,
             GbiUcode::S2dex2 => Microcode::S2dex2,
             GbiUcode::F3d => Microcode::F3d,
         }

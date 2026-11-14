@@ -516,6 +516,24 @@ fn capture_v2_non_binding_roundtrips() {
 }
 
 #[test]
+fn capture_v4_f3dzex_task_roundtrips_and_v3_rejects_its_id() {
+    let mut fixture = Fixture::from_bytes(include_bytes!(
+        "../../../tests/fixtures/host64-fill.ugfxcap"
+    ))
+    .unwrap();
+    fixture.provenance = Provenance::default();
+    fixture.tasks[0].microcode = Microcode::F3dzexNoN;
+    let mut bytes = fixture.to_bytes().unwrap();
+    assert_eq!(bytes[8..12], 4u32.to_le_bytes());
+    assert_eq!(bytes[136..140], 4u32.to_le_bytes());
+    let decoded = Fixture::from_bytes(&bytes).unwrap();
+    assert_eq!(decoded.tasks[0].microcode, Microcode::F3dzexNoN);
+    assert_eq!(decoded.to_bytes().unwrap(), bytes);
+    bytes[8..12].copy_from_slice(&3u32.to_le_bytes());
+    assert!(Fixture::from_bytes(&bytes).is_err());
+}
+
+#[test]
 fn fixture_container_rejects_corruption() {
     let hw = Image(vec![0xdf, 0, 0, 0, 0, 0, 0, 0]);
     let recording = RecordingHardware::new(&hw);
@@ -526,7 +544,7 @@ fn fixture_container_rejects_corruption() {
             .unwrap(),
     );
     let b = f.to_bytes().unwrap();
-    assert_eq!(&b[..16], b"UGFXCAP\0\x03\0\0\0\x01\x02\x03\x04");
+    assert_eq!(&b[..16], b"UGFXCAP\0\x04\0\0\0\x01\x02\x03\x04");
     assert_eq!(Fixture::from_bytes(&b).unwrap(), f);
     for n in 0..b.len() {
         assert!(Fixture::from_bytes(&b[..n]).is_err(), "truncation at {n}");
@@ -1376,7 +1394,7 @@ fn legacy_scales_are_ignored_and_v3_preserves_effective_scale() {
         let mut fixture = original.clone();
         fixture.frame.config.resolution_multiplier = scale;
         let bytes = fixture.to_bytes().unwrap();
-        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 3);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 4);
         assert_eq!(
             Fixture::from_bytes(&bytes)
                 .unwrap()
