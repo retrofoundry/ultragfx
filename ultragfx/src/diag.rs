@@ -71,8 +71,6 @@ pub enum ResourceAdmission {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DiagKind {
-    /// MP was undefined after a microcode load; recomputed M/P was used.
-    UndefinedMvp,
     MemoryRead {
         access: MemoryAccess,
         error: crate::hardware::MemoryError,
@@ -227,7 +225,6 @@ impl DiagKind {
             | DiagKind::UnhandledMoveword(_)
             | DiagKind::UnwiredSelector { .. } => Severity::Error,
             DiagKind::RdramReadZeroFilled { .. }
-            | DiagKind::UndefinedMvp
             | DiagKind::UnsupportedImageReinterpretation { .. }
             | DiagKind::UnsupportedGuestWriteback { .. }
             | DiagKind::RenderModeNeverSet
@@ -241,7 +238,6 @@ impl std::fmt::Display for DiagKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DiagKind::ResourceAdmission { reason, required, limit } => write!(f, "task resource admission failed: {reason:?}, required {required}, limit {limit}"),
-            DiagKind::UndefinedMvp => write!(f, "undefined MP after microcode load; recomputing preserved M/P"),
             DiagKind::UnsupportedFramebufferAccess { address, reason } => write!(f, "unsupported framebuffer access at {address:#x}: {reason:?}"),
             DiagKind::FramebufferRangeOverflow { address, length } => write!(f, "framebuffer range overflows at {address:#x}, length {length}"),
             DiagKind::MemoryRead { access, error } => write!(

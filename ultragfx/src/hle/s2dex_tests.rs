@@ -10,14 +10,13 @@ fn image(commands: &[(u32, u32)]) -> Vec<u8> {
 }
 
 #[derive(Default)]
-struct Steps(Vec<(Microcode, Microcode, u32, bool)>);
+struct Steps(Vec<(Microcode, Microcode, u32)>);
 impl WalkObserver for Steps {
     fn command(&mut self, step: WalkStep<'_>) -> ControlFlow<()> {
         self.0.push((
             step.microcode,
             step.state.microcode,
             step.state.obj_render_mode,
-            step.state.mvp_valid,
         ));
         ControlFlow::Continue(())
     }
@@ -212,16 +211,70 @@ fn switch_invalidates_rsp_derived_state() {
     assert_eq!(state.projection, &super::math::identity());
     assert_eq!(state.viewport_scale, [64., 128., 0.75]);
     assert_eq!(state.viewport_translation, [256., 320., 1.5]);
-    assert!(!state.mvp_valid);
-    let mut diags = Vec::new();
-    rsp.prepare_vertex(&mut diags, 0);
-    assert!(matches!(diags[0].kind, crate::DiagKind::UndefinedMvp));
-    assert!(!rsp.inspect_state(&rdp, &[]).mvp_valid);
     rsp.matrix(&RdramImage::new(&[0; 64]), 0, 2).unwrap();
-    assert!(rsp.inspect_state(&rdp, &[]).mvp_valid);
     rsp.finish(&mut scene);
     assert_eq!(scene.raw_pos.len(), 1);
     assert_eq!(scene.mvp_table.len(), 3);
+}
+
+#[test]
+fn f3dex2_load_reloads_its_data_image_and_keeps_the_dmem_mvp() {
+    use n64_gbi::encode::*;
+
+    #[derive(Default)]
+    struct Last(Option<(u32, u32, bool)>);
+    impl WalkObserver for Last {
+        fn command(&mut self, step: WalkStep<'_>) -> ControlFlow<()> {
+            let state = step.state;
+            self.0 = Some((state.geometry_mode, state.light_count, state.texture.on));
+            ControlFlow::Continue(())
+        }
+    }
+    let scaled = |scale: i16| {
+        let mut matrix = [0u8; 64];
+        for i in 0..4 {
+            let value = if i == 0 { scale } else { 1 };
+            matrix[i * 10..i * 10 + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        matrix
+    };
+    let mut commands = vec![
+        gsp_matrix(0x200, false, true, false),
+        gsp_vertex(0, 1, 0x300),
+        gsp_set_geometrymode(0x0003_0000),
+        (0xdb02_0000, 2 * 24),
+        gsp_texture(0x8000, 0x8000, 0, 0, true),
+        gsp_matrix(0x240, false, true, false),
+    ];
+    commands.extend(gsp_load_ucode(0x2000, 0x9000, 0x800));
+    commands.extend([gsp_vertex(0, 1, 0x300), gsp_enddl()]);
+    let mut bytes = image(&commands);
+    bytes.resize(0x200, 0);
+    bytes.extend(scaled(3));
+    bytes.extend(scaled(5));
+    bytes.resize(0x310, 0);
+    let mut last = Last::default();
+    let result = super::interp::interpret_with_bindings(
+        RdramImage::new(&bytes),
+        0,
+        Microcode::F3dex2NoN.into(),
+        DataFormat::Fixed,
+        Default::default(),
+        Default::default(),
+        Some(&mut last),
+        Default::default(),
+        &[(0x2000, Microcode::F3dex2NoN)],
+    );
+    assert_eq!(result.termination, WalkTermination::End);
+    assert!(result.diags.is_empty(), "{:?}", result.diags);
+    assert_eq!(last.0, Some((crate::hle::consts::G_CLIPPING, 0, false)));
+    let scales: Vec<_> = result
+        .scene
+        .mtx_index
+        .iter()
+        .map(|&index| result.scene.mvp_table[index as usize][0][0])
+        .collect();
+    assert_eq!(scales, [3.0, 3.0]);
 }
 
 #[test]
@@ -257,6 +310,7 @@ fn s2dex_fog_factors_reset_until_rewritten() {
         (0xe1000000, 0x8000),
         (0xdd0007ff, 0x1000),
         (0xdd0007ff, 0x2000),
+        (0xd9000000, 0x10000),
         (0x01001002, 128),
         (0xdb080000, 0x0500fc00),
         (0x01001002, 128),
@@ -275,10 +329,7 @@ fn s2dex_fog_factors_reset_until_rewritten() {
         &[(0x1000, Microcode::S2dex2), (0x2000, Microcode::F3dex2)],
     );
     assert_eq!(result.termination, WalkTermination::End);
-    assert!(result
-        .diags
-        .iter()
-        .all(|d| matches!(d.kind, crate::DiagKind::UndefinedMvp)));
+    assert!(result.diags.is_empty(), "{:?}", result.diags);
     assert_eq!(result.rdp.fog_color, [0x12, 0x34, 0x56, 0x78]);
     assert_eq!(result.scene.fog, vec![1, 2]);
     assert_eq!(result.scene.fog_table, vec![[0, 0], [1280, -1024]]);

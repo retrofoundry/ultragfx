@@ -1,7 +1,6 @@
 //! Position and texcoord are transformed on the GPU (renderer compute kernel -> OutVertex);
 //! the CPU keeps conditional control positions, RSP/RDP state, and state-index tables.
 
-use crate::diag::{DiagKind, Diagnostic};
 use crate::hle::gbi::f3dex2::F3DEX2_CONSTS;
 use crate::hle::interp::checked_span;
 use crate::hle::math::{identity, mul4, mul_col_vec3, mul_row_vec4, Mat4};
@@ -36,7 +35,9 @@ pub struct Rsp {
     annotations: Option<Box<crate::annotation::AnnotationCapture>>,
     microcode: crate::Microcode,
     pub(crate) obj_render_mode: u32,
-    mvp_valid: bool,
+    /// The MVP and its table index that the microcode keeps in DMEM: the last one a vertex load
+    /// computed or a force wrote.
+    dmem_mvp: (Mat4, u32),
     pub(crate) profiling: crate::profiling::Recorder,
     cache_global_index: [u32; RSP_MAX_VERTICES],
     loaded: [bool; RSP_MAX_VERTICES],
@@ -91,7 +92,7 @@ impl Default for Rsp {
             annotations: None,
             microcode: crate::Microcode::F3dex2,
             obj_render_mode: 0,
-            mvp_valid: true,
+            dmem_mvp: (identity(), 0),
             profiling: Default::default(),
             cache_global_index: [0u32; RSP_MAX_VERTICES],
             loaded: [false; RSP_MAX_VERTICES],
@@ -197,23 +198,29 @@ impl Rsp {
         self.clip_codes.fill(None);
         self.screen_z.fill(None);
         self.used.fill(false);
-        self.mvp_valid = false;
         self.material_dirty = true;
-        // Known SDK divergence: geometry and lights retain values; OoT restores geometry via SETUPDL.
-        if ucode == crate::hle::gbi::GbiUcode::S2dex2 {
-            self.obj_render_mode = 0;
+        match ucode {
+            // The load DMAs the data image over DMEM 0x180 onward, which resets geometry mode,
+            // lights, lookat and texture state and marks the MVP valid. The matrices sit below
+            // 0x180 and survive, so the MVP is the one last computed or forced into DMEM.
+            crate::hle::gbi::GbiUcode::F3dex2 | crate::hle::gbi::GbiUcode::F3dex2NoN => {
+                self.geom = self.consts.g_clipping;
+                self.lights = [([0.0; 3], [0.0; 3]); 8];
+                self.ambient_col = [0.0; 3];
+                self.num_dir = 0;
+                self.light_version += 1;
+                self.lookat_axes = [[0.0; 3]; 2];
+                self.lookat_version += 1;
+                self.texture_state = TextureState::default();
+                (self.mvp, self.cur_mvp_index) = self.dmem_mvp;
+            }
+            crate::hle::gbi::GbiUcode::S2dex2 => self.obj_render_mode = 0,
+            crate::hle::gbi::GbiUcode::F3d => {}
         }
     }
 
-    pub(crate) fn prepare_vertex(&mut self, diags: &mut Vec<Diagnostic>, pc: u64) {
-        if !self.mvp_valid {
-            diags.push(Diagnostic {
-                at: pc,
-                kind: DiagKind::UndefinedMvp,
-            });
-            self.recompute_mvp();
-            self.mvp_valid = false;
-        }
+    pub(crate) fn prepare_vertex(&mut self) {
+        self.dmem_mvp = (self.mvp, self.cur_mvp_index);
     }
 
     pub fn geometry_mode(&self) -> u32 {
@@ -228,7 +235,6 @@ impl Rsp {
         crate::inspect::StateView {
             microcode: self.microcode,
             obj_render_mode: self.obj_render_mode,
-            mvp_valid: self.mvp_valid,
             geometry_mode: self.geom,
             geometry_names,
             texture: self.texture_state,
@@ -281,7 +287,6 @@ impl Rsp {
     }
 
     fn recompute_mvp(&mut self) {
-        self.mvp_valid = true;
         self.mvp = mul4(self.model_stack[self.model_stack_size - 1], self.viewproj);
         // Append a new MVP table entry (dedup against the last to avoid trivial growth).
         if self.mvp_table.last() != Some(&self.mvp) {
@@ -326,11 +331,11 @@ impl Rsp {
     /// their state.
     pub fn force_matrix<M: Rdram>(&mut self, mem: &M, addr: u64) -> Result<(), MemoryError> {
         self.mvp = mem.read_matrix(addr, self.data_format)?;
-        self.mvp_valid = true;
         if self.mvp_table.last() != Some(&self.mvp) {
             self.mvp_table.push(self.mvp);
         }
         self.cur_mvp_index = (self.mvp_table.len() - 1) as u32;
+        self.dmem_mvp = (self.mvp, self.cur_mvp_index);
         Ok(())
     }
 
@@ -1526,6 +1531,27 @@ mod phase3_state_tests {
         rsp.finish(&mut scene);
 
         assert_eq!(scene.mvp_table.last(), Some(&forced));
+    }
+
+    #[test]
+    fn microcode_load_keeps_a_forced_mvp_over_a_later_matrix() {
+        let forced = [
+            [2.0, 0.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0, 0.0],
+            [0.0, 0.0, 4.0, 0.0],
+            [5.0, 6.0, 7.0, 1.0],
+        ];
+        let mut bytes = mtx_to_bytes(forced).to_vec();
+        bytes.extend(mtx_to_bytes(identity()));
+        let mem = RdramImage::new(&bytes);
+        let mut rsp = Rsp::default();
+
+        rsp.force_matrix(&mem, 0).unwrap();
+        rsp.matrix(&mem, 64, 3).unwrap();
+        assert_ne!(rsp.mvp, forced);
+        rsp.switch_microcode(crate::hle::gbi::GbiUcode::F3dex2);
+
+        assert_eq!(rsp.mvp, forced);
     }
 }
 

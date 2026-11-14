@@ -197,6 +197,7 @@ fn fog_ucode_reload_gpu_readback() {
             commands.extend(gsp_load_ucode(0x2000, 0x9000, 0x800));
             commands.extend([
                 gsp_matrix(0x80, true, true, false),
+                gsp_set_geometrymode(0x0001_0000),
                 gsp_vertex(0, 1, 0x40),
                 (0xDB08_0000, FACTOR_B.1),
                 gsp_vertex(0, 1, 0x40),

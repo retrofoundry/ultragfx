@@ -57,7 +57,7 @@ fn vtx<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     let end = c.p0(1, 7);
     match end.checked_sub(count) {
         Some(dst) if (dst + count) as usize <= RSP_MAX_VERTICES => {
-            cx.rsp.prepare_vertex(cx.diags, cx.pc);
+            cx.rsp.prepare_vertex();
             let addr = memory_try!(cx, Vertex, cx.mem.resolve_masked(c.w1_addr));
             memory_try!(
                 cx,
