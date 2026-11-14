@@ -519,8 +519,9 @@ impl Copies {
         after: usize,
         profiling: &Recorder,
     ) {
-        if let Some(jobs) = self.pending.remove(&after) {
-            for PendingDecode { job, sources } in jobs {
+        if let Some(pending) = self.pending.remove(&after) {
+            let mut jobs = Vec::with_capacity(pending.len());
+            for PendingDecode { job, sources } in pending {
                 for (source, offset) in sources {
                     encoder.copy_buffer_to_buffer(
                         &source,
@@ -530,11 +531,12 @@ impl Copies {
                         source.size(),
                     );
                 }
-                self.pipeline
-                    .as_ref()
-                    .unwrap()
-                    .encode(encoder, &[job], profiling);
+                jobs.push(job);
             }
+            self.pipeline
+                .as_ref()
+                .unwrap()
+                .encode(encoder, &jobs, profiling);
         }
     }
 }
