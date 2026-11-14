@@ -67,8 +67,12 @@ impl Rdram for Traced<'_> {
 }
 
 fn walk(b: DlBuilder, expected_offsets: &[u64]) -> InterpResult {
+    walk_as(b, expected_offsets, [GbiUcode::F3dex2, GbiUcode::F3dex2NoN])
+}
+
+fn walk_as(b: DlBuilder, expected_offsets: &[u64], ucodes: [GbiUcode; 2]) -> InterpResult {
     let built = b.finish("main");
-    let [result, non] = [GbiUcode::F3dex2, GbiUcode::F3dex2NoN].map(|ucode| {
+    let [result, non] = ucodes.map(|ucode| {
         let reads = RefCell::new(Vec::new());
         let result = interpret(
             Traced {
@@ -278,6 +282,48 @@ fn branchz_below_equal_above() {
         }
         let r = walk(b, &expected);
         assert!(r.diags.is_empty(), "{threshold:x}: {:?}", r.diags);
+    }
+}
+
+#[test]
+fn branchw_compares_floored_w_as_the_rsp_does() {
+    // F3DZEX loads VTX_W_INT, the floored 16-bit integer half of W, where F3DEX2 loads screen
+    // Z (0x01ff_0000 here), so the two take different branches at the same threshold.
+    for (z, w_per_z, w, threshold, taken) in [
+        (0, 0.0, 300.5, 299, false),
+        (0, 0.0, 300.5, 300, false),
+        (0, 0.0, 300.5, 301, true),
+        (0, 0.0, 300.5, 0x8000_0000, true),
+        (0, 0.0, -0.5, 0, true),
+        (0, 0.0, -0.5, 0xffff_ffff, false),
+        (1000, 40.0, 0.0, 32767, false),
+        (1000, 40.0, 0.0, 32768, true),
+    ] {
+        let mut b = DlBuilder::new();
+        let v = vertex(&mut b, &[[0, 0, z]]);
+        let mut projection = n64_gbi::gu::gu_mtx_ident();
+        projection[2][3] = w_per_z;
+        projection[3][3] = w;
+        let projection = b.matrix(projection);
+        let target = b.list("target", &[MARK, END]);
+        let entry = b.list(
+            "main",
+            &[
+                gsp_matrix(projection, true, true, false),
+                gsp_vertex(3, 1, v),
+                (HALF, target),
+                (0x0400_f006, threshold),
+                END,
+            ],
+        );
+        let mut expected = offsets(entry, &[0, 1, 2, 3]);
+        if taken {
+            expected.extend([target as u64, target as u64 + 8]);
+        } else {
+            expected.push(entry as u64 + 32);
+        }
+        let r = walk_as(b, &expected, [GbiUcode::F3dzexNoN; 2]);
+        assert!(r.diags.is_empty(), "{w} {threshold:x}: {:?}", r.diags);
     }
 }
 

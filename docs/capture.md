@@ -11,12 +11,13 @@ snapshot and can happen after the guest resumes.
 `replay_headless` requests them. Both return task diagnostics, summaries, and packed RGBA8
 pixels. These async operations work on native and wasm32; wasm readback awaits the mapping
 callback. The device must match the recorded dual-source-blending feature. A fixture with an
-F3DEX2 NoN task or binding must also match the recorded depth-clip-control feature, which
+F3DEX2 NoN or F3DZEX NoN task or binding must also match the recorded depth-clip-control feature, which
 `replay_headless` requests when the adapter has it. Missing memory latches an error and rejects
 the output, including missing TexRect continuation commands.
 
 Frame format v3 records the renderer's effective resolution multiplier. Frame
-formats v1 and v2 replay at 1x regardless of their stored multiplier. The sequence
+formats v1 and v2 replay at 1x regardless of their stored multiplier. Frame format v4
+adds microcode ID 4, F3DZEX NoN; readers reject it in v1 to v3 files. The sequence
 envelope remains version two and requires a constant effective scale.
 
 `replay_with_options` and `replay_headless_with_options` accept
@@ -346,7 +347,7 @@ packed u32s, while image matrices contain big-endian split halfwords. Textures r
 
 Frame writers emit version 2. Readers retain version 1 with empty microcode bindings and
 an object ABI inferred from its image or host memory layout. F3DEX2 remains microcode ID 0,
-F3D remains 1, S2DEX2 is 2, and F3DEX2 NoN is 3. Each task snapshots its immutable full-width text-token
+F3D remains 1, S2DEX2 is 2, F3DEX2 NoN is 3, and F3DZEX NoN (v4 and later) is 4. Each task snapshots its immutable full-width text-token
 bindings; replay, admission and sequence measurement use that task's snapshot.
 
 The frame header, frame record, provenance and first 160 bytes of each task retain the
