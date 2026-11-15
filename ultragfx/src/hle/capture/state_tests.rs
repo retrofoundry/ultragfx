@@ -296,7 +296,7 @@ fn framebuffer_primers_do_not_inherit_the_fixtures_final_registers() {
         1,
     );
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let output = pollster::block_on(fixture.replay(device, queue)).unwrap();
+    let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(output
         .rgba8
         .as_chunks::<4>()
@@ -345,7 +345,7 @@ fn replay_resets_prior_registers_but_inherits_between_recorded_tasks() {
 fn capture_rejects_unrecorded_starting_registers_without_resetting_live_state() {
     let fixture = fixture();
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let mut renderer = fixture.renderer(device, queue, ClearPolicy::PerFrame);
+    let mut renderer = fixture.renderer(device, queue.clone(), ClearPolicy::PerFrame);
     let setup = ReplayHardware::new(&fixture.tasks[0], None).unwrap();
     renderer.process_dl(&setup, 0, Microcode::F3dex2, &mut crate::NopSink);
     let before = renderer.rdp.clone();
@@ -424,7 +424,7 @@ fn capture_accepts_framebuffer_loads_after_earlier_loads() {
     commands.push(gsp_enddl());
     let load = task(&commands, 0);
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let mut renderer = fixture().renderer(device, queue, ClearPolicy::PerFrame);
+    let mut renderer = fixture().renderer(device, queue.clone(), ClearPolicy::PerFrame);
     for _ in 0..2 {
         let mut capture = CaptureFrame::begin(&mut renderer, 0, 0, Provenance::default());
         record(&mut capture, &mut renderer, &load).unwrap();
@@ -536,7 +536,7 @@ fn capture_accepts_unused_convert_and_key_state_in_fill() {
         .present_last_to(&mut renderer, &target.create_view(&Default::default()))
         .unwrap();
     let live = pollster::block_on(read_rgba8(&renderer, &target)).unwrap();
-    let replay = pollster::block_on(captured.replay(device, queue)).unwrap();
+    let replay = pollster::block_on(captured.replay(device, queue.clone())).unwrap();
     assert_eq!(live, replay.rgba8);
     assert!(live
         .as_chunks::<4>()
@@ -549,7 +549,7 @@ fn capture_accepts_unused_convert_and_key_state_in_fill() {
 fn capture_accepts_no_work_before_independent_fill() {
     let fixture = fixture();
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let mut renderer = fixture.renderer(device, queue, ClearPolicy::PerFrame);
+    let mut renderer = fixture.renderer(device, queue.clone(), ClearPolicy::PerFrame);
     let fill = full_fill();
     let hardware = ReplayHardware::new(&fill, None).unwrap();
     renderer.process_dl(&hardware, 0, Microcode::F3dex2, &mut crate::NopSink);
@@ -679,7 +679,7 @@ fn capture_host_rejects_reset_and_still_executes_the_task() {
 fn capture_rejects_unsupported_active_use_even_when_both_walks_do_no_work() {
     let fixture = fixture();
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let mut renderer = fixture.renderer(device, queue, ClearPolicy::PerFrame);
+    let mut renderer = fixture.renderer(device, queue.clone(), ClearPolicy::PerFrame);
     let color = CcPass {
         a: 15,
         b: 7,
@@ -782,7 +782,7 @@ fn capture_writeback_requires_native_encoding_when_enabled() {
     ))
     .unwrap();
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let mut renderer = fixture.renderer(device, queue, ClearPolicy::Persist);
+    let mut renderer = fixture.renderer(device, queue.clone(), ClearPolicy::Persist);
     for (enabled, encoding) in [
         (false, crate::FramebufferEncoding::Native),
         (false, crate::FramebufferEncoding::BigEndian),

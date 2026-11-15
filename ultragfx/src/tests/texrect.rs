@@ -145,7 +145,7 @@ fn provenance(eu: bool) -> crate::capture::Provenance {
 fn assert_hud(eu: bool) {
     let fixture = hud_fixture(eu);
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let output = pollster::block_on(fixture.replay(device, queue)).unwrap();
+    let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(
         output.diagnostics.iter().all(Vec::is_empty),
         "{:?}",

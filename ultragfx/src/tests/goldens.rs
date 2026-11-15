@@ -15,13 +15,13 @@ thread_local! {
     static READBACK_INPUT: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn headless_device() -> (wgpu::Device, wgpu::Queue, bool) {
+fn headless_device() -> (wgpu::Device, super::queue::TestQueue, bool) {
     let (device, queue, dual) = crate::render::headless_device();
     READBACK_DEVICE.with_borrow_mut(|value| *value = Some(device.clone()));
     (device, queue, dual)
 }
 
-fn headless_device_forced_fallback() -> (wgpu::Device, wgpu::Queue) {
+fn headless_device_forced_fallback() -> (wgpu::Device, super::queue::TestQueue) {
     let (device, queue) = crate::render::headless_device_forced_fallback();
     READBACK_DEVICE.with_borrow_mut(|value| *value = Some(device.clone()));
     (device, queue)
@@ -85,7 +85,7 @@ fn render_scene_with_device(
     addr_u: wgpu::AddressMode,
     addr_v: wgpu::AddressMode,
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    queue: super::queue::TestQueue,
 ) -> Vec<u8> {
     let (rdram, entry_addr) = fixture(name);
     let mut result = crate::hle::interpret_rdram(rdram, entry_addr as u32);

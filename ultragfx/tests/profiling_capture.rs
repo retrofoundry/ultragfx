@@ -5,6 +5,10 @@ use ultragfx::{
     ClearPolicy,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "common/queue.rs"]
+mod test_queue;
+
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
@@ -91,6 +95,8 @@ async fn timed_replay_matches_readback_replay() {
 async fn check_upload_accounting() {
     let sequence = sequence(1, 0);
     let (device, queue, _) = sequence.measurement_device().await.unwrap();
+    #[cfg(not(target_arch = "wasm32"))]
+    let queue = test_queue::TestQueue::new(&device, queue);
     let (first, second) = ultragfx::profiling::gpu_accounting_probe(&device, &queue);
     assert_eq!(first.counters["buffer.source.creations"], 1);
     assert_eq!(first.counters["buffer.source.capacity_bytes"], 4);

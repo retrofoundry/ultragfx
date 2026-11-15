@@ -175,7 +175,7 @@ fn renderer() -> crate::Renderer {
     let (device, queue) = crate::render::headless_device_forced_fallback();
     crate::Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,

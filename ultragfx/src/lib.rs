@@ -1993,7 +1993,7 @@ mod present_headless_tests {
         let (device, queue, _dual) = crate::render::headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2316,7 +2316,7 @@ mod begin_frame_tests {
         let (device, queue, _dual) = crate::render::headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2367,7 +2367,7 @@ mod begin_frame_tests {
         let (device, queue, _dual) = crate::render::headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2472,7 +2472,7 @@ mod config_construction_tests {
         };
         let r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2503,7 +2503,7 @@ mod config_construction_tests {
         };
         let r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 32,
@@ -2551,7 +2551,7 @@ mod config_construction_tests {
         };
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2578,7 +2578,7 @@ mod config_construction_tests {
         };
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2645,7 +2645,7 @@ mod debugger_toggle_tests {
         let (device, queue, _dual) = headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 8,
@@ -2710,7 +2710,7 @@ mod hook_lifecycle_tests {
         let (device, queue, _dual) = headless_device();
         Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 8,
@@ -2839,7 +2839,7 @@ mod debugger_present_tests {
         let (device, queue, _dual) = headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 256,

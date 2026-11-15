@@ -350,7 +350,7 @@ fn sm64_surface_commands_preserve_alpha_depth_and_tiles() {
 fn assert_surface(surface: Surface) {
     let fixture = surface.fixture();
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let output = pollster::block_on(fixture.replay(device, queue)).unwrap();
+    let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert_eq!((output.width, output.height), (320, 240));
     assert_eq!(output.rgba8.len(), 320 * 240 * 4);
     assert!(

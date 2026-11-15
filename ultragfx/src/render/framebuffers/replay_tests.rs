@@ -48,7 +48,7 @@ impl Default for Case {
 
 struct Probe {
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    queue: crate::tests::queue::TestQueue,
     renderer: SceneRenderer,
     depth: DepthImage,
     presentation_depth: DepthImage,

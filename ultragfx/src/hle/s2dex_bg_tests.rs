@@ -477,7 +477,7 @@ fn bg_dispatch_is_atomic_for_observer_and_prefix() {
     let (device, queue, _) = crate::render::headless_device();
     let mut renderer = crate::Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 320,

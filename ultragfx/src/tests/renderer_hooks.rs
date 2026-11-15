@@ -119,7 +119,7 @@ fn hook_overlay_composites_over_scanout() {
     let (device, queue, _dual) = crate::render::headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,
@@ -254,7 +254,7 @@ fn hook_extra_command_buffers_run_before_frame_encoder() {
     let c = u32_buf(&device, 0x0000_0000, wgpu::BufferUsages::MAP_READ);
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 4,
@@ -288,7 +288,7 @@ fn present_to_reports_target_dimensions() {
     let (device, queue, _dual) = crate::render::headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 8,
@@ -317,7 +317,7 @@ fn present_without_hook_is_unchanged() {
     let (device, queue, _dual) = crate::render::headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,
@@ -416,7 +416,7 @@ fn hook_full_lifecycle_end_to_end() {
     let (device, queue, _dual) = crate::render::headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,

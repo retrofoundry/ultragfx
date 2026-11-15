@@ -239,7 +239,7 @@ fn single_frame_rejects_prior_depth_dependency() {
     let fixture = depth_sequence().frames.remove(1);
     let (device, queue) = crate::render::headless_device_forced_fallback();
     assert_eq!(
-        pollster::block_on(fixture.replay(device, queue)).unwrap_err(),
+        pollster::block_on(fixture.replay(device, queue.clone())).unwrap_err(),
         CaptureError::ClearPolicyMismatch
     );
 }
@@ -278,7 +278,8 @@ fn capture_sequence_replays_from_reset() {
     assert_eq!(sequence.frames[1].frame.serial, 2);
     let sequence = Sequence::from_bytes(&sequence.to_bytes().unwrap()).unwrap();
     let output =
-        pollster::block_on(sequence.replay(device, queue, DepthResetPolicy::Never)).unwrap();
+        pollster::block_on(sequence.replay(device, queue.clone(), DepthResetPolicy::Never))
+            .unwrap();
     assert_eq!(output.presentations.len(), 2);
     for presentation in &output.presentations {
         assert_eq!(center(&presentation.output), [0, 0, 0, 255]);
@@ -300,7 +301,7 @@ fn capture_sequence_replays_from_reset() {
 fn capture_host_swaps_do_not_add_frames_or_invalidate_writeback() {
     let source = depth_sequence();
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let mut renderer = source.frames[0].renderer(device, queue, ClearPolicy::Persist);
+    let mut renderer = source.frames[0].renderer(device, queue.clone(), ClearPolicy::Persist);
     renderer.set_guest_writeback(true);
     let mut capture = CaptureSequence::begin(&mut renderer, 123).unwrap();
     let mut memory = std::collections::BTreeMap::new();
@@ -415,7 +416,7 @@ fn v1_capture_still_replays() {
     ))
     .unwrap();
     let (device, queue) = crate::render::headless_device_forced_fallback();
-    let output = pollster::block_on(fixture.replay(device, queue)).unwrap();
+    let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(output
         .rgba8
         .as_chunks::<4>()
@@ -491,7 +492,8 @@ fn sequence_warmup_preserves_registers_and_presentation_serials() {
     sequence.presentations = vec![2];
     let (device, queue) = crate::render::headless_device_forced_fallback();
     let output =
-        pollster::block_on(sequence.replay(device, queue, DepthResetPolicy::Never)).unwrap();
+        pollster::block_on(sequence.replay(device, queue.clone(), DepthResetPolicy::Never))
+            .unwrap();
     assert_eq!(output.frames.len(), 2);
     assert_eq!(output.presentations.len(), 1);
     assert_eq!(output.presentations[0].serial, 2);
@@ -524,7 +526,7 @@ fn single_frame_rejects_prior_rgba32_color_dependency() {
     }
     let (device, queue) = crate::render::headless_device_forced_fallback();
     assert_eq!(
-        pollster::block_on(fixture.replay(device, queue)).unwrap_err(),
+        pollster::block_on(fixture.replay(device, queue.clone())).unwrap_err(),
         CaptureError::ClearPolicyMismatch
     );
 }
@@ -556,7 +558,7 @@ fn single_frame_rejects_prior_contents_in_scissor_growth_rows() {
     let fixture = scissor_growth_fixture();
     let (device, queue) = crate::render::headless_device_forced_fallback();
     assert_eq!(
-        pollster::block_on(fixture.replay(device, queue)).unwrap_err(),
+        pollster::block_on(fixture.replay(device, queue.clone())).unwrap_err(),
         CaptureError::ClearPolicyMismatch
     );
 }

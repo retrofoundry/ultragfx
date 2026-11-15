@@ -1,6 +1,10 @@
 #[allow(dead_code)]
 pub(crate) mod common;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "../../tests/common/queue.rs"]
+pub(crate) mod queue;
+
 #[path = "../../../tools/readbacks/export.rs"]
 pub(crate) mod readback_export;
 

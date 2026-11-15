@@ -254,7 +254,7 @@ fn alpha_dither_seed_replays_exactly() {
     }
     let mut changed = restored;
     changed.frame.dither_seed ^= 1;
-    let third = pollster::block_on(changed.replay(device, queue)).unwrap();
+    let third = pollster::block_on(changed.replay(device, queue.clone())).unwrap();
     assert_ne!(first.rgba8, third.rgba8);
 }
 
@@ -306,7 +306,7 @@ fn alpha_dither_capture_records_renderer_frame_count() {
     let recorded = recorded.unwrap();
     assert_eq!(recorded.frame.serial, 3);
     assert_eq!(recorded.frame.dither_seed, 3);
-    let replayed = pollster::block_on(recorded.replay(device, queue)).unwrap();
+    let replayed = pollster::block_on(recorded.replay(device, queue.clone())).unwrap();
     assert_eq!(live, replayed.rgba8);
     assert_eq!(
         &live[(104 * 320 + 145) * 4..(104 * 320 + 146) * 4],

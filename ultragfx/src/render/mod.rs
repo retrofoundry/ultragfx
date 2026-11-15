@@ -679,6 +679,48 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn test_queue_drains_on_return_and_unwind() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        for assertion_fails in [false, true] {
+            for callback_fails in [false, true] {
+                let (device, queue) = headless_device_forced_fallback();
+                let _keep_alive = (device.clone(), queue.clone());
+                let completed = Arc::new(AtomicBool::new(false));
+                let observed = completed.clone();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    let queue = queue;
+                    let encoder = device.create_command_encoder(&Default::default());
+                    queue.submit([encoder.finish()]);
+                    queue.on_submitted_work_done(move || {
+                        completed.store(true, Ordering::SeqCst);
+                        assert!(!callback_fails, "completion callback");
+                    });
+                    assert!(!assertion_fails, "original assertion");
+                }));
+                assert!(observed.load(Ordering::SeqCst));
+                if assertion_fails || callback_fails {
+                    let panic = result.unwrap_err();
+                    assert_eq!(
+                        panic.downcast_ref::<&str>(),
+                        Some(&if assertion_fails {
+                            "original assertion"
+                        } else {
+                            "completion callback"
+                        })
+                    );
+                } else {
+                    assert!(result.is_ok());
+                }
+            }
+        }
+    }
+
     /// Smoke test: `SceneRenderer::new` at both `Rgba8Unorm` and `Bgra8Unorm` must not panic.
     /// Verifies the dual draw-pipeline matrices (textured at color_format + textured_fb at
     /// Rgba8Unorm) and the present pipeline all compile successfully at both surface formats.
@@ -2670,10 +2712,8 @@ impl SceneRenderer {
 /// Uses Limits::default() (WebGPU) so compute + storage buffers are available for the RSP-process pass.
 /// Returns `(device, queue, dual_source)` where `dual_source` is true when the adapter advertised
 /// `DUAL_SOURCE_BLENDING` and it was successfully requested (B3/B4 use this to select pipelines).
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn headless_device() -> (wgpu::Device, wgpu::Queue, bool) {
-    #[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub fn headless_device() -> (wgpu::Device, crate::tests::queue::TestQueue, bool) {
     let _ = env_logger::try_init();
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -2697,16 +2737,15 @@ pub fn headless_device() -> (wgpu::Device, wgpu::Queue, bool) {
         trace: wgpu::Trace::Off,
     }))
     .expect("no device");
+    let queue = crate::tests::queue::TestQueue::new(&device, queue);
     (device, queue, dual)
 }
 
 /// Headless device with dual-source blending forcibly disabled — mirrors the §11 forced-fallback
 /// CI mode. Requests `Features::empty()` even when the adapter supports `DUAL_SOURCE_BLENDING`,
 /// so the fallback blender path (B3) can be exercised deterministically.
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn headless_device_forced_fallback() -> (wgpu::Device, wgpu::Queue) {
-    #[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub fn headless_device_forced_fallback() -> (wgpu::Device, crate::tests::queue::TestQueue) {
     let _ = env_logger::try_init();
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -2725,6 +2764,7 @@ pub fn headless_device_forced_fallback() -> (wgpu::Device, wgpu::Queue) {
         trace: wgpu::Trace::Off,
     }))
     .expect("no device");
+    let queue = crate::tests::queue::TestQueue::new(&device, queue);
     (device, queue)
 }
 

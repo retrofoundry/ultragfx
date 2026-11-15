@@ -720,7 +720,7 @@ fn shared_depth_fixture_pixels() {
         crate::capture::MemoryLayout::IMAGE
     );
     let (device, queue) = headless_device_forced_fallback();
-    let output = pollster::block_on(fixture.replay(device, queue)).unwrap();
+    let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(
         output.diagnostics.iter().all(Vec::is_empty),
         "{:?}",
@@ -814,7 +814,7 @@ fn depth_generation_diagnostics_reach_process_dl() {
     let (device, queue) = headless_device_forced_fallback();
     let mut renderer = crate::Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: FORMAT,
             width: 320,
@@ -1062,7 +1062,7 @@ fn depth_legacy_extent_diagnostic_reaches_process_dl_and_allows_guest_draws() {
     let (device, queue) = headless_device_forced_fallback();
     let mut renderer = crate::Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: FORMAT,
             width: 640,
@@ -1246,7 +1246,7 @@ mod writeback {
         let (device, queue) = headless_device_forced_fallback();
         Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: FORMAT,
                 width,

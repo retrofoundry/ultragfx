@@ -170,7 +170,7 @@ pub(super) fn harness(
         compositor: renderer.inner.compositor(),
         hook: None,
         device,
-        queue,
+        queue: queue.clone(),
         format: crate::render_format_of(&config),
         needs_configure: true,
         profiling: Default::default(),

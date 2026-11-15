@@ -380,7 +380,7 @@ fn facade(scale: u32, fallback: bool) -> Renderer {
     };
     Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: FORMAT,
             width: 32,

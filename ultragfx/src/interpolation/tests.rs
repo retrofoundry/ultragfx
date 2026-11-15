@@ -184,7 +184,7 @@ fn renderer(scale: u32) -> Renderer {
     let (device, queue, _) = crate::render::headless_device();
     Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,

@@ -598,7 +598,12 @@ type FogPixelCase = (u8, u8, u8, [[u8; 3]; 2]);
 const INPUT_RGB: [u8; 3] = [200, 100, 50];
 const FOG_RGB: [u8; 3] = [20, 70, 140];
 
-type BlenderTarget = (wgpu::Device, wgpu::Queue, bool, SceneRenderer);
+type BlenderTarget = (
+    wgpu::Device,
+    crate::tests::queue::TestQueue,
+    bool,
+    SceneRenderer,
+);
 
 fn blender_target(fallback: bool) -> BlenderTarget {
     let (device, queue, dual) = if fallback {

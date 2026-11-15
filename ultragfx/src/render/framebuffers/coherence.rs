@@ -1953,7 +1953,7 @@ mod tests {
         };
         let mut r = crate::Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             crate::PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,

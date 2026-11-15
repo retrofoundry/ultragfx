@@ -35,7 +35,7 @@ fn present_to_scans_out_the_last_rendered_framebuffer() {
     let (device, queue, _dual) = crate::render::headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,
