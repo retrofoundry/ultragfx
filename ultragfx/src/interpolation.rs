@@ -442,7 +442,7 @@ impl crate::Renderer {
         diags: &mut dyn crate::DiagSink,
         submission: TaskSubmission<'_>,
     ) -> TaskHandle {
-        self.submit_task_memory(hw.rdram(), entry, ucode, diags, submission)
+        self.submit_task_memory(hw.rdram(), entry, ucode, diags, submission, &mut || {})
     }
 
     /// Execute a native-pointer task with the memory contract of `process_dl_host`.
@@ -459,7 +459,27 @@ impl crate::Renderer {
         submission: TaskSubmission<'_>,
     ) -> TaskHandle {
         let memory = unsafe { crate::hle::host_mem::HostMemory::new(ram) };
-        self.submit_task_memory(memory, entry, ucode, diags, submission)
+        self.submit_task_memory(memory, entry, ucode, diags, submission, &mut || {})
+    }
+
+    /// [`Self::submit_task_host`] with the release contract of
+    /// [`crate::Renderer::process_dl_host_released`].
+    ///
+    /// # Safety
+    /// The memory requirements of [`crate::Renderer::process_dl_host`] apply until `released` is
+    /// called rather than until return.
+    #[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
+    pub unsafe fn submit_task_host_released(
+        &mut self,
+        ram: crate::HostRam<'_>,
+        entry: u64,
+        ucode: Microcode,
+        diags: &mut dyn crate::DiagSink,
+        submission: TaskSubmission<'_>,
+        released: &mut dyn FnMut(),
+    ) -> TaskHandle {
+        let memory = unsafe { crate::hle::host_mem::HostMemory::new(ram) };
+        self.submit_task_memory(memory, entry, ucode, diags, submission, released)
     }
 
     fn submit_task_memory(
@@ -469,6 +489,7 @@ impl crate::Renderer {
         ucode: Microcode,
         diags: &mut dyn crate::DiagSink,
         submission: TaskSubmission<'_>,
+        released: &mut dyn FnMut(),
     ) -> TaskHandle {
         let mut recording = submission.annotations.map(|annotations| Recording {
             annotations,
@@ -483,6 +504,7 @@ impl crate::Renderer {
             crate::Submission::DiscardOnStop,
             submission.microcode_bindings,
             recording.as_mut(),
+            released,
         );
         TaskHandle {
             #[cfg(not(target_arch = "wasm32"))]

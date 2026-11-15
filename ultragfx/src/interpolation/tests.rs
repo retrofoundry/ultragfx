@@ -1276,6 +1276,7 @@ fn decal_fixture(x: f32, inherited: bool) -> Fixture {
 }
 
 fn writeback_task(r: &mut Renderer, mut f: Fixture, cookie: u64, guest: &mut [u8]) -> TaskHandle {
+    r.take_guest_writes();
     guest[..f.built.rdram.len()].copy_from_slice(&f.built.rdram);
     f.built.rdram = guest.to_vec();
     let task = task(r, f, cookie, 1, true);

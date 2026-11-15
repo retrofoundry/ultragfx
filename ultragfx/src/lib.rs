@@ -776,6 +776,10 @@ impl Renderer {
     }
 
     /// Drain image patches in the selected encoding, accumulated by accepted tasks since the previous drain.
+    /// Apply them to guest memory before the next task starts. With write-back on, the next task
+    /// treats any guest bytes that differ from ultragfx's own output as CPU writes, so patches left
+    /// undrained make it import stale pixels as foreign and the model diverges from the guest; such
+    /// a task reports [`DiagKind::GuestWritesNotTaken`] and is not interpolated.
     pub fn take_guest_writes(&mut self) -> Vec<GuestWrite> {
         std::mem::take(&mut self.guest_writes)
     }
@@ -856,6 +860,40 @@ impl Renderer {
     ) -> DlSummary {
         let mem = unsafe { crate::hle::host_mem::HostMemory::new(ram) };
         self.process_dl_memory_with_bindings(mem, entry, ucode, diags, bindings)
+    }
+
+    /// [`Self::process_dl_host_with_bindings`], calling `released` as soon as guest memory is no
+    /// longer read: after the walk and the write-back bounds check, before encoding, the GPU wait
+    /// and readback. `released` runs exactly once, also when the task is rejected, on the calling
+    /// thread while the renderer is borrowed, so it must return quickly and must not call back into
+    /// the renderer. The guest may run after it, but the host must apply this task's
+    /// [`Self::take_guest_writes`] before it starts the next task.
+    ///
+    /// # Safety
+    /// The memory requirements of [`Self::process_dl_host`] apply until `released` is called
+    /// rather than until return.
+    #[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
+    pub unsafe fn process_dl_host_released(
+        &mut self,
+        ram: HostRam<'_>,
+        entry: u64,
+        ucode: Microcode,
+        diags: &mut dyn DiagSink,
+        bindings: &[(u64, Microcode)],
+        released: &mut dyn FnMut(),
+    ) -> DlSummary {
+        let mem = unsafe { crate::hle::host_mem::HostMemory::new(ram) };
+        self.process_dl_memory_observed(
+            mem,
+            entry,
+            ucode,
+            diags,
+            None,
+            Submission::DiscardOnStop,
+            bindings,
+            None,
+            released,
+        )
     }
 
     /// Interpret at most `command_count` dispatched commands and rasterize the finalized prefix
@@ -986,6 +1024,7 @@ impl Renderer {
             submission,
             bindings,
             None,
+            &mut || {},
         )
     }
 
@@ -1006,6 +1045,7 @@ impl Renderer {
             Submission::DiscardOnStop,
             bindings,
             None,
+            &mut || {},
         )
     }
 
@@ -1031,15 +1071,29 @@ impl Renderer {
         submission: Submission,
         bindings: &[(u64, Microcode)],
         recording: Option<&mut interpolation::Recording<'_>>,
+        release_guest: &mut dyn FnMut(),
     ) -> DlSummary {
         if let Some(mut diagnostic) = self.frame_admission_error {
             diagnostic.at = entry;
             diags.emit(diagnostic);
+            release_guest();
             return DlSummary {
                 errors: 1,
                 termination: inspect::WalkTermination::Rejected,
                 ..Default::default()
             };
+        }
+        let untaken = (self.guest_writeback
+            && submission != Submission::RasterizePrefix
+            && !self.guest_writes.is_empty())
+        .then_some(Diagnostic {
+            at: entry,
+            kind: DiagKind::GuestWritesNotTaken {
+                patches: self.guest_writes.len() as u32,
+            },
+        });
+        if let Some(diagnostic) = untaken {
+            diags.emit(diagnostic);
         }
         #[cfg(not(target_arch = "wasm32"))]
         let _completion = if self.interpolation_active() {
@@ -1127,6 +1181,8 @@ impl Renderer {
                 .iter()
                 .any(|diag| matches!(diag.kind, DiagKind::MemoryRead { .. }))
         {
+            result.diags.extend(untaken);
+            release_guest();
             return result.summary(false);
         }
 
@@ -1147,6 +1203,8 @@ impl Renderer {
                 .unwrap()
                 .check_strict_guest(&result.scene, self.inner.coherence.as_ref().unwrap())
                 .is_ok();
+        // After the strict check: a warning about the host's ordering must not change admission.
+        result.diags.extend(untaken);
 
         if !result.commits_rdp() {
             released = Ok(());
@@ -1169,9 +1227,12 @@ impl Renderer {
                 diags.emit(diagnostic);
                 result.diags.push(diagnostic);
                 result.termination = inspect::WalkTermination::Rejected;
+                release_guest();
                 return result.summary(false);
             }
         }
+        drop(mem);
+        release_guest();
         if !native && self.guest_writeback {
             result.scene.use_compatibility_policy();
             self.inner.coherence.as_mut().unwrap().begin_task();
