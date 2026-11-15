@@ -96,6 +96,74 @@ class ConfigurationGates(CaptureCase):
         self.assertFalse(report["passed"])
         self.assertIn("failed configuration: default", report["failures"]["candidate"][0])
 
+    def test_bootstrap_keeps_each_revisions_semantic_assertions_and_requires_both_to_pass(self):
+        suites = ["ultragfx/src/tests/fog.rs", "ultragfx/src/tests/fog_mirror.rs",
+                  "ultragfx/src/tests/mod.rs", "ultragfx/src/tests/tmem_fixtures.rs", "ultragfx/tests/tmem_preimage.rs"]
+        fixture = "ultragfx/tests/fog-mirror/cases.json"
+        for checkout, value in [(self.base, 1), (self.head, 2)]:
+            for name in json.loads((ci.HERE / "harness-files.json").read_text()) + suites + [fixture]:
+                path = checkout / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(str(value))
+            (checkout / "renderer.txt").write_text(str(value))
+            (checkout / "Cargo.lock").write_text("frozen lock")
+            (checkout / "ultragfx/Cargo.toml").write_text("[dev-dependencies]\n")
+            for name in suites:
+                (checkout / name).write_text(
+                    "from pathlib import Path\n"
+                    f"assert int(Path('renderer.txt').read_text()) == {value}\n"
+                    f"assert int(Path('{fixture}').read_text()) == {value}\n")
+
+        def metadata(command, checkout):
+            if command == ["git", "rev-parse", "HEAD"]:
+                return BASE
+            if command == ["git", "status", "--porcelain"]:
+                return ""
+            self.assertEqual(command[:2], ["cargo", "tree"])
+            return "unchanged production graph"
+
+        def capture(checkout, destination, base_sha, harness_checkout, inventory, replacement_inventory=None):
+            shutil.copytree(checkout, destination)
+            failures = [name for name in suites if subprocess.run(
+                [sys.executable, name], cwd=checkout, capture_output=True).returncode]
+            self.mutate(destination, lambda m: m["configurations"]["default"].update(
+                exit_code=101 if failures else 0, failed_tests=failures))
+            return json.loads((destination / "manifest.json").read_text())
+
+        for failing_side in [None, self.base, self.head]:
+            with self.subTest(failing_side=failing_side):
+                (self.base / "renderer.txt").write_text("3" if failing_side == self.base else "1")
+                (self.head / "renderer.txt").write_text("3" if failing_side == self.head else "2")
+                output = self.root / ("semantic-" + (failing_side.name if failing_side else "pass"))
+                arguments = ["ci.py", "--checkout", str(self.head), "--base-checkout", str(self.base),
+                             "--output", str(output), "--base-sha", BASE, "--artifact-name", "readbacks"]
+                with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
+                        patch.object(ci, "capture", capture), patch.object(ci, "command_output", metadata), \
+                        patch.object(ci, "committed_replacement_inventory", return_value=ci.replacements.inventory()), \
+                        patch.object(ci, "committed_golden_inventory", return_value=readbacks.goldens()), \
+                        patch.object(ci, "fetch_base", side_effect=ValueError("missing base artifact")):
+                    self.assertEqual(ci.main(), 1 if failing_side else 0)
+                report = json.loads((output / "comparison.json").read_text())
+                self.assertEqual(report["passed"], failing_side is None)
+                self.assertEqual(report["complete"], failing_side is None)
+                if failing_side:
+                    label = "base" if failing_side == self.base else "candidate"
+                    self.assertIn(suites[1], report["failures"][label][0])
+                self.assertEqual((self.base / "tools/readbacks/export.rs").read_text(), "2")
+
+    def test_missing_base_names_are_reported_without_confusing_other_shards_or_targets(self):
+        self.mutate(self.base, lambda m: m["configurations"]["default"].update(tests={
+            "lib:ultragfx": {"available": ["old", "other_shard"], "selected": ["old"]},
+            "test:integration": {"available": ["new"], "selected": ["new"]}}))
+        self.mutate(self.head, lambda m: m["configurations"]["default"].update(tests={
+            "lib:ultragfx": {"available": ["old", "other_shard", "new"], "selected": ["other_shard", "new"]},
+            "test:added": {"available": ["new"], "selected": ["new"]}}))
+        report = self.compare()
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["base_missing_tests"], [
+            {"configuration": "default", "target": "lib:ultragfx", "name": "new"},
+            {"configuration": "default", "target": "test:added", "name": "new"}])
+
     def test_selections_partition_every_frozen_row_without_changing_inventory(self):
         original = json.dumps(ci.INVENTORY, sort_keys=True)
         keys = set()

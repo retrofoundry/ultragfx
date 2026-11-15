@@ -146,9 +146,21 @@ or test logs; a partial report cannot satisfy the gate or supply a successful ba
 artifact. The standalone comparator continues to require complete captures.
 
 The base receives only the files listed in `harness-files.json`, the candidate's
-`[dev-dependencies]` section, and the frozen dependency lock. `bootstrap-overlay.json`
-records the overlay hashes separately from the base production SHA. The bootstrap
-compares the production dependency graph before and after the overlay under default
+`[dev-dependencies]` section, and the frozen dependency lock. The overlay carries
+exporters, row-producing tests and their inputs/helpers. Semantic suites that
+export no frozen rows, including `fog.rs` and `fog_mirror.rs`, keep their own
+revision's assertions, fixture data and module declarations. Both revisions must
+pass their assertions; no base test failures are waived.
+
+Captures record each compiled test target's available and selected libtest names.
+`comparison.json` lists selected candidate names absent from the base under
+`base_missing_tests`, and the job log prints them without failing. A test assigned
+to another base shard is not absent. An empty base section is skipped rather than
+running an unfiltered binary; an empty candidate section fails. Missing frozen
+rows still fail independently of test selection.
+
+`bootstrap-overlay.json` records overlay hashes separately from the base production
+SHA. The bootstrap compares the production dependency graph before and after the overlay under default
 and all-features. Its initial offline resolution may prune the candidate lock's new
 dev dependencies for the original base manifest; captures restore and use the exact
 candidate lock with `--locked`. A production dependency graph change fails.

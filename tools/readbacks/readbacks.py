@@ -271,7 +271,16 @@ def compare(base, candidate, inventory, base_sha, candidate_sha, base_run_id, ca
     report = {"passed": complete, "complete": complete, "missing_rows": missing, "failures": failures, "gpu_decode": gpu_decode, "replacements": replacements,
               "threshold": 0, "base_sha": base_sha, "candidate_sha": candidate_sha,
               "base_run_id": str(base_run_id), "candidate_run_id": str(candidate_run_id), "rows": [],
-              "replacement_changes": declared, "golden_changes": []}
+              "replacement_changes": declared, "golden_changes": [], "base_missing_tests": []}
+    for config, result in head["configurations"].items():
+        original = parent["configurations"][config]
+        if "tests" not in original or original.get("build_exit_code", 0):
+            continue
+        for target, tests in result.get("tests", {}).items():
+            available = original["tests"].get(target, {}).get("available", [])
+            report["base_missing_tests"].extend(
+                {"configuration": config, "target": target, "name": name}
+                for name in sorted(set(tests["selected"]) - set(available)))
     for key, row in head_rows.items():
         if key not in parent_rows:
             continue
