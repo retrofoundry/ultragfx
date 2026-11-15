@@ -313,6 +313,10 @@ def committed_replacement_inventory(checkout, sha):
     return json.loads(command_output(["git", "show", f"{sha}:{replacements.INVENTORY}"], checkout))
 
 
+def committed_golden_inventory(checkout, sha):
+    return json.loads(command_output(["git", "show", f"{sha}:tools/readbacks/goldens.json"], checkout))
+
+
 def capture(checkout, output, base_sha, harness_checkout, inventory=None, replacement_inventory=None):
     inventory = INVENTORY if inventory is None else inventory
     checkout, output = checkout.resolve(), output.resolve()
@@ -321,7 +325,7 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None, replac
         raise ValueError("UPDATE_GOLDENS must be unset")
     freeze_lock(checkout)
     source_sha = command_output(["git", "rev-parse", "HEAD"], checkout)
-    goldens = json.loads((HERE / "goldens.json").read_text(encoding="utf-8"))
+    goldens = committed_golden_inventory(checkout, source_sha)
     actual_goldens = {path.relative_to(checkout).as_posix(): file_hash(path)
                       for path in sorted((checkout / "ultragfx/goldens").glob("*.bin"))}
     if actual_goldens != goldens:
@@ -499,14 +503,15 @@ def download_artifact(repository, run_id, artifact_name, destination):
     archive.unlink()
 
 
-def fetch_base(repository, base_sha, artifact_name, destination, inventory=None, replacement_inventory=None):
+def fetch_base(repository, base_sha, artifact_name, destination, inventory=None, replacement_inventory=None, golden_inventory=None):
     inventory = INVENTORY if inventory is None else inventory
     runs = gh_json(f"repos/{repository}/actions/workflows/validate.yml/runs?branch=main&event=push&status=success&head_sha={base_sha}&per_page=100")
     for run in runs["workflow_runs"]:
         if run["head_sha"] != base_sha or run["conclusion"] != "success" or run["event"] != "push":
             continue
         download_artifact(repository, str(run["id"]), artifact_name, destination)
-        load_capture(destination, inventory, base_sha, str(run["id"]), replacement_inventory=replacement_inventory)
+        load_capture(destination, inventory, base_sha, str(run["id"]), replacement_inventory=replacement_inventory,
+                     golden_inventory=golden_inventory)
         return str(run["id"])
     raise ValueError(f"no complete main artifact for exact base {base_sha}")
 
@@ -525,11 +530,12 @@ def gate(args):
     history = []
     base = output / "downloaded-base"
     base_replacements = committed_replacement_inventory(args.base_checkout, args.base_sha)
+    base_goldens = committed_golden_inventory(args.base_checkout, args.base_sha)
     try:
         load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
-        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory, base_replacements)
+        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory, base_replacements, base_goldens)
         report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"], run_id, manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
-                         base_replacement_inventory=base_replacements)
+                         base_replacement_inventory=base_replacements, base_golden_inventory=base_goldens)
         if not report["passed"]:
             (output / "cross-run-comparison.json").write_text(json.dumps(report, indent=2) + "\n")
             raise ValueError("cross-run RGBA delta; recapture both revisions on this runner")
@@ -543,12 +549,16 @@ def gate(args):
         try:
             report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"],
                              base_manifest["run_id"], manifest["run_id"], allow_incomplete=True, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
-                             base_replacement_inventory=base_replacements)
+                             base_replacement_inventory=base_replacements, base_golden_inventory=base_goldens)
         except (ValueError, KeyError, OSError) as error:
             report = {"passed": False, "complete": False, "error": str(error)}
     (output / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     for change in report.get("replacement_changes", []):
         print(f"declared replacement change: {change['id']} ({change['change']})")
+    for change in report.get("golden_changes", []):
+        print(f"declared golden change: {change['configuration']}/{change['id']}: "
+              f"{change['changed_pixels']} pixels, {change['changed_bytes']} bytes, channel maxima {change['channel_maxima']}"
+              + ("; unchanged declaration fails the gate" if change["changed_pixels"] == 0 else ""))
     if not report["passed"]:
         failures = [f"{label}: {failure}" for label, entries in report.get("failures", {}).items()
                     for failure in entries]

@@ -96,9 +96,21 @@ between the two is a declared change. `comparison.json` lists each one under
 names it; it doesn't fail the gate. A side whose output differs from its own inventory
 still fails.
 
-Every comparison uses all four RGBA channels, threshold zero and zero differing
-pixels. The existing tolerance-two golden assertions still run. A missing adapter,
-row, configuration, input, literal or output file fails the gate. Windows captures
+Golden changes are declared by regenerating the committed `.bin` and changing its
+hash in `goldens.json`. Each capture checks the golden files against its own
+commit's ledger, read with `git show`, even after the candidate harness overlays
+the base. The artifact's ledger must match that commit's ledger too. A differing
+hash declares every row mapped to that file by `inventory.json`'s `golden` field,
+in every owning configuration on both operating systems. `comparison.json` lists
+these rows under `golden_changes`, with both hashes, changed bytes and pixels,
+and channel maxima; the job log prints the counts and maxima. Each declared row
+must change: an unchanged row fails and is named in the log. The declaration
+expires when base and candidate have the same hash. Decode witnesses and IMAGE
+fixtures have no committed golden and cannot declare changes.
+
+Every undeclared comparison uses all four RGBA channels, threshold zero and zero
+differing pixels. The existing tolerance-two golden assertions still run. A missing
+adapter, row, configuration, input, literal or output file fails the gate. Windows captures
 must report a CPU DX12 adapter, static DXC and one test thread.
 
 Golden filenames use the Rust test name. In particular, the three multi-material
@@ -121,8 +133,8 @@ downloads `readbacks-macos-latest-<configuration>[-<section>]` or
 `readbacks-windows-latest-<configuration>-<section>`. It verifies the manifest
 source SHA and run ID before comparing. Missing, expired or incompatible artifacts
 trigger a capture of the exact base checkout in the same job. A cross-run byte delta
-also triggers this capture and retains the original comparison report. A nonzero
-same-run delta fails.
+that fails the declaration policy also triggers this capture and retains the original
+comparison report. A same-run comparison that fails that policy fails the job.
 
 A failed candidate configuration also triggers the same-run base capture. Cargo
 uses `--no-fail-fast` so later test targets and configurations still export their
@@ -180,6 +192,9 @@ To compare downloaded captures, pass the two source SHAs and run IDs explicitly.
 `BASE_ARTIFACT` and `CANDIDATE_ARTIFACT` must name physical directories containing
 `manifest.json`; take each run ID from the selected workflow run, then verify it
 against its manifest. For a same-run bootstrap the two run IDs are equal.
+When golden ledgers differ, pass `--base-goldens` and `--goldens` to `readbacks.py`,
+using ledger files extracted from the respective commits with `git show`.
+Both default to the comparator checkout's `goldens.json`.
 
 ```sh
 python3 '/Volumes/DS Vault/hub/wt/fast3d-rs-tmem/tools/readbacks/readbacks.py' \
@@ -189,8 +204,9 @@ python3 '/Volumes/DS Vault/hub/wt/fast3d-rs-tmem/tools/readbacks/readbacks.py' \
   --output '/Volumes/DS Vault/hub/scratch/fast3d/tmem-checks/T1/readback-comparison.json'
 ```
 
-The comparator exits 1 for validation failures or changed bytes and writes the
-reason or per-row changed-byte/pixel counts and channel maxima. Its unit tests
+The comparator exits 1 for validation failures, undeclared changes or unchanged
+declared rows and writes the reason or per-row changed-byte/pixel counts and
+channel maxima. Its unit tests
 exercise an alpha-only mutation, truncated and missing rows, overwritten
 configurations, incorrect SHAs/run IDs, input corruption, independent decode
 literals and unchanged captures. These CPU checks do not establish the Metal or
