@@ -537,3 +537,99 @@ fn guest_route_gpu_triangle_constant_endpoint_colours() {
         assert_eq!(word(&memory, FB, 0), expected as u16);
     }
 }
+
+#[test]
+fn guest_route_shade_fog_lerp_writes_the_consoles_seeded_5_bit_factor() {
+    const MAGIC: [u32; 16] = [0, 6, 1, 7, 4, 2, 5, 3, 3, 5, 2, 4, 7, 1, 6, 0];
+    const BAYER: [u32; 16] = [0, 4, 1, 5, 4, 0, 5, 1, 3, 7, 2, 6, 7, 3, 6, 2];
+    let fog = (CLR_FOG, A_SHADE, CLR_IN, B_1MA);
+    for alpha_dither in 0..4u32 {
+        for (cycle, low) in [
+            (
+                0,
+                gbl_c1(fog.0, fog.1, fog.2, fog.3) | gbl_c2(fog.0, fog.1, fog.2, fog.3),
+            ),
+            (
+                1,
+                gbl_c1(CLR_IN, A_0, CLR_IN, B_1) | gbl_c2(fog.0, fog.1, fog.2, fog.3),
+            ),
+        ] {
+            for scale in [1, 2, 4] {
+                for fallback in [false, true] {
+                    let mut r = renderer(fallback);
+                    r.reconfigure(crate::RendererConfig {
+                        resolution_multiplier: scale,
+                        ..r.config
+                    });
+                    r.set_guest_writeback(true);
+                    let mut memory = Memory(vec![0; OUTPUT as usize + 512 * 64 * 2]);
+                    let mut b = DlBuilder::new();
+                    let projection = b.matrix([
+                        [1.0 / 1024.0, 0.0, 0.0, 0.0],
+                        [0.0, -1.0 / 128.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [-1.0, 1.0, 0.0, 1.0],
+                    ]);
+                    let viewport = b.viewport(Vp {
+                        vscale: [1024, 128, 511, 0],
+                        vtrans: [1024, 128, 511, 0],
+                    });
+                    let vertices =
+                        b.vertices(&[[0, 0], [512, 0], [0, 128]].map(|[x, y]| VtxColored {
+                            x,
+                            y,
+                            z: 0,
+                            flag: 0,
+                            s: 0,
+                            t: 0,
+                            r: 0,
+                            g: 0,
+                            b: 0,
+                            a: 164,
+                        }));
+                    let mut dl = Vec::new();
+                    image(&mut dl, FB, 512, 64, 0, 2);
+                    dl.extend([
+                        (
+                            0xef00_00c0 | (alpha_dither << 4) | G_TC_FILT | (cycle << 20),
+                            FORCE_BL | low,
+                        ),
+                        combine(3, 3),
+                        gdp_set_prim_color(0, 0, 0x000000ff),
+                        gdp_set_fog_color(0xffffffff),
+                        gsp_set_geometrymode(G_SHADE | G_SHADING_SMOOTH),
+                        gsp_viewport(viewport),
+                        gsp_matrix(projection, true, true, false),
+                        gsp_vertex(0, 3, vertices),
+                        gsp_1triangle(0, 1, 2),
+                    ]);
+                    accepted(&mut r, &mut memory, built(b, dl));
+                    let presented = pixels(&mut r, FB, 512 * scale, 64 * scale);
+                    for y in 4..8usize {
+                        for x in 4..8usize {
+                            let index = (y & 3) * 4 + (x & 3);
+                            let seed = [BAYER[index], !BAYER[index] & 7, MAGIC[index], 0]
+                                [alpha_dither as usize];
+                            let alpha = (164 + seed).min(255);
+                            let blended = (255 * (alpha >> 3)) >> 5;
+                            let context = format!(
+                                "alpha_dither={alpha_dither} cycle={cycle} scale={scale} \
+                                 fallback={fallback} ({x},{y})"
+                            );
+                            let channel = u16::try_from(blended >> 3).unwrap();
+                            assert_eq!(
+                                word(&memory, FB, y * 512 + x) >> 1,
+                                (channel << 10) | (channel << 5) | channel,
+                                "{context}"
+                            );
+                            let s = scale as usize;
+                            let at = ((y * s + s / 2) * 512 * s + x * s + s / 2) * 4;
+                            let expected = if scale == 1 { blended as u8 } else { 164 };
+                            assert_eq!(presented[at..at + 3], [expected; 3], "{context}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

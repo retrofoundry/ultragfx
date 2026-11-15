@@ -25,8 +25,9 @@ difference. Noise and disabled dither keep the `channel >> 3` comparison and the
 case's recorded tolerance.
 
 Precision cases assert saved, independently calculated modern RGB as well as the
-hardware bound. The modern model uses float fog weights, no patterned RDP dither,
-current-pixel timing and affine interpolation at integer XY. Game blending permits
+hardware bound. The modern model uses the console's 5-bit fog weights with the
+alpha-dither seed (alpha noise taken as the magic square), float memory blends, no
+patterned RGB dither, current-pixel timing and affine interpolation at integer XY. Game blending permits
 one RGB8 rounding unit; interpolation permits one unit because GPUs round attribute
 interpolation differently, and thin triangles also for byte-vertex adaptation.
 Thin cases check the selected edge samples, including covered pixels. The game

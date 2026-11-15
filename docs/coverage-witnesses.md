@@ -81,6 +81,18 @@ decoded and compared with its builder. The shared native/browser replay requires
 adapter and compares each selected full frame with B. Primary-color pixels are exact;
 interpolated scalar output permits one UNORM rounding step at covered pixels.
 
+`coverage-fog` is exact too. Its two-cycle `G_RM_FOG_SHADE_A` blends green fog
+against red input. Fog positions 500..1000 and vertex Z values 0, 64, 0 under
+the 1/128 projection give shade-alpha bytes 0, 128, 0. Both dither selectors
+are 3 (disabled), so the blender adds no alpha-dither seed. For barycentric
+weight `l` at the second vertex, `a = floor(128*l)`, the fog weight is `a >> 3`
+and the input weight is `((255-a) >> 3) + 1`. Each RGB numerator shifts right
+by 5; cycle 1 passes the result through. This derives the blend from the
+fixture's state, not rendered pixels. The fixture is authored, not a console
+capture; it does not validate RSP or RDP interpolation precision.
+At integer samples, truncating and rounding the alpha byte give the same
+5-bit weights in this fixture, so it does not distinguish those rules.
+
 Run CPU checks without an adapter:
 
 ```sh

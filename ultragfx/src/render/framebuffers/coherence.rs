@@ -68,8 +68,6 @@ impl Writer {
         } else if self.pixel_bytes() == 1 {
             [rgba[(pixel % self.layout.width as usize) & 1], 0]
         } else {
-            const MAGIC: [u8; 16] = [0, 6, 1, 7, 4, 2, 5, 3, 3, 5, 2, 4, 7, 1, 6, 0];
-            const BAYER: [u8; 16] = [0, 4, 1, 5, 4, 0, 5, 1, 3, 7, 2, 6, 7, 3, 6, 2];
             let x = pixel % self.layout.width as usize;
             let y = pixel / self.layout.width as usize;
             let index = (y & 3) * 4 + (x & 3);
@@ -80,6 +78,24 @@ impl Writer {
             };
             encoding.encode_u16(pack_color(rgba, coverage, threshold))
         }
+    }
+}
+
+const MAGIC: [u8; 16] = [0, 6, 1, 7, 4, 2, 5, 3, 3, 5, 2, 4, 7, 1, 6, 0];
+const BAYER: [u8; 16] = [0, 4, 1, 5, 4, 0, 5, 1, 3, 7, 2, 6, 7, 3, 6, 2];
+
+fn alpha_dither(mode: crate::hle::RenderMode, x: usize, y: usize) -> u8 {
+    let index = (y & 3) * 4 + (x & 3);
+    let pattern = if mode.rgb_dither & 1 == 0 {
+        MAGIC
+    } else {
+        BAYER
+    };
+    match mode.alpha_dither {
+        0 => pattern[index],
+        1 => !pattern[index] & 7,
+        2 => MAGIC[index],
+        _ => 0,
     }
 }
 
@@ -283,18 +299,23 @@ impl CoverageDraw {
                         [x - 0.125, y + 1.125],
                         [x + 1.125, y + 1.125],
                     ];
-                    let distances =
-                        edges.map(|(a, b)| corners.map(|p| edge(a, b, p) * area.signum()));
-                    if distances.iter().any(|edge| edge.iter().all(|&d| d < 0.0)) {
+                    let mut outside = false;
+                    let mut inside = true;
+                    for &(a, b) in &edges {
+                        let mut behind = true;
+                        for p in corners {
+                            let d = edge(a, b, p) * area.signum();
+                            behind &= d < 0.0;
+                            inside &= d > 0.0;
+                        }
+                        outside |= behind;
+                    }
+                    if outside {
                         continue;
                     }
                     let pixel = y as usize * width + x as usize;
                     // Keep a margin around HLE edges; partial samples need the native span walk.
-                    if distances.iter().all(|edge| edge.iter().all(|&d| d > 0.0)) {
-                        pixels[pixel] |= 1;
-                    } else {
-                        pixels[pixel] |= 2;
-                    }
+                    pixels[pixel] |= if inside { 1 } else { 2 };
                 }
             }
         }
@@ -2897,6 +2918,7 @@ impl Coherence {
                                 rgba,
                                 colors[pixel],
                                 shade_alpha,
+                                || alpha_dither(mode, pixel % width, pixel / width),
                                 count,
                                 memory.unwrap_or(7),
                             );

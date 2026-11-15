@@ -8,7 +8,7 @@ fn shade_fragment(in: VsOut) -> vec4<f32> {
     var r = eval_combiner(in);
     var rgb = r.rgb;
     if (combiner.primitive_depth.w == 0u) {
-        rgb = blend_fog(rgb, r.alpha, in.color.a);
+        rgb = blend_fog(rgb, r.alpha, in.color.a, in.clip_position.xy);
     }
     alpha_discard(r, in.clip_position.xy);
     let mux = framebuffer_mux();
