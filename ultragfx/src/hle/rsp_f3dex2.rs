@@ -106,17 +106,7 @@ fn tri2<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     if let Some((mi, ri)) =
         crate::hle::rsp::snapshot_run(cx.rsp, cx.rec, cx.rdp, cx.diags, cx.scene, cx.pc)
     {
-        crate::hle::rsp::record_tri(
-            cx.rsp,
-            cx.rdp,
-            cx.scene,
-            cx.rec,
-            c.p0(17, 7),
-            c.p0(9, 7),
-            c.p0(1, 7),
-            mi,
-            ri,
-        );
+        // The microcode's G_TRI2_handler sends w1's triangle to the RDP before w0's.
         crate::hle::rsp::record_tri(
             cx.rsp,
             cx.rdp,
@@ -125,6 +115,17 @@ fn tri2<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
             c.p1(17, 7),
             c.p1(9, 7),
             c.p1(1, 7),
+            mi,
+            ri,
+        );
+        crate::hle::rsp::record_tri(
+            cx.rsp,
+            cx.rdp,
+            cx.scene,
+            cx.rec,
+            c.p0(17, 7),
+            c.p0(9, 7),
+            c.p0(1, 7),
             mi,
             ri,
         );

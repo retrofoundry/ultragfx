@@ -3,7 +3,7 @@ use crate::tests::common;
 use crate::hle::interpret_rdram;
 
 #[test]
-fn g_tri2_emits_two_triangles_in_order() {
+fn g_tri2_and_quad_emit_their_second_triangle_first() {
     use crate::hle::consts::{G_RM_OPA_SURF, G_RM_OPA_SURF2};
     use n64_gbi::encode::{
         gdp_set_combine_lerp, gdp_set_cycle_type, gdp_set_render_mode, gsp_2triangles, gsp_enddl,
@@ -60,9 +60,24 @@ fn g_tri2_emits_two_triangles_in_order() {
     rdram[0x68..0x6C].copy_from_slice(&e0.to_be_bytes());
     rdram[0x6C..0x70].copy_from_slice(&e1.to_be_bytes());
 
-    let r = crate::hle::interpret_rdram(&rdram, 0x40);
-    assert!(r.diags.is_empty(), "unexpected diag: {:?}", r.diags);
-    assert_eq!(r.scene.indices, vec![0, 1, 2, 0, 2, 3]);
+    for ucode in [
+        crate::hle::GbiUcode::F3dex2,
+        crate::hle::GbiUcode::F3dex2NoN,
+        crate::hle::GbiUcode::F3dzexNoN,
+    ] {
+        for opcode in [0x06, 0x07] {
+            rdram[0x60] = opcode;
+            let r = crate::hle::interp::interpret(
+                crate::RdramImage::new(&rdram),
+                0x40,
+                ucode,
+                crate::DataFormat::Fixed,
+                None,
+            );
+            assert!(r.diags.is_empty(), "unexpected diag: {:?}", r.diags);
+            assert_eq!(r.scene.indices, [0, 2, 3, 0, 1, 2], "{ucode:?} {opcode:#x}");
+        }
+    }
 }
 
 #[test]

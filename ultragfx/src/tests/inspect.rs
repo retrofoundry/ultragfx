@@ -821,14 +821,15 @@ fn triangles_report_index_growth_even_when_runs_coalesce() {
                         assert!(indices.is_empty());
                     } else {
                         assert_eq!(emission_lengths, if doubled { vec![6] } else { vec![3, 3] });
-                        assert_eq!(
-                            indices,
-                            if cull == 1 {
-                                vec![2, 1, 0, 3, 2, 0]
-                            } else {
-                                vec![0, 1, 2, 0, 2, 3]
-                            }
-                        );
+                        let mut expected = if cull == 1 {
+                            vec![2, 1, 0, 3, 2, 0]
+                        } else {
+                            vec![0, 1, 2, 0, 2, 3]
+                        };
+                        if doubled && ucode != Microcode::F3d {
+                            expected.rotate_left(3);
+                        }
+                        assert_eq!(indices, expected);
                         if !paired {
                             assert_eq!(result.scene.draw_runs.len(), 1);
                         } else {
