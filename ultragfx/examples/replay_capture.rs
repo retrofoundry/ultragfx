@@ -52,7 +52,8 @@ mod native {
                     options.source = match value {
                         "native" => ReplaySource::Native,
                         "presentation" => ReplaySource::Presentation,
-                        _ => return Err("--source must be native or presentation".into()),
+                        "both" => ReplaySource::Both,
+                        _ => return Err("--source must be native, presentation or both".into()),
                     };
                 }
             } else {
@@ -60,7 +61,7 @@ mod native {
             }
         }
         if !(2..=3).contains(&args.len()) {
-            return Err("usage: replay_capture <capture.ugfxcap> <output-prefix> [persist|cimg|task|frame|all] [--scale 1|2|3|4] [--source native|presentation]".into());
+            return Err("usage: replay_capture <capture.ugfxcap> <output-prefix> [persist|cimg|task|frame|all] [--scale 1|2|3|4] [--source native|presentation|both]".into());
         }
         let bytes = std::fs::read(&args[0])?;
         let prefix = PathBuf::from(&args[1]);
@@ -156,6 +157,16 @@ mod native {
             output.height,
             &output.rgba8,
         )?;
+        if let Some(native) = &output.native_rgba8 {
+            let scale = output.effective_resolution_multiplier;
+            std::fs::write(named(prefix, "-native.rgba8"), native)?;
+            png(
+                &named(prefix, "-native.png"),
+                output.width / scale,
+                output.height / scale,
+                native,
+            )?;
+        }
         eprintln!(
             "{}: {}x{}, {}x {:?}",
             prefix.display(),

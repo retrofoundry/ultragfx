@@ -401,6 +401,7 @@ pub enum ReplaySource {
     #[default]
     Native,
     Presentation,
+    Both,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -429,6 +430,9 @@ pub struct ReplayOutput {
     pub width: u32,
     pub height: u32,
     pub rgba8: Vec<u8>,
+    /// Native RGBA8 of the same scanout crop at its native extent, present only for
+    /// `ReplaySource::Both`.
+    pub native_rgba8: Option<Vec<u8>>,
     pub summaries: Vec<DlSummary>,
     pub diagnostics: Vec<Vec<Diagnostic>>,
     pub adapter_info: Option<wgpu::AdapterInfo>,
@@ -628,7 +632,9 @@ impl Fixture {
                         if depth == 0 { 0.0 } else { 1.0 },
                     );
                     let candidate = self.render_frame(&mut renderer, options.source).await?;
-                    if candidate.rgba8 != output.rgba8 {
+                    if candidate.rgba8 != output.rgba8
+                        || candidate.native_rgba8 != output.native_rgba8
+                    {
                         return Err(CaptureError::ClearPolicyMismatch);
                     }
                 }
@@ -718,7 +724,7 @@ impl Fixture {
             diagnostics.push(task_diagnostics);
         }
         let scale = renderer.effective_resolution_multiplier();
-        let (width, height) = if source == ReplaySource::Presentation {
+        let (width, height) = if source != ReplaySource::Native {
             let selected = renderer
                 .scanout_source(self.frame.vi)
                 .ok_or_else(|| invalid("frame has no scanout"))?;
@@ -742,20 +748,24 @@ impl Fixture {
                 "capture output exceeds device limits".into(),
             ));
         }
-        let target = renderer.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("capture-output"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: renderer.surface_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let texture = |width, height| {
+            renderer.device().create_texture(&wgpu::TextureDescriptor {
+                label: Some("capture-output"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: renderer.surface_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let target = texture(width, height);
+        let native = (source == ReplaySource::Both).then(|| texture(width / scale, height / scale));
         let view = target.create_view(&Default::default());
         if source == ReplaySource::Native {
             renderer.present_native_to(&PresentationHardware(self.frame.vi), &view);
@@ -763,12 +773,23 @@ impl Fixture {
             renderer.present_to(&PresentationHardware(self.frame.vi), &view);
         }
         let rgba8 = read_rgba8(renderer, &target).await?;
+        let native_rgba8 = match native {
+            Some(native) => {
+                renderer.present_native_to(
+                    &PresentationHardware(self.frame.vi),
+                    &native.create_view(&Default::default()),
+                );
+                Some(read_rgba8(renderer, &native).await?)
+            }
+            None => None,
+        };
         Ok(ReplayOutput {
             effective_resolution_multiplier: scale,
             source,
             width,
             height,
             rgba8,
+            native_rgba8,
             summaries,
             diagnostics,
             adapter_info: None,
