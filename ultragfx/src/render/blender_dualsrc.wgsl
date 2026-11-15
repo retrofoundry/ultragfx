@@ -20,7 +20,7 @@ struct FragOut {
 
 fn shade_dual(in: VsOut) -> FragOut {
     let r = eval_combiner(in);
-    let comb3 = blend_fog(r.rgb, r.alpha, in.color.a);
+    let comb3 = blend_fog(r.rgb, r.alpha, in.color.a, in.clip_position.xy);
     alpha_discard(r, in.clip_position.xy);
 
     let blend = blend_framebuffer(comb3, r.alpha, in.color.a);

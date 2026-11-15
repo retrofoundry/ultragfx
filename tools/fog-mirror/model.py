@@ -46,11 +46,25 @@ def combiner(words, cycles, shade, prim, env, texel):
     return combined, compare_alpha
 
 
+MAGIC = [0, 6, 1, 7, 4, 2, 5, 3, 3, 5, 2, 4, 7, 1, 6, 0]
+BAYER = [0, 4, 1, 5, 4, 0, 5, 1, 3, 7, 2, 6, 7, 3, 6, 2]
+
+
+def alpha_dither(high, x, y):
+    index = (y & 3) * 4 + (x & 3)
+    pattern = BAYER if (high >> 6) & 1 else MAGIC
+    return [pattern[index], ~pattern[index] & 7, MAGIC[index], 0][(high >> 4) & 3]
+
+
+def fog_lerp(p, q, alpha):
+    return (round(p * 255) * (alpha >> 3) + round(q * 255) * (((255 - alpha) >> 3) + 1)) >> 5
+
+
 def modern(case, shade, x, y):
     state = case['state']
     if case['id'] == 'shade-next-forward':
         alpha = (state['shade_at_8_8'] + (x - 8) * state['da_dx']) & 511
-        return [alpha if alpha < 256 else 255 if alpha < 384 else 0] * 3
+        return [fog_lerp(1, 0, alpha if alpha < 256 else 255 if alpha < 384 else 0)] * 3
     high, low = state['othermode_h'], state['othermode_l']
     cycles = (high >> 20) & 3
     prim = [c / 255 for c in state.get('primitive_rgba', [0, 0, 0, 0])]
@@ -66,9 +80,12 @@ def modern(case, shade, x, y):
     local = (p, m) in ((0, 3), (3, 0))
     if local:
         assert a == 2 and b == 0, case['id']
-        if p == 3 or blend:
-            t = shade[3] if p == 3 else 1 - shade[3]
-            color[:3] = [rgb * (1 - t) + f * t for rgb, f in zip(color[:3], fog[:3])]
+        if blend:
+            alpha = min(round(shade[3] * 255) + alpha_dither(high, x, y), 255)
+            pairs = zip(fog[:3], color[:3]) if p == 3 else zip(color[:3], fog[:3])
+            color[:3] = [fog_lerp(first, second, alpha) / 255 for first, second in pairs]
+        elif p == 3:
+            color[:3] = [rgb * (1 - shade[3]) + f * shade[3] for rgb, f in zip(color[:3], fog[:3])]
     if case['group'] == 'modes':
         shifts = (28, 24, 20, 16) if cycles == 1 else (30, 26, 22, 18)
         fp, fa, fm, fb = [(low >> shift) & 3 for shift in shifts]
@@ -87,7 +104,7 @@ def generate(directory):
     for case in cases:
         selected = (case['group'] == 'interp' or case['id'] in ('compare-next-forward', 'shade-next-forward')
                     or case['group'] == 'modes'
-                    or (case['group'] == 'matrix' and int(case['id'][4:6]) in (23, 29, 30, 31, 33, 34, 39, 40)))
+                    or (case['group'] == 'matrix' and int(case['id'][4:6]) in (39, 40)))
         if not selected:
             (directory / f'{case["id"]}.modern.bin').unlink(missing_ok=True)
             case.pop('modern_sha256', None)

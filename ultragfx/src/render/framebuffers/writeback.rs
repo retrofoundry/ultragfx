@@ -362,12 +362,14 @@ pub(super) fn color_known(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn blend(
     mode: crate::hle::RenderMode,
     combiner: &Combiner,
     rgba: [f32; 4],
     memory: [f32; 4],
     shade_alpha: f32,
+    alpha_dither: impl FnOnce() -> u8,
     count: u8,
     coverage: u8,
 ) -> [u8; 4] {
@@ -386,6 +388,15 @@ pub(super) fn blend(
         2 => shade_alpha,
         _ => 0.0,
     };
+    let byte = |v: f32| u32::from((v.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let fog_lerp = matches!(((mux >> 14) & 3, (mux >> 6) & 3), (0, 3) | (3, 0));
+    if mode.force_blend && fog_lerp && (mux >> 10) & 3 == 2 && (mux >> 2) & 3 == 0 {
+        let alpha = (byte(shade_alpha) + u32::from(alpha_dither())).min(255);
+        let (weight_p, weight_m) = (alpha >> 3, ((255 - alpha) >> 3) + 1);
+        let rgb: [u8; 3] =
+            std::array::from_fn(|i| ((byte(p[i]) * weight_p + byte(m[i]) * weight_m) >> 5) as u8);
+        return [rgb[0], rgb[1], rgb[2], byte(rgba[3]) as u8];
+    }
     let b = match (mux >> 2) & 3 {
         0 => 1.0 - a,
         1 => f32::from(coverage) / 8.0,
@@ -525,17 +536,18 @@ mod tests {
         let draw = draw();
         let combiner = draw.combiner.unwrap();
         let source = [64.0 / 255.0, 128.0 / 255.0, 192.0 / 255.0, 128.0 / 255.0];
+        let memory = [1.0, 0.0, 0.0, 1.0];
         assert_eq!(
-            blend(mode, &combiner, source, [1.0, 0.0, 0.0, 1.0], 1.0, 3, 0),
+            blend(mode, &combiner, source, memory, 1.0, || 0, 3, 0),
             [159, 64, 96, 128]
         );
         assert_eq!(
-            blend(mode, &combiner, source, [1.0, 0.0, 0.0, 1.0], 1.0, 3, 7),
+            blend(mode, &combiner, source, memory, 1.0, || 0, 3, 7),
             [64, 128, 192, 128]
         );
         mode.force_blend = true;
         assert_eq!(
-            blend(mode, &combiner, source, [1.0, 0.0, 0.0, 1.0], 1.0, 3, 7),
+            blend(mode, &combiner, source, memory, 1.0, || 0, 3, 7),
             [159, 64, 96, 128]
         );
         assert_eq!(

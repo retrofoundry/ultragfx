@@ -95,7 +95,7 @@ struct Combiner {
     primitive_depth: vec4<u32>,
     native_scale: vec4<f32>,
     raster:          vec4<u32>,
-    texture_mode:    vec4<u32>, // .x = 1 for G_TP_NONE triangles
+    texture_mode:    vec4<u32>, // .x = 1 for G_TP_NONE triangles; .y = rgb_dither << 2 | alpha_dither
 };
 
 @group(0) @binding(0) var tex0:  texture_2d<f32>;
@@ -808,7 +808,25 @@ fn partial_reject(mux: u32, alpha: f32) -> bool {
     return ((mux >> 10u) & 3u) == 0u && ((mux >> 2u) & 3u) == 0u && alpha >= 1.0;
 }
 
-fn blend_local(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32, mux: u32, blend_enabled: bool) -> vec3<f32> {
+// The RDP adds this to shade alpha before the blender. Alpha noise has no reproducible guest RNG,
+// so it takes the magic square, as the RGB dither does on write-back.
+fn shade_alpha_dither(position: vec2<f32>) -> u32 {
+    let selectors = combiner.texture_mode.y;
+    if combiner.raster.x > 1u || (selectors & 3u) == 3u {
+        return 0u;
+    }
+    let p = vec2<u32>(position) & vec2<u32>(3u);
+    let magic_rows = vec4<u32>(0x7160u, 0x3524u, 0x4253u, 0x0617u);
+    let bayer_rows = vec4<u32>(0x5140u, 0x1504u, 0x6273u, 0x2637u);
+    let magic = (magic_rows[p.y] >> (p.x * 4u)) & 7u;
+    let bayer = (bayer_rows[p.y] >> (p.x * 4u)) & 7u;
+    let pattern = select(magic, bayer, (selectors & 4u) != 0u);
+    if (selectors & 3u) == 0u { return pattern; }
+    if (selectors & 3u) == 1u { return ~pattern & 7u; }
+    return magic;
+}
+
+fn blend_local(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32, alpha_dither: u32, mux: u32, blend_enabled: bool) -> vec3<f32> {
     let p = (mux >> 14u) & 3u;
     let a = (mux >> 10u) & 3u;
     let m = (mux >> 6u) & 3u;
@@ -830,12 +848,14 @@ fn blend_local(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32, mux: u32, 
     if (!blend_enabled) {
         return p_color;
     }
-    // Shade-alpha captures depend on the continuous float lerp.
-    if (a == 2u && b == 0u && fog_lerp) {
+    // The native stream blends fog with the console's 5-bit factor; upscaled presentation keeps
+    // the continuous lerp so fog doesn't band.
+    if (a == 2u && b == 0u && fog_lerp && combiner.raster.x > 1u) {
         return mix(m_color, p_color, shade_alpha);
     }
     let alpha = blend_a(a, combiner_alpha, shade_alpha);
-    let alpha_byte = u32(round(clamp(alpha, 0.0, 1.0) * 255.0));
+    var alpha_byte = u32(round(clamp(alpha, 0.0, 1.0) * 255.0));
+    if (a == 2u) { alpha_byte = min(alpha_byte + alpha_dither, 255u); }
     let weight_a = alpha_byte >> 3u;
     var weight_b = 0u;
     if (b == 0u) { weight_b = (255u - alpha_byte) >> 3u; }
@@ -847,16 +867,17 @@ fn blend_local(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32, mux: u32, 
     return vec3<f32>((numerator >> vec3<u32>(5u)) & vec3<u32>(255u)) / 255.0;
 }
 
-fn blend_fog(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32) -> vec3<f32> {
+fn blend_fog(rgb: vec3<f32>, combiner_alpha: f32, shade_alpha: f32, position: vec2<f32>) -> vec3<f32> {
     let two_cycle = combiner.cycle_type == 1u;
-    let first = blend_local(rgb, combiner_alpha, shade_alpha, combiner.blender_mux,
+    let alpha_dither = shade_alpha_dither(position);
+    let first = blend_local(rgb, combiner_alpha, shade_alpha, alpha_dither, combiner.blender_mux,
         two_cycle || (combiner.cycle_type == 0u && combiner.force_blend != 0u));
     let mux = framebuffer_mux();
     if two_cycle && partial_reject(mux, combiner_alpha) {
         return blend_color((mux >> 14u) & 3u, first);
     }
     if two_cycle && ((mux >> 14u) & 3u) != 1u && ((mux >> 6u) & 3u) != 1u && ((mux >> 2u) & 3u) != 1u {
-        return blend_local(first, combiner_alpha, shade_alpha, mux, combiner.force_blend != 0u);
+        return blend_local(first, combiner_alpha, shade_alpha, alpha_dither, mux, combiner.force_blend != 0u);
     }
     return first;
 }
