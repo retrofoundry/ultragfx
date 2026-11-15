@@ -70,9 +70,9 @@ def compact(source, destination):
             case['hardware_tolerance'] = (2 if case['group'] == 'modes' else
                                           255 if name == 'shade-next-forward' else
                                           80 if name == 'compare-next-forward' else
-                                          {23: 6, 29: 5, 31: 5, 33: 5, 39: 7}.get(number, 1))
+                                          {39: 7}.get(number, 1))
         case['precision'] = ('edge rasterization and byte vertex adaptation' if thin else
-                             'float mix and unpatterned dither' if case['group'] in ('matrix', 'modes') else
+                             'float memory blend and unpatterned RGB dither' if case['group'] in ('matrix', 'modes') else
                              'affine float interpolation and byte vertex adaptation' if case['group'] == 'interp' else
                              'current pixel timing') if modern else None
         size = 2 if case['format'] == 'rgba16' else 4

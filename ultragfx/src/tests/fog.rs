@@ -311,10 +311,10 @@ fn fixture_sm64_jrb_mixed_fog() {
     );
     let pixels = render_scene_to_rgba8(&scene, 320, 240);
     for (x, expected) in [
-        (40, [4, 19, 29, 255]),
-        (120, [1, 23, 22, 255]),
-        (200, [3, 40, 38, 255]),
-        (280, [8, 33, 50, 255]),
+        (40, [4, 18, 28, 255]),
+        (120, [1, 22, 21, 255]),
+        (200, [2, 40, 37, 255]),
+        (280, [7, 32, 50, 255]),
     ] {
         let offset = (120 * 320 + x) * 4;
         assert_eq!(&pixels[offset..offset + 4], &expected, "x={x}");
@@ -359,7 +359,7 @@ fn rect_scene(append_unused: bool) -> Scene {
 #[test]
 fn fog_texrect_color_gpu_readback() {
     let pixels = render_scene_to_rgba8(&rect_scene(false), 320, 240);
-    for (x, expected) in [(80, [15, 65, 100, 255]), (240, [5, 80, 75, 255])] {
+    for (x, expected) in [(80, [14, 62, 96, 255]), (240, [4, 77, 72, 255])] {
         let offset = (120 * 320 + x) * 4;
         assert_eq!(&pixels[offset..offset + 4], &expected);
     }
@@ -472,11 +472,13 @@ fn fog_blender_p_and_m_match_the_equation() {
                         } else {
                             ([200, 100, 50], [20, 70, 140])
                         };
-                        let a = factor as f32 / 255.0;
+                        // The console's blender weights: A >> 3 for P, (~A >> 3) + 1 for M.
                         let expected = if cycles == 0 && mode & FORCE_BL == 0 {
                             p[channel] as f32
                         } else {
-                            p[channel] as f32 * a + m[channel] as f32 * (1.0 - a)
+                            ((p[channel] as u32 * (factor >> 3)
+                                + m[channel] as u32 * (((255 - factor) >> 3) + 1))
+                                >> 5) as f32
                         };
                         let blend_alpha = alpha as f32 / 255.0;
                         let expected = expected * blend_alpha
@@ -975,7 +977,7 @@ fn fog_blender_second_cycle_consumes_first_result() {
                 | FORCE_BL
                 | G_ZS_PRIM,
             1,
-            [136, 87, 113],
+            [135, 87, 113],
             fallback,
         );
     }

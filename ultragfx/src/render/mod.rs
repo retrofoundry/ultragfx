@@ -223,7 +223,8 @@ pub struct CombinerUniform {
     pub native_scale: [f32; 4],
     /// Presentation scale, native width, identity texrect, and high-resolution texture-role mask.
     pub raster: [u32; 4],
-    /// `.x` = 1 when triangle texture coordinates skip the perspective divide (G_TP_NONE).
+    /// `.x` = 1 when triangle texture coordinates skip the perspective divide (G_TP_NONE);
+    /// `.y` = the RDP's dither selectors, `rgb_dither << 2 | alpha_dither`.
     pub texture_mode: [u32; 4],
 }
 const _: () = assert!(std::mem::size_of::<CombinerUniform>() == 256);
@@ -333,7 +334,12 @@ impl CombinerUniform {
                 u32::from(rm.blend_class == crate::hle::BlendClass::BlendColor),
             ],
             native_scale: [1.0; 4],
-            texture_mode: [u32::from(rm.texture_no_perspective), 0, 0, 0],
+            texture_mode: [
+                u32::from(rm.texture_no_perspective),
+                u32::from(rm.rgb_dither << 2 | rm.alpha_dither),
+                0,
+                0,
+            ],
         }
     }
 
@@ -346,7 +352,7 @@ impl CombinerUniform {
         uniform.inv_tex_size = triangle_inv_tex_size(mat);
         uniform.inv_tex_size[2] = 1.0;
         uniform.is_rect = 1;
-        uniform.texture_mode = [0; 4];
+        uniform.texture_mode[0] = 0;
         uniform
     }
 
