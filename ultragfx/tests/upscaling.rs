@@ -162,6 +162,71 @@ async fn replay_fixed_scale_sources() {
 }
 
 #[cfg(feature = "capture")]
+async fn replay_dither_anchors() {
+    use ultragfx::capture::{Fixture, ReplayOptions, ReplaySource};
+    for (name, bytes, red) in [
+        (
+            "coverage-dither",
+            include_bytes!("fixtures/coverage-dither.ugfxcap").as_slice(),
+            255,
+        ),
+        (
+            "sm64-transparent-mario",
+            include_bytes!("fixtures/sm64-transparent-mario.ugfxcap").as_slice(),
+            128,
+        ),
+    ] {
+        let fixture = Fixture::from_bytes(bytes).unwrap();
+        for scale in [2, 3, 4] {
+            let output = fixture
+                .replay_headless_with_options(ReplayOptions {
+                    resolution_multiplier: Some(scale),
+                    source: ReplaySource::Both,
+                })
+                .await
+                .unwrap();
+            assert!(output.diagnostics.iter().all(Vec::is_empty));
+            let native = output.native_rgba8.as_ref().unwrap();
+            let (width, height) = (output.width / scale, output.height / scale);
+            assert_eq!(native.len(), (width * height * 4) as usize);
+            assert!(native
+                .chunks_exact(4)
+                .all(|p| p[..3] == [0, 0, 0] || p[..3] == [red, 0, 0]));
+            let mut decisions = 0;
+            let mut value_excess = 0;
+            for y in 0..height {
+                for x in 0..width {
+                    let n = ((y * width + x) * 4) as usize;
+                    let a = ((y * scale * output.width + x * scale) * 4) as usize;
+                    if (native[n] == 0) != (output.rgba8[a] == 0) {
+                        decisions += 1;
+                    } else if native[n..n + 3]
+                        .iter()
+                        .zip(&output.rgba8[a..a + 3])
+                        .any(|(&n, &p)| n.abs_diff(p) > 1)
+                    {
+                        value_excess += 1;
+                    }
+                }
+            }
+            assert_eq!((decisions, value_excess), (0, 0), "{name} {scale}x");
+        }
+    }
+}
+
+#[cfg(all(feature = "capture", not(target_arch = "wasm32")))]
+#[test]
+fn dither_anchors_match_native() {
+    pollster::block_on(replay_dither_anchors());
+}
+
+#[cfg(all(feature = "capture", target_arch = "wasm32"))]
+#[wasm_bindgen_test::wasm_bindgen_test]
+async fn dither_anchors_match_native() {
+    replay_dither_anchors().await;
+}
+
+#[cfg(feature = "capture")]
 async fn live_auto_and_reduced_scanout() {
     use n64_gbi::encode::*;
     use ultragfx::{Hardware, RdramImage, ViRegisters};

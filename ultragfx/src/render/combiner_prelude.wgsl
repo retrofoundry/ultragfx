@@ -754,9 +754,16 @@ fn eval_combiner(in: VsOut) -> CycleResult {
 }
 
 // RT64 Random.hlsli initRand (16 rounds), followed by nextRandUint.
-fn dither_threshold(position: vec2<u32>) -> f32 {
+fn dither_threshold(sample: vec2<u32>) -> f32 {
+    var position = sample;
+    var width = combiner.frame.z;
+    let scale = combiner.raster.x;
+    if scale > 1u && all(sample % scale == vec2<u32>(0u)) {
+        position = sample / scale;
+        width = combiner.raster.y;
+    }
     var v0 = combiner.frame.x ^ combiner.frame.y;
-    var v1 = position.x + combiner.frame.z * position.y;
+    var v1 = position.x + width * position.y;
     var sum = 0u;
     for (var n = 0u; n < 16u; n++) {
         sum += 0x9e3779b9u;
