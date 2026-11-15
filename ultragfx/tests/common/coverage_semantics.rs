@@ -186,12 +186,12 @@ impl Case {
                                     as usize]
                             }
                             Kind::Alpha => [255, 0, 0, (255.0 * l).round() as u8],
-                            Kind::Fog => [
-                                (255.0 - 128.0 * l).round() as u8,
-                                (128.0 * l).round() as u8,
-                                0,
-                                255,
-                            ],
+                            Kind::Fog => {
+                                let a = 128 * edge(t[2], t[0], p) / edge(t[0], t[1], t[2]);
+                                let fog = a >> 3;
+                                let input = ((255 - a) >> 3) + 1;
+                                [((255 * input) >> 5) as u8, ((255 * fog) >> 5) as u8, 0, 255]
+                            }
                             Kind::Dither => [255, 0, 0, 128],
                             Kind::Lod => {
                                 let u = |x: f64| {

@@ -196,7 +196,6 @@ pub async fn replay() {
                     && matches!(
                         case.kind,
                         semantics::Kind::Shade
-                            | semantics::Kind::Fog
                             | semantics::Kind::Alpha
                             | semantics::Kind::SharedAlpha
                     ),
