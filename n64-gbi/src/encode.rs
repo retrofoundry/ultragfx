@@ -589,6 +589,69 @@ pub fn gsp_modifyvertex_f3d(vtx: u8, r#where: u16, val: u32) -> (u32, u32) {
     (w0, val)
 }
 
+fn dma0p(c: u8, s: u32, l: u32) -> (u32, u32) {
+    (shiftl(c as u32, 24, 8) | shiftl(l, 0, 24), s)
+}
+
+fn dma1p(c: u8, s: u32, l: u32, p: u32) -> (u32, u32) {
+    let w0 = shiftl(c as u32, 24, 8) | shiftl(p, 16, 8) | shiftl(l, 0, 16);
+    (w0, s)
+}
+
+pub fn gsp_obj_rectangle(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_OBJ_RECTANGLE, addr, 0)
+}
+
+pub fn gsp_obj_rectangle_r(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_OBJ_RECTANGLE_R, addr, 0)
+}
+
+pub fn gsp_obj_sprite(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_OBJ_SPRITE, addr, 0)
+}
+
+/// S2DEX2 puts the size minus one at bits 16..23 and the index in the low half, so this is
+/// 0xDC170000, not F3DEX2's movemem layout (gsSPViewport is 0xDC080008).
+pub fn gsp_obj_matrix(addr: u32) -> (u32, u32) {
+    dma1p(rsp_s2dex2::G_OBJ_MOVEMEM, addr, 0, 23)
+}
+
+pub fn gsp_obj_sub_matrix(addr: u32) -> (u32, u32) {
+    dma1p(rsp_s2dex2::G_OBJ_MOVEMEM, addr, 2, 7)
+}
+
+pub fn gsp_obj_load_txtr(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_OBJ_LOADTXTR, addr, 23)
+}
+
+pub fn gsp_obj_load_tx_sprite(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_OBJ_LDTX_SPRITE, addr, 47)
+}
+
+pub fn gsp_obj_load_tx_rect(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_OBJ_LDTX_RECT, addr, 47)
+}
+
+pub fn gsp_obj_load_tx_rect_r(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_OBJ_LDTX_RECT_R, addr, 47)
+}
+
+pub fn gsp_obj_render_mode(mode: u32) -> (u32, u32) {
+    (shiftl(rsp_s2dex2::G_OBJ_RENDERMODE as u32, 24, 8), mode)
+}
+
+pub fn gsp_set_status(sid: u32, val: u32) -> (u32, u32) {
+    dma1p(G_MOVEWORD, val, sid, rsp_s2dex2::G_MW_GENSTAT as u32)
+}
+
+pub fn gsp_bg_rect_1cyc(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_BG_1CYC, addr, 0)
+}
+
+pub fn gsp_bg_rect_copy(addr: u32) -> (u32, u32) {
+    dma0p(rsp_s2dex2::G_BG_COPY, addr, 0)
+}
+
 /// On-disk N64 colored vertex (authentic libultra Vtx_t), 16 bytes, big-endian. No field swaps.
 #[derive(Clone, Copy, Debug)]
 pub struct VtxColored {

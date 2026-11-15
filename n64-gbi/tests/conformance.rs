@@ -132,6 +132,29 @@ fn viewport_dma_length_and_index_byte() {
 }
 
 #[test]
+fn s2dex2_object_words_match_gs2dex() {
+    use n64_gbi::consts::rsp_s2dex2::*;
+    let addr = 0x0400_0100;
+    assert_eq!(gsp_obj_rectangle(addr), (0x0100_0000, addr));
+    assert_eq!(gsp_obj_sprite(addr), (0x0200_0000, addr));
+    assert_eq!(gsp_obj_load_txtr(addr), (0x0500_0017, addr));
+    assert_eq!(gsp_obj_load_tx_sprite(addr), (0x0600_002f, addr));
+    assert_eq!(gsp_obj_load_tx_rect(addr), (0x0700_002f, addr));
+    assert_eq!(gsp_obj_load_tx_rect_r(addr), (0x0800_002f, addr));
+    assert_eq!(gsp_bg_rect_1cyc(addr), (0x0900_0000, addr));
+    assert_eq!(gsp_bg_rect_copy(addr), (0x0a00_0000, addr));
+    assert_eq!(gsp_obj_rectangle_r(addr), (0xda00_0000, addr));
+    assert_eq!(gsp_obj_matrix(addr), (0xdc17_0000, addr));
+    assert_eq!(gsp_obj_sub_matrix(addr), (0xdc07_0002, addr));
+    assert_eq!(
+        gsp_obj_render_mode(G_OBJRM_BILERP | G_OBJRM_SHRINKSIZE_1),
+        (0x0b00_0000, 0x18)
+    );
+    assert_eq!(gsp_set_status(0, 0x1111_1111), (0xdb08_0000, 0x1111_1111));
+    assert_eq!(gsp_set_status(12, 0x4444_4444), (0xdb08_000c, 0x4444_4444));
+}
+
+#[test]
 fn vtx_bytes_authentic_libultra_order() {
     // Authentic Vtx_t order: x,y,z (s16), flag (u16), s,t (s16), r,g,b,a (u8). Big-endian. No swaps.
     let v = VtxColored {

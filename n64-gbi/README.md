@@ -5,7 +5,7 @@ N64 GBI vocabulary, command encoders, and libultra-compatible `gu` matrix math.
 A dependency leaf, with no dependencies of its own. It holds the parts of the N64 graphics
 interface fixed by the hardware and the SDK rather than by any particular consumer:
 
-- `consts` — RDP and RSP opcode and mode vocabulary, per microcode (F3D, F3DEX2).
+- `consts` — RDP and RSP opcode and mode vocabulary, per microcode (F3D, F3DEX2, S2DEX2).
 - `encode` — libultra `gs*` macros as functions returning the exact command words.
 - `gu` — `guTranslate`/`guScale`/`guRotate`/`guPerspective`/`guLookAt`, in libultra's
   row-vector convention.
