@@ -27,7 +27,10 @@ before renderer construction to every prefix frame, warm-up frame and
 clear-policy probe. `ReplaySource::Native` is the default and preserves the
 recorded output dimensions and native RGBA8 bytes. `Presentation` outputs the
 selected scanout crop at its native extent times the effective scale, excluding
-retained rows outside the crop. Source selection changes output only.
+retained rows outside the crop. `Both` returns that presentation image in
+`rgba8` and the same crop's native image from the same run in `native_rgba8`,
+so each native pixel lines up with its presentation block; the example writes
+the latter to `<prefix>-native.rgba8`. Source selection changes output only.
 `ReplayOutput` reports the effective multiplier, source and output dimensions.
 
 ```sh

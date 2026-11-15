@@ -437,6 +437,7 @@ impl Sequence {
                     width: first.width,
                     height: first.height,
                     rgba8,
+                    native_rgba8: None,
                     summaries,
                     diagnostics,
                     adapter_info: None,

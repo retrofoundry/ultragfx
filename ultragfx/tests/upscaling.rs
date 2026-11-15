@@ -128,6 +128,15 @@ async fn replay_scale_and_source() {
             .0
             .iter()
             .all(|p| *p == [255, 0, 0, 255]));
+        let both = fixture
+            .replay_headless_with_options(ReplayOptions {
+                resolution_multiplier: Some(scale),
+                source: ReplaySource::Both,
+            })
+            .await
+            .unwrap();
+        assert_eq!(both.rgba8, presentation.rgba8);
+        assert_eq!(both.native_rgba8, Some([255, 0, 0, 255].repeat(64 * 48)));
     }
     for scale in [0, 5, u32::MAX] {
         assert!(fixture
