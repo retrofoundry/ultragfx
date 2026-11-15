@@ -86,18 +86,146 @@ pub struct ObjBg {
     pub image_y_orig: i32,
 }
 
-pub(crate) fn decode_obj_bg(
+/// A decoded S2DEX `uObjTxtr`. The halfwords at 8, 10 and 12 are `tmem`, `tsize` and `tline`
+/// for a block load, `tmem`, `twidth` and `theight` for a tile load, and `phead`, `pnum` and
+/// `zero` for a TLUT load.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ObjTxtr {
+    pub load_type: u32,
+    pub image: u64,
+    pub tmem: u16,
+    pub tsize: u16,
+    pub tline: u16,
+    pub sid: u16,
+    pub flag: u32,
+    pub mask: u32,
+}
+
+/// A decoded S2DEX `uObjSprite`, without its padding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ObjSprite {
+    pub obj_x: i16,
+    pub scale_w: u16,
+    pub image_w: u16,
+    pub obj_y: i16,
+    pub scale_h: u16,
+    pub image_h: u16,
+    pub image_stride: u16,
+    pub image_adrs: u16,
+    pub image_fmt: u8,
+    pub image_siz: u8,
+    pub image_pal: u8,
+    pub image_flags: u8,
+}
+
+/// The 2D matrix struct consumed by a `G_OBJ_MOVEMEM` command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjMtxKind {
+    /// `uObjMtx`, 24 bytes.
+    Full,
+    /// `uObjSubMtx`, 8 bytes: `x`, `y`, `base_scale_x` and `base_scale_y` at offset 0.
+    Sub,
+    /// The first 16 bytes of `uObjMtx`: `a`, `b`, `c` and `d`.
+    Linear,
+}
+
+/// A decoded S2DEX 2D matrix. Fields outside the requested `ObjMtxKind` are zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ObjMtx {
+    pub a: i32,
+    pub b: i32,
+    pub c: i32,
+    pub d: i32,
+    pub x: i16,
+    pub y: i16,
+    pub base_scale_x: u16,
+    pub base_scale_y: u16,
+}
+
+fn struct_fields(
     address: u64,
-    kind: ObjBgKind,
-    pointer_bytes: usize,
     mut word: impl FnMut(u64, usize) -> Result<u64, MemoryError>,
-) -> Result<ObjBg, MemoryError> {
-    let mut read = |offset: u64, length: usize| {
+) -> impl FnMut(u64, usize) -> Result<u64, MemoryError> {
+    move |offset, length| {
         let field = address
             .checked_add(offset)
             .ok_or_else(|| memory_error(address, offset, MemoryErrorKind::AddressOverflow))?;
         word(field, length)
+    }
+}
+
+pub(crate) fn decode_obj_txtr(
+    address: u64,
+    word: impl FnMut(u64, usize) -> Result<u64, MemoryError>,
+) -> Result<ObjTxtr, MemoryError> {
+    let mut read = struct_fields(address, word);
+    Ok(ObjTxtr {
+        load_type: read(0, 4)? as u32,
+        image: read(4, 4)?,
+        tmem: read(8, 2)? as u16,
+        tsize: read(10, 2)? as u16,
+        tline: read(12, 2)? as u16,
+        sid: read(14, 2)? as u16,
+        flag: read(16, 4)? as u32,
+        mask: read(20, 4)? as u32,
+    })
+}
+
+pub(crate) fn decode_obj_sprite(
+    address: u64,
+    word: impl FnMut(u64, usize) -> Result<u64, MemoryError>,
+) -> Result<ObjSprite, MemoryError> {
+    let mut read = struct_fields(address, word);
+    Ok(ObjSprite {
+        obj_x: read(0, 2)? as i16,
+        scale_w: read(2, 2)? as u16,
+        image_w: read(4, 2)? as u16,
+        obj_y: read(8, 2)? as i16,
+        scale_h: read(10, 2)? as u16,
+        image_h: read(12, 2)? as u16,
+        image_stride: read(16, 2)? as u16,
+        image_adrs: read(18, 2)? as u16,
+        image_fmt: read(20, 1)? as u8,
+        image_siz: read(21, 1)? as u8,
+        image_pal: read(22, 1)? as u8,
+        image_flags: read(23, 1)? as u8,
+    })
+}
+
+pub(crate) fn decode_obj_mtx(
+    address: u64,
+    kind: ObjMtxKind,
+    word: impl FnMut(u64, usize) -> Result<u64, MemoryError>,
+) -> Result<ObjMtx, MemoryError> {
+    let mut read = struct_fields(address, word);
+    let mut mtx = ObjMtx::default();
+    let tail = match kind {
+        ObjMtxKind::Full | ObjMtxKind::Linear => {
+            mtx.a = read(0, 4)? as i32;
+            mtx.b = read(4, 4)? as i32;
+            mtx.c = read(8, 4)? as i32;
+            mtx.d = read(12, 4)? as i32;
+            if kind == ObjMtxKind::Linear {
+                return Ok(mtx);
+            }
+            16
+        }
+        ObjMtxKind::Sub => 0,
     };
+    mtx.x = read(tail, 2)? as i16;
+    mtx.y = read(tail + 2, 2)? as i16;
+    mtx.base_scale_x = read(tail + 4, 2)? as u16;
+    mtx.base_scale_y = read(tail + 6, 2)? as u16;
+    Ok(mtx)
+}
+
+pub(crate) fn decode_obj_bg(
+    address: u64,
+    kind: ObjBgKind,
+    pointer_bytes: usize,
+    word: impl FnMut(u64, usize) -> Result<u64, MemoryError>,
+) -> Result<ObjBg, MemoryError> {
+    let mut read = struct_fields(address, word);
     let tail = 16 + pointer_bytes as u64;
     let mut bg = ObjBg {
         image_x: read(0, 2)? as u16,
@@ -193,6 +321,22 @@ pub trait Rdram {
 
     /// Decodes the fields consumed by the requested background command.
     fn read_obj_bg(&self, address: u64, _kind: ObjBgKind) -> Result<ObjBg, MemoryError> {
+        Err(memory_error(address, 0, MemoryErrorKind::UnsupportedFormat))
+    }
+
+    /// Decodes an S2DEX `uObjTxtr`. Backends without the N64 layout leave this at its default;
+    /// wrappers must forward this and the other object reads to keep object commands.
+    fn read_obj_txtr(&self, address: u64) -> Result<ObjTxtr, MemoryError> {
+        Err(memory_error(address, 0, MemoryErrorKind::UnsupportedFormat))
+    }
+
+    /// Decodes an S2DEX `uObjSprite`.
+    fn read_obj_sprite(&self, address: u64) -> Result<ObjSprite, MemoryError> {
+        Err(memory_error(address, 0, MemoryErrorKind::UnsupportedFormat))
+    }
+
+    /// Decodes the requested S2DEX 2D matrix struct.
+    fn read_obj_mtx(&self, address: u64, _kind: ObjMtxKind) -> Result<ObjMtx, MemoryError> {
         Err(memory_error(address, 0, MemoryErrorKind::UnsupportedFormat))
     }
 
@@ -332,6 +476,13 @@ impl<'a> RdramImage<'a> {
         Ok(&self.bytes[range])
     }
 
+    fn data_word(&self, address: u64, length: usize) -> Result<u64, MemoryError> {
+        Ok(self
+            .read_data(address, length)?
+            .iter()
+            .fold(0, |v, &b| (v << 8) | b as u64))
+    }
+
     fn read_data(&self, address: u64, length: usize) -> Result<Cow<'_, [u8]>, MemoryError> {
         const ADDRESS_SPACE: usize = 0x0100_0000;
         address.checked_add(length as u64).ok_or_else(|| {
@@ -430,10 +581,21 @@ impl Rdram for RdramImage<'_> {
 
     fn read_obj_bg(&self, address: u64, kind: ObjBgKind) -> Result<ObjBg, MemoryError> {
         decode_obj_bg(address, kind, 4, |address, length| {
-            Ok(self
-                .read_data(address, length)?
-                .iter()
-                .fold(0, |v, &b| (v << 8) | b as u64))
+            self.data_word(address, length)
+        })
+    }
+
+    fn read_obj_txtr(&self, address: u64) -> Result<ObjTxtr, MemoryError> {
+        decode_obj_txtr(address, |address, length| self.data_word(address, length))
+    }
+
+    fn read_obj_sprite(&self, address: u64) -> Result<ObjSprite, MemoryError> {
+        decode_obj_sprite(address, |address, length| self.data_word(address, length))
+    }
+
+    fn read_obj_mtx(&self, address: u64, kind: ObjMtxKind) -> Result<ObjMtx, MemoryError> {
+        decode_obj_mtx(address, kind, |address, length| {
+            self.data_word(address, length)
         })
     }
 
@@ -536,5 +698,71 @@ mod tests {
             Err(memory_error(u64::MAX, 2, MemoryErrorKind::AddressOverflow,))
         );
         assert!(!image.in_bounds(u64::MAX, 2));
+    }
+
+    #[test]
+    fn obj_structs_decode_each_field_at_its_offset() {
+        let mut bytes = vec![0u8; 72];
+        bytes[..24].copy_from_slice(&[
+            0x00, 0xfc, 0x10, 0x34, 0x05, 0x01, 0x23, 0x40, 0x01, 0x00, 0x00, 0x1f, 0x00, 0x7f,
+            0x00, 0x0c, 0x80, 0x00, 0x00, 0x01, 0xff, 0xff, 0xff, 0xfe,
+        ]);
+        bytes[24..48].copy_from_slice(&[
+            0xff, 0x60, 0x04, 0x00, 0x03, 0xe8, 0xaa, 0xaa, 0x00, 0x40, 0x05, 0x55, 0x02, 0x00,
+            0xbb, 0xbb, 0x00, 0x08, 0x01, 0x00, 0x02, 0x00, 0x01, 0x11,
+        ]);
+        bytes[48..72].copy_from_slice(&[
+            0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x7f, 0xff, 0xff, 0xff, 0x00, 0x00,
+            0xdd, 0xb4, 0xff, 0xf0, 0x00, 0x20, 0x04, 0x00, 0x02, 0x00,
+        ]);
+        let image = RdramImage::new(&bytes);
+        assert_eq!(
+            image.read_obj_txtr(0),
+            Ok(ObjTxtr {
+                load_type: 0x00fc_1034,
+                image: 0x0501_2340,
+                tmem: 256,
+                tsize: 31,
+                tline: 127,
+                sid: 12,
+                flag: 0x8000_0001,
+                mask: 0xffff_fffe,
+            })
+        );
+        assert_eq!(
+            image.read_obj_sprite(24),
+            Ok(ObjSprite {
+                obj_x: -160,
+                scale_w: 0x0400,
+                image_w: 1000,
+                obj_y: 64,
+                scale_h: 0x0555,
+                image_h: 512,
+                image_stride: 8,
+                image_adrs: 256,
+                image_fmt: 2,
+                image_siz: 0,
+                image_pal: 1,
+                image_flags: 0x11,
+            })
+        );
+        let sub = ObjMtx {
+            x: -16,
+            y: 32,
+            base_scale_x: 0x0400,
+            base_scale_y: 0x0200,
+            ..ObjMtx::default()
+        };
+        assert_eq!(
+            image.read_obj_mtx(48, ObjMtxKind::Full),
+            Ok(ObjMtx {
+                a: -0x10000,
+                b: 0x8000,
+                c: i32::MAX,
+                d: 0xddb4,
+                ..sub
+            })
+        );
+        assert_eq!(image.read_obj_mtx(64, ObjMtxKind::Sub), Ok(sub));
     }
 }

@@ -69,6 +69,8 @@ pub enum WalkTermination {
 pub struct StateView<'a> {
     pub microcode: Microcode,
     pub obj_render_mode: u32,
+    pub obj_status: [u32; 4],
+    pub obj_mtx: crate::ObjMtx,
     pub geometry_mode: u32,
     /// Set single-bit flags in ascending mask order; unknown bits remain in `geometry_mode`.
     pub geometry_names: &'a [GeometryFlag],

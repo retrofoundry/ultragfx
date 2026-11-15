@@ -454,16 +454,16 @@ fn s2dex_stateful_unsupported_command_rejects_task() {
             power_preference: wgpu::PowerPreference::LowPower,
         },
     );
-    for opcode in [0x05, 0xdc, 0x01, 0x02, 0xda, 0x06, 0x07, 0x08, 0xdb] {
+    for word in [
+        0x05000000, 0xdc080008, 0x01000000, 0x02000000, 0xda000000, 0x06000000, 0x07000000,
+        0x08000000, 0xdb080002, 0xdb080010, 0xd7000002, 0xd9c0f9fa,
+    ] {
         let words = image(&[
             (0xff100003, 0x10000),
             (0xef300000, 0),
             (0xf7000000, 0xffffffff),
             (0xf600c00c, 0),
-            (
-                (opcode << 24) | if opcode == 0xdb { 0x080000 } else { 0 },
-                0,
-            ),
+            (word, 0),
             (0xdf000000, 0),
         ]);
         let before = renderer.rdp.clone();
@@ -478,7 +478,7 @@ fn s2dex_stateful_unsupported_command_rejects_task() {
         assert_eq!(
             result.termination,
             WalkTermination::Rejected,
-            "opcode {opcode:x}"
+            "word {word:x}"
         );
         assert!(!result.renderable);
         assert!(renderer

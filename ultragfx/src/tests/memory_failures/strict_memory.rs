@@ -4,6 +4,14 @@ impl<'a> StrictMemory<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self(crate::RdramImage::new(bytes))
     }
+
+    fn word(&self, address: u64, length: usize) -> Result<u64, crate::MemoryError> {
+        Ok(self
+            .0
+            .read_slice(address, length)?
+            .iter()
+            .fold(0, |v, &b| (v << 8) | u64::from(b)))
+    }
 }
 
 impl crate::Rdram for StrictMemory<'_> {
@@ -74,12 +82,21 @@ impl crate::Rdram for StrictMemory<'_> {
         kind: crate::ObjBgKind,
     ) -> Result<crate::ObjBg, crate::MemoryError> {
         crate::hle::mem::decode_obj_bg(address, kind, 4, |address, length| {
-            Ok(self
-                .0
-                .read_slice(address, length)?
-                .iter()
-                .fold(0, |v, &b| (v << 8) | u64::from(b)))
+            self.word(address, length)
         })
+    }
+    fn read_obj_txtr(&self, address: u64) -> Result<crate::ObjTxtr, crate::MemoryError> {
+        crate::hle::mem::decode_obj_txtr(address, |address, length| self.word(address, length))
+    }
+    fn read_obj_sprite(&self, address: u64) -> Result<crate::ObjSprite, crate::MemoryError> {
+        crate::hle::mem::decode_obj_sprite(address, |address, length| self.word(address, length))
+    }
+    fn read_obj_mtx(
+        &self,
+        address: u64,
+        kind: crate::ObjMtxKind,
+    ) -> Result<crate::ObjMtx, crate::MemoryError> {
+        crate::hle::mem::decode_obj_mtx(address, kind, |address, length| self.word(address, length))
     }
     fn is_rdram_image(&self) -> bool {
         true

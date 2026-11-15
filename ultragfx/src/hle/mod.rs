@@ -45,6 +45,8 @@ pub use rsp::{
 #[cfg(test)]
 mod s2dex_bg_tests;
 #[cfg(test)]
+mod s2dex_obj_tests;
+#[cfg(test)]
 mod s2dex_tests;
 
 pub mod framebuffer_load;
