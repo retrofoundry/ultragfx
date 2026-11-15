@@ -125,9 +125,11 @@ pub enum ObjMtxKind {
     Full,
     /// `uObjSubMtx`, 8 bytes: `x`, `y`, `base_scale_x` and `base_scale_y` at offset 0.
     Sub,
+    /// The first 16 bytes of `uObjMtx`: `a`, `b`, `c` and `d`.
+    Linear,
 }
 
-/// A decoded S2DEX 2D matrix; `a` to `d` are zero for `ObjMtxKind::Sub`.
+/// A decoded S2DEX 2D matrix. Fields outside the requested `ObjMtxKind` are zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ObjMtx {
     pub a: i32,
@@ -198,11 +200,14 @@ pub(crate) fn decode_obj_mtx(
     let mut read = struct_fields(address, word);
     let mut mtx = ObjMtx::default();
     let tail = match kind {
-        ObjMtxKind::Full => {
+        ObjMtxKind::Full | ObjMtxKind::Linear => {
             mtx.a = read(0, 4)? as i32;
             mtx.b = read(4, 4)? as i32;
             mtx.c = read(8, 4)? as i32;
             mtx.d = read(12, 4)? as i32;
+            if kind == ObjMtxKind::Linear {
+                return Ok(mtx);
+            }
             16
         }
         ObjMtxKind::Sub => 0,

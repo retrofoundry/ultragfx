@@ -1130,7 +1130,12 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
             }
             if diags[diagnostics_start..].last().is_some_and(|d| {
                 (ucode == crate::hle::gbi::GbiUcode::S2dex2
-                    && matches!(d.kind, DiagKind::UnsupportedCommand { .. }))
+                    && matches!(
+                        d.kind,
+                        DiagKind::UnsupportedCommand { .. }
+                            | DiagKind::UnsupportedCommandParameters { .. }
+                            | DiagKind::UnsupportedObjStatus { .. }
+                    ))
                     || matches!(
                         d.kind,
                         DiagKind::MemoryRead { .. }

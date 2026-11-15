@@ -1335,6 +1335,69 @@ fn obj_struct_recording_replay_omits_sprite_padding() {
 }
 
 #[test]
+fn object_commands_capture_exact_spans_and_replay() {
+    use crate::hle::interp::interpret;
+    for (word, extent) in [
+        (0x05000017, 24),
+        (0xdc170000, 24),
+        (0xdc070002, 8),
+        (0xdc0f0000, 16),
+    ] {
+        let mut bytes: Vec<u8> = [word, 64, 0xdf000000, 0u32]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect();
+        bytes.resize(64, 0);
+        let data: Vec<u8> = [0x1033, 128, 0, 0, 1, u32::MAX]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect();
+        bytes.extend_from_slice(&data[..extent]);
+        if word == 0x05000017 {
+            bytes.resize(128, 0);
+            bytes.extend_from_slice(&[1, 23, 45, 67, 89, 101, 123, 145]);
+        }
+        let hardware = Image(bytes);
+        let recording = RecordingHardware::new(&hardware);
+        let actual = interpret(
+            recording.rdram(),
+            0,
+            Microcode::S2dex2.into(),
+            DataFormat::Fixed,
+            None,
+        );
+        assert!(actual.diags.is_empty(), "{:?}", actual.diags);
+        assert_eq!(actual.termination, crate::inspect::WalkTermination::End);
+        let task = recording
+            .finish(0, Microcode::S2dex2, DataFormat::Fixed, 0)
+            .unwrap();
+        let mut spans = vec![(0, 16), (64, extent)];
+        if word == 0x05000017 {
+            spans.push((128, 8));
+        }
+        assert_eq!(
+            task.spans
+                .iter()
+                .map(|s| (s.address, s.bytes.len()))
+                .collect::<Vec<_>>(),
+            spans
+        );
+        let replay = ReplayHardware::new(&task, None).unwrap();
+        let replayed = interpret(
+            replay.rdram(),
+            0,
+            Microcode::S2dex2.into(),
+            DataFormat::Fixed,
+            None,
+        );
+        assert_eq!(replayed.termination, crate::inspect::WalkTermination::End);
+        assert!(replayed.diags.is_empty(), "{:?}", replayed.diags);
+        assert_eq!(replayed.rdp, actual.rdp);
+        replay.check().unwrap();
+    }
+}
+
+#[test]
 fn capture_snapshots_walk_bindings() {
     let hardware = Image(
         [0xe1000000u32, 0x8000, 0xdd0007ff, 0x1000, 0xdf000000, 0]

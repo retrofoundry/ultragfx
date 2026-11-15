@@ -22,16 +22,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-use super::interp::{emit_texrect, Cmd, Ctx, Handler, TexRect};
+use super::interp::{emit_texrect, memory_try, Cmd, Ctx, Handler, TexRect};
 use super::mem::Rdram;
-use super::mem::{ObjBg, ObjBgKind};
+use super::mem::{ObjBg, ObjBgKind, ObjMtxKind};
 use super::rdp::{load_tile_typed, set_tile_size_typed, set_tile_typed, TileDescriptor};
 use crate::inspect::Emission;
 use crate::{DiagKind, Diagnostic};
+use n64_gbi::consts::{rdp, rsp_s2dex2::*};
 
 pub(crate) fn install<M: Rdram>(table: &mut [Handler<M>; 256]) {
     table.fill(unsupported::<M>);
     super::rdp::install_defaults(table);
+    table[G_OBJ_LOADTXTR as usize] = obj_load_txtr;
+    table[G_OBJ_MOVEMEM as usize] = obj_move_mem;
     table[0x0b] = obj_render_mode;
     table[0xdb] = move_word;
     table[0xe0] = super::rsp_f3dex2::spnoop;
@@ -45,10 +48,114 @@ fn obj_render_mode<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
 }
 
 fn move_word<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
-    if c.p0(16, 8) == 0x08 {
-        unsupported(c, cx);
+    if c.p0(16, 8) == u32::from(G_MW_GENSTAT) {
+        if let Some(index) = status_index(c.w0 as u16, cx) {
+            cx.rsp.obj_status[index] = c.w1;
+        }
     } else {
         super::rsp_f3dex2::move_word(c, cx);
+    }
+}
+
+fn status_index<M: Rdram>(sid: u16, cx: &mut Ctx<M>) -> Option<usize> {
+    if matches!(sid, 0 | 4 | 8 | 12) {
+        Some(usize::from(sid / 4))
+    } else {
+        cx.diags.push(Diagnostic {
+            at: cx.pc,
+            kind: DiagKind::UnsupportedObjStatus { sid },
+        });
+        None
+    }
+}
+
+fn obj_load_txtr<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
+    if c.p0(0, 24) != 23 {
+        invalid_parameters(cx, c.opcode());
+        return;
+    }
+    let obj = memory_try!(
+        cx,
+        ObjTxtr,
+        cx.mem
+            .resolve_masked(c.w1_addr)
+            .and_then(|address| cx.mem.read_obj_txtr(address))
+    );
+    let Some(index) = status_index(obj.sid, cx) else {
+        return;
+    };
+    let status = cx.rsp.obj_status[index];
+    if status & obj.mask == obj.flag {
+        return;
+    }
+    let opcode = (obj.load_type as u8 & 0x3f) | 0xc0;
+    let load: Handler<M> = match opcode {
+        rdp::G_LOADBLOCK => super::rdp::load_block,
+        rdp::G_LOADTILE => super::rdp::load_tile,
+        rdp::G_LOADTLUT => super::rdp::load_tlut,
+        _ => {
+            invalid_parameters(cx, c.opcode());
+            return;
+        }
+    };
+    cx.rsp.obj_status[index] = (status & !obj.mask) | (obj.flag & obj.mask);
+    let image = memory_try!(cx, Texture, cx.mem.resolve(obj.image));
+    cx.rsp
+        .set_texture_image(0, 2, obj.tsize & 0xfff, image, cx.rdp);
+
+    // RT64's packing, checked against the Safe 2.05 C4 streams in s2dex_witnesses/.
+    let type_mask = (obj.load_type >> 16) as i8 as u32;
+    let tile = u32::from(obj.tmem)
+        | (((u32::from(obj.tsize) + 1) & type_mask) << 7)
+        | ((obj.load_type & 0xff00) << 8);
+    super::rdp::set_tile(
+        &Cmd {
+            w0: (u32::from(rdp::G_SETTILE) << 24) | tile,
+            w1: 0x0700_0000,
+            w1_addr: 0x0700_0000,
+        },
+        cx,
+    );
+    let w1 = 0x0700_0000 | (((u32::from(obj.tsize) << 14) | u32::from(obj.tline)) & 0xffffff);
+    load(
+        &Cmd {
+            w0: u32::from(opcode) << 24,
+            w1,
+            w1_addr: u64::from(w1),
+        },
+        cx,
+    );
+}
+
+fn obj_move_mem<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
+    let kind = match c.p0(0, 24) {
+        0x170000 => ObjMtxKind::Full,
+        0x070002 => ObjMtxKind::Sub,
+        0x0f0000 => ObjMtxKind::Linear,
+        _ => {
+            invalid_parameters(cx, c.opcode());
+            return;
+        }
+    };
+    let mtx = memory_try!(
+        cx,
+        ObjMtx,
+        cx.mem
+            .resolve_masked(c.w1_addr)
+            .and_then(|address| cx.mem.read_obj_mtx(address, kind))
+    );
+    let state = &mut cx.rsp.obj_mtx;
+    if kind != ObjMtxKind::Sub {
+        state.a = mtx.a;
+        state.b = mtx.b;
+        state.c = mtx.c;
+        state.d = mtx.d;
+    }
+    if kind != ObjMtxKind::Linear {
+        state.x = mtx.x;
+        state.y = mtx.y;
+        state.base_scale_x = mtx.base_scale_x;
+        state.base_scale_y = mtx.base_scale_y;
     }
 }
 
@@ -63,7 +170,7 @@ fn unsupported<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     });
 }
 
-fn invalid_bg<M: Rdram>(cx: &mut Ctx<M>, opcode: u8) {
+fn invalid_parameters<M: Rdram>(cx: &mut Ctx<M>, opcode: u8) {
     cx.diags.push(Diagnostic {
         at: cx.pc,
         kind: DiagKind::UnsupportedCommandParameters { opcode },
@@ -92,7 +199,7 @@ fn read_bg<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>, kind: ObjBgKind) -> Result<ObjBg,
         || bg.image_fmt > 4
         || !matches!(bg.image_load, 0x0033 | 0xfff4)
     {
-        invalid_bg(cx, c.opcode());
+        invalid_parameters(cx, c.opcode());
         return Err(());
     }
     Ok(bg)
@@ -127,7 +234,7 @@ fn load_1cyc_tile<M: Rdram>(
     set_tile: bool,
 ) -> Result<(), ()> {
     if rows <= 0 || width <= 0 || destination < 0 {
-        invalid_bg(cx, 0x09);
+        invalid_parameters(cx, 0x09);
         return Err(());
     }
     let size = if bg.image_siz == 3 { 3 } else { 2 };
@@ -292,7 +399,7 @@ pub(crate) fn bg_1cyc<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) -> Result<Vec<Emission
     let frame_rows = (image_rows << 20) / scale_h;
     let stride = (source_w / shift) * 8;
     if source_rows == 0 || image_rows <= 0 || frame_rows <= 0 || stride == 0 {
-        invalid_bg(cx, c.opcode());
+        invalid_parameters(cx, c.opcode());
         return Err(());
     }
     let mut image_offset = (image_y - origin) << 5;
@@ -425,7 +532,7 @@ pub(crate) fn bg_copy<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) -> Result<Vec<Emission
         || product != u32::from(bg.tmem_h) * u32::from(bg.tmem_size_w)
         || bg.image_flip & !1 != 0
     {
-        invalid_bg(cx, c.opcode());
+        invalid_parameters(cx, c.opcode());
         return Err(());
     }
     let frame_x = i64::from(bg.frame_x);
@@ -488,7 +595,7 @@ pub(crate) fn bg_copy<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) -> Result<Vec<Emission
             let divisor = if bg.image_siz == 3 { 32 } else { 16 };
             let line = (bits + divisor - 1) / divisor;
             if line * strip_height > capacity {
-                invalid_bg(cx, c.opcode());
+                invalid_parameters(cx, c.opcode());
                 return Err(());
             }
             let tile = TileDescriptor {

@@ -37,6 +37,8 @@ pub enum MemoryAccess {
     Texture,
     Tlut,
     ObjBg,
+    ObjTxtr,
+    ObjMtx,
 }
 
 /// Unsupported GPU framebuffer texture access; no guest-memory fallback is performed.
@@ -141,6 +143,10 @@ pub enum DiagKind {
     UnsupportedCommandParameters {
         opcode: u8,
     },
+    /// ultragfx does not model unaligned or out-of-table object status accesses in DMEM.
+    UnsupportedObjStatus {
+        sid: u16,
+    },
     RunawayDl {
         cap: u64,
     },
@@ -214,6 +220,7 @@ impl DiagKind {
             | DiagKind::UnsupportedDepthAlias { .. }
             | DiagKind::UnsupportedLegacyDepthExtent { .. }
             | DiagKind::UnsupportedCommandParameters { .. }
+            | DiagKind::UnsupportedObjStatus { .. }
             | DiagKind::RunawayDl { .. }
             | DiagKind::DlPastRdram
             | DiagKind::TruncatedRect { .. }
@@ -307,6 +314,9 @@ impl std::fmt::Display for DiagKind {
             DiagKind::UnsupportedCommandParameters { opcode } => {
                 write!(f, "unsupported parameters for opcode 0x{opcode:02X}")
             }
+            DiagKind::UnsupportedObjStatus { sid } => write!(f,
+                "S2DEX object status id {sid}: ultragfx supports only 0, 4, 8 and 12 (an HLE limit, not console validation)"
+            ),
             DiagKind::RunawayDl { cap } => {
                 write!(f, "runaway DL: exceeded {cap} command dispatches")
             }

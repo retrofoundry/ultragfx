@@ -245,7 +245,7 @@ fn set_blend_color<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     cx.rsp.material_dirty = true;
 }
 
-fn set_tile<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
+pub(crate) fn set_tile<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     set_tile_typed(
         c.p1(24, 3) as usize,
         TileDescriptor {
@@ -344,7 +344,7 @@ fn framebuffer_load<M: Rdram>(
     Some(true)
 }
 
-fn load_block<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
+pub(crate) fn load_block<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     // contiguous, linear: N64 RDP hardware word count.
     let (_fmt, siz, width, base) = cx.rdp.tex_image;
     let tile_idx = c.p1(24, 3) as usize; // load tile (7 for a well-formed LoadTextureBlock)
@@ -379,7 +379,7 @@ fn load_block<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     cx.rsp.material_dirty = true;
 }
 
-fn load_tile<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
+pub(crate) fn load_tile<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     let _ = load_tile_typed(
         c.p1(24, 3) as usize,
         [
@@ -467,7 +467,7 @@ fn texture_error<M: Rdram>(cx: &mut Ctx<M>, error: crate::MemoryError) {
     });
 }
 
-fn load_tlut<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
+pub(crate) fn load_tlut<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     let (_, siz, width, base) = cx.rdp.tex_image;
     let uls = c.p0(14, 10);
     let ult = c.p0(2, 10);

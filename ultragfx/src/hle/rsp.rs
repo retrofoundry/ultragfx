@@ -7,7 +7,7 @@ use crate::hle::math::{
     identity, mul4, mul_col_vec3, mul_fx, mul_row_vec4, w_int_fx, Mat4, FX_IDENTITY,
 };
 use crate::hle::mem::Rdram;
-use crate::hle::mem::{MemoryError, MemoryErrorKind};
+use crate::hle::mem::{MemoryError, MemoryErrorKind, ObjMtx};
 pub use crate::scene::{
     ColorImage, CullKind, DrawRun, FramebufferPair, Rect, Scene, SceneOp, Scissor, TexRectBounds,
 };
@@ -23,6 +23,17 @@ pub const FB_HEIGHT: f32 = 240.0;
 /// F3DEX2 modelview matrix stack size. Pushes past 32 are silently dropped.
 pub const RSP_MATRIX_STACK_SIZE: usize = 32;
 
+const OBJ_MTX_IDENTITY: ObjMtx = ObjMtx {
+    a: 0x10000,
+    b: 0,
+    c: 0,
+    d: 0x10000,
+    x: 0,
+    y: 0,
+    base_scale_x: 0x400,
+    base_scale_y: 0x400,
+};
+
 /// Texture scaling state set by gsSPTexture.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TextureState {
@@ -37,6 +48,8 @@ pub struct Rsp {
     annotations: Option<Box<crate::annotation::AnnotationCapture>>,
     microcode: crate::Microcode,
     pub(crate) obj_render_mode: u32,
+    pub(crate) obj_status: [u32; 4],
+    pub(crate) obj_mtx: ObjMtx,
     /// The MVP and its table index that the microcode keeps in DMEM: the last one a vertex load
     /// computed or a force wrote.
     dmem_mvp: (Mat4, Option<[i32; 16]>, u32),
@@ -100,6 +113,8 @@ impl Default for Rsp {
             annotations: None,
             microcode: crate::Microcode::F3dex2,
             obj_render_mode: 0,
+            obj_status: [0; 4],
+            obj_mtx: OBJ_MTX_IDENTITY,
             dmem_mvp: (identity(), Some(FX_IDENTITY), 0),
             profiling: Default::default(),
             cache_global_index: [0u32; RSP_MAX_VERTICES],
@@ -229,7 +244,11 @@ impl Rsp {
                 self.texture_state = TextureState::default();
                 (self.mvp, self.mvp_fx, self.cur_mvp_index) = self.dmem_mvp;
             }
-            crate::hle::gbi::GbiUcode::S2dex2 => self.obj_render_mode = 0,
+            crate::hle::gbi::GbiUcode::S2dex2 => {
+                self.obj_render_mode = 0;
+                self.obj_status = [0; 4];
+                self.obj_mtx = OBJ_MTX_IDENTITY;
+            }
             crate::hle::gbi::GbiUcode::F3d => {}
         }
     }
@@ -250,6 +269,8 @@ impl Rsp {
         crate::inspect::StateView {
             microcode: self.microcode,
             obj_render_mode: self.obj_render_mode,
+            obj_status: self.obj_status,
+            obj_mtx: self.obj_mtx,
             geometry_mode: self.geom,
             geometry_names,
             texture: self.texture_state,

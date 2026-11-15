@@ -119,6 +119,27 @@ impl Rdram for Traced<'_> {
             .push((a, if k == crate::ObjBgKind::Copy { 40 } else { 36 }));
         self.memory.read_obj_bg(a, k)
     }
+    fn read_obj_txtr(&self, a: u64) -> Result<crate::ObjTxtr, crate::MemoryError> {
+        self.reads.borrow_mut().push((a, 24));
+        self.memory.read_obj_txtr(a)
+    }
+    fn read_obj_sprite(&self, a: u64) -> Result<crate::ObjSprite, crate::MemoryError> {
+        self.reads.borrow_mut().push((a, 24));
+        self.memory.read_obj_sprite(a)
+    }
+    fn read_obj_mtx(
+        &self,
+        a: u64,
+        k: crate::ObjMtxKind,
+    ) -> Result<crate::ObjMtx, crate::MemoryError> {
+        let length = match k {
+            crate::ObjMtxKind::Full => 24,
+            crate::ObjMtxKind::Sub => 8,
+            crate::ObjMtxKind::Linear => 16,
+        };
+        self.reads.borrow_mut().push((a, length));
+        self.memory.read_obj_mtx(a, k)
+    }
 }
 
 fn run(bytes: &[u8]) -> interp::InterpResult {
