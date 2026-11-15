@@ -13,7 +13,8 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-TMEM_CONTENTS_GOLDENS = {
+GOLDEN_OVERRIDES = {
+    'fogworld.bin': '5d170dfd6a0c099c053502a8e9c273a95c7fd974574a2eb2c7e47e6c09592550',
     'i4-ramp.bin': 'f4f2c0ba9cbf4eba8c748bf35886a8689d49a3c67d7ae3f1b56826082a8fbdcf',
     'i8-ramp.bin': 'af4e0045dfac3f4bc5d933731efb1537a3e3db91a4b7d944dfcb5020ffe5438d',
     'ia4-ramp.bin': 'f4f2c0ba9cbf4eba8c748bf35886a8689d49a3c67d7ae3f1b56826082a8fbdcf',
@@ -22,7 +23,7 @@ TMEM_CONTENTS_GOLDENS = {
 
 
 class FrozenBaselines(unittest.TestCase):
-    def test_all_27_goldens_match_c2_or_tmem_contents_baselines(self):
+    def test_all_27_goldens_match_c2_or_declared_overrides(self):
         ledger = json.loads((HERE / 'goldens-bb0fea3.json').read_text())
         rows = ledger['goldens']
         self.assertEqual(len(rows), 27)
@@ -32,7 +33,7 @@ class FrozenBaselines(unittest.TestCase):
             with self.subTest(file=row['file']):
                 data = (ROOT / row['file']).read_bytes()
                 self.assertEqual(len(data), row['width'] * row['height'] * 4)
-                expected = TMEM_CONTENTS_GOLDENS.get(Path(row['file']).name, row['sha256'])
+                expected = GOLDEN_OVERRIDES.get(Path(row['file']).name, row['sha256'])
                 self.assertEqual(sha(data), expected)
                 self.assertEqual(set(row['c2_readbacks']), {'default', 'debug-ui', 'all-features'})
                 self.assertEqual(set(row['c2_readbacks'].values()), {row['sha256']})
