@@ -657,8 +657,7 @@ fn checked_host_writeback_checks_separate_depth_only_when_drawn() {
     }
 }
 
-#[test]
-fn checked_host_writeback_rejects_task_and_recovers() {
+fn writeback_renderer() -> crate::Renderer {
     let (device, queue) = crate::render::headless_device_forced_fallback();
     let mut renderer = crate::Renderer::with_device(
         device,
@@ -678,6 +677,24 @@ fn checked_host_writeback_rejects_task_and_recovers() {
         },
     );
     renderer.set_guest_writeback(true);
+    renderer
+}
+
+fn presented(renderer: &mut crate::Renderer) -> Vec<u8> {
+    let (device, queue) = (renderer.device().clone(), renderer.queue().clone());
+    super::common::pixels_from_render(
+        &device,
+        &queue,
+        8,
+        4,
+        wgpu::TextureFormat::Rgba8Unorm,
+        |view| renderer.present_last_to(view),
+    )
+}
+
+#[test]
+fn checked_host_writeback_rejects_task_and_recovers() {
+    let mut renderer = writeback_renderer();
     let pixels = [0u8; 64];
     let address = pixels.as_ptr() as u64;
     let invalid = 0x0000_fed0_0029_0003;
@@ -717,16 +734,7 @@ fn checked_host_writeback_rejects_task_and_recovers() {
                             .collect(),
                     }]
                 );
-                let (device, queue) = (renderer.device().clone(), renderer.queue().clone());
-                let rgba = super::common::pixels_from_render(
-                    &device,
-                    &queue,
-                    8,
-                    4,
-                    wgpu::TextureFormat::Rgba8Unorm,
-                    |view| renderer.present_last_to(view),
-                );
-                assert!(rgba
+                assert!(presented(&mut renderer)
                     .as_chunks::<4>()
                     .0
                     .iter()
@@ -753,6 +761,146 @@ fn checked_host_writeback_rejects_task_and_recovers() {
                 assert_eq!(renderer.rdp, rdp);
                 assert_eq!(renderer.color_image_epoch, epoch);
             }
+        }
+    }
+}
+
+#[test]
+fn released_tasks_match_the_single_call_after_guest_memory_is_overwritten() {
+    let run = |mode: u8| {
+        let mut renderer = writeback_renderer();
+        let mut pixels = [0u8; 64];
+        let address = pixels.as_ptr() as u64;
+        let mut dl = host_fill(address, 0xf801_f801);
+        let ranges = [span(&dl), span(&pixels)];
+        let entry = dl.as_ptr() as u64;
+        let ram = HostRam::with_ranges(&[], &ranges);
+        let mut diags = Vec::new();
+        let mut calls = 0;
+        let mut released = || {
+            calls += 1;
+            dl.fill([0xdf00_0000, 0]);
+            pixels.fill(0xaa);
+        };
+        let result = unsafe {
+            match mode {
+                0 => renderer.process_dl_host(ram, entry, crate::Microcode::F3dex2, &mut diags),
+                1 => renderer.process_dl_host_released(
+                    ram,
+                    entry,
+                    crate::Microcode::F3dex2,
+                    &mut diags,
+                    &[],
+                    &mut released,
+                ),
+                _ => {
+                    renderer
+                        .submit_task_host_released(
+                            ram,
+                            entry,
+                            crate::Microcode::F3dex2,
+                            &mut diags,
+                            crate::interpolation::TaskSubmission {
+                                info: crate::interpolation::TaskInfo {
+                                    cookie: 1,
+                                    source: 1,
+                                    epoch: 0,
+                                    producer_sample: 0,
+                                },
+                                annotations: None,
+                                microcode_bindings: &[],
+                            },
+                            &mut released,
+                        )
+                        .summary
+                }
+            }
+        };
+        assert!(diags.is_empty(), "{diags:?}");
+        assert!(result.renderable);
+        assert_eq!(calls, usize::from(mode != 0));
+        (renderer.take_guest_writes(), presented(&mut renderer))
+    };
+    let (patches, frame) = run(0);
+    assert_eq!(patches.len(), 1);
+    assert!(frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| *pixel == [255, 0, 0, 255]));
+    for mode in [1, 2] {
+        let (released_patches, released_frame) = run(mode);
+        assert_eq!(released_patches, patches, "mode {mode}");
+        assert_eq!(released_frame, frame, "mode {mode}");
+    }
+}
+
+#[test]
+fn released_runs_once_when_a_task_is_rejected() {
+    let pixels = [0u8; 64];
+    let address = pixels.as_ptr() as u64;
+    let invalid = 0x0000_fed0_0029_0003;
+    let mut bounds = host_fill(address, 0x07c1_07c1);
+    bounds.pop();
+    bounds.extend(host_fill(invalid, 0xf801_f801));
+    let good = host_fill(address, 0xf801_f801);
+    let outside = [[0xde00_0000u64, invalid], [0xdf00_0000, 0]];
+    for (case, dl) in [
+        ("accepted", &good[..]),
+        ("bounds", &bounds[..]),
+        ("read", &outside[..]),
+        ("admission", &good[..]),
+    ] {
+        let mut renderer = writeback_renderer();
+        if case == "admission" {
+            renderer.frame_admission_error = Some(crate::Diagnostic {
+                at: 0,
+                kind: crate::DiagKind::DlPastRdram,
+            });
+        }
+        let ranges = [span(dl), span(&pixels)];
+        let mut diags = Vec::new();
+        let mut calls = 0;
+        let result = unsafe {
+            renderer.process_dl_host_released(
+                HostRam::with_ranges(&[], &ranges),
+                dl.as_ptr() as u64,
+                crate::Microcode::F3dex2,
+                &mut diags,
+                &[],
+                &mut || calls += 1,
+            )
+        };
+        assert_eq!(calls, 1, "{case}");
+        assert_eq!(result.renderable, case == "accepted", "{case}: {diags:?}");
+    }
+}
+
+#[test]
+fn a_task_reports_guest_writes_left_untaken() {
+    let mut renderer = writeback_renderer();
+    let pixels = [0u8; 64];
+    let dl = host_fill(pixels.as_ptr() as u64, 0xf801_f801);
+    let ranges = [span(&dl), span(&pixels)];
+    for (take, expected) in [(true, None), (false, None), (true, Some(1))] {
+        let mut diags = Vec::new();
+        let summary = unsafe {
+            renderer.process_dl_host(
+                HostRam::with_ranges(&[], &ranges),
+                dl.as_ptr() as u64,
+                crate::Microcode::F3dex2,
+                &mut diags,
+            )
+        };
+        let untaken = diags.iter().find_map(|diag| match diag.kind {
+            crate::DiagKind::GuestWritesNotTaken { patches } => Some(patches),
+            _ => None,
+        });
+        assert_eq!(untaken, expected);
+        assert_eq!(summary.warns, u32::from(expected.is_some()));
+        assert!(summary.renderable);
+        if take {
+            renderer.take_guest_writes();
         }
     }
 }

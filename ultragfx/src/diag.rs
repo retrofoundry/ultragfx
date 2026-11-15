@@ -121,6 +121,11 @@ pub enum DiagKind {
         fmt: u8,
         siz: u8,
     },
+    /// A write-back task started before the previous tasks' patches were taken, so guest memory
+    /// lacks them and their bytes read back as CPU writes.
+    GuestWritesNotTaken {
+        patches: u32,
+    },
     UnsupportedImageReinterpretation {
         address: u64,
         depth: bool,
@@ -227,6 +232,7 @@ impl DiagKind {
             DiagKind::RdramReadZeroFilled { .. }
             | DiagKind::UnsupportedImageReinterpretation { .. }
             | DiagKind::UnsupportedGuestWriteback { .. }
+            | DiagKind::GuestWritesNotTaken { .. }
             | DiagKind::RenderModeNeverSet
             | DiagKind::NonCanonicalBlend
             | DiagKind::StrayRdphalf => Severity::Warn,
@@ -292,6 +298,7 @@ impl std::fmt::Display for DiagKind {
                 canvas.0, canvas.1, depth.0, depth.1, depth.0, depth.1
             ),
             DiagKind::UnsupportedGuestWriteback { address, fmt, siz } => write!(f, "guest write-back unsupported at {address:#x}: format {fmt}, size {siz}"),
+            DiagKind::GuestWritesNotTaken { patches } => write!(f, "task started with {patches} guest write-back patches not taken"),
             DiagKind::UnsupportedImageReinterpretation { address, depth } => write!(
                 f,
                 "unsupported preservation across {} image reinterpretation at {address:#018x}",
