@@ -307,6 +307,44 @@ pub mod rsp_f3d {
     pub const G_MW_PERSPNORM: u8 = 0x0E;
 }
 
+pub mod rsp_s2dex2 {
+    // RSP S2DEX2 opcodes (gs2dex.h under F3DEX_GBI_2).
+    pub const G_OBJ_RECTANGLE: u8 = 0x01;
+    pub const G_OBJ_SPRITE: u8 = 0x02;
+    pub const G_SELECT_DL: u8 = 0x04;
+    pub const G_OBJ_LOADTXTR: u8 = 0x05;
+    pub const G_OBJ_LDTX_SPRITE: u8 = 0x06;
+    pub const G_OBJ_LDTX_RECT: u8 = 0x07;
+    pub const G_OBJ_LDTX_RECT_R: u8 = 0x08;
+    pub const G_BG_1CYC: u8 = 0x09;
+    pub const G_BG_COPY: u8 = 0x0A;
+    pub const G_OBJ_RENDERMODE: u8 = 0x0B;
+    pub const G_OBJ_RECTANGLE_R: u8 = 0xDA;
+    pub const G_OBJ_MOVEMEM: u8 = 0xDC;
+    pub const G_RDPHALF_0: u8 = 0xE4;
+
+    /// G_MOVEWORD index of the four status words; the same value as F3DEX2's `G_MW_FOG`.
+    pub const G_MW_GENSTAT: u8 = 0x08;
+
+    // uObjTxtr `type` values.
+    pub const G_OBJLT_TXTRBLOCK: u32 = 0x0000_1033;
+    pub const G_OBJLT_TXTRTILE: u32 = 0x00FC_1034;
+    pub const G_OBJLT_TLUT: u32 = 0x0000_0030;
+
+    // uObjSprite `imageFlags`.
+    pub const G_OBJ_FLAG_FLIPS: u8 = 0x01;
+    pub const G_OBJ_FLAG_FLIPT: u8 = 0x10;
+
+    // gSPObjRenderMode flags.
+    pub const G_OBJRM_NOTXCLAMP: u32 = 0x01;
+    pub const G_OBJRM_XLU: u32 = 0x02;
+    pub const G_OBJRM_ANTIALIAS: u32 = 0x04;
+    pub const G_OBJRM_BILERP: u32 = 0x08;
+    pub const G_OBJRM_SHRINKSIZE_1: u32 = 0x10;
+    pub const G_OBJRM_SHRINKSIZE_2: u32 = 0x20;
+    pub const G_OBJRM_WIDEN: u32 = 0x40;
+}
+
 pub use rdp::*;
 pub use rsp_f3dex2::*;
 
