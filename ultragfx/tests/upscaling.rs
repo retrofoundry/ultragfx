@@ -190,7 +190,9 @@ async fn replay_dither_anchors() {
             let (width, height) = (output.width / scale, output.height / scale);
             assert_eq!(native.len(), (width * height * 4) as usize);
             assert!(native
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .all(|p| p[..3] == [0, 0, 0] || p[..3] == [red, 0, 0]));
             let mut decisions = 0;
             let mut value_excess = 0;
