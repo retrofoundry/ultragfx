@@ -1322,7 +1322,7 @@ fn alpha_threshold(x: u32, y: u32, width: u32, serial: u32, seed: u32) -> u8 {
 }
 
 #[test]
-fn alpha_dither_is_deterministic_and_relative_to_each_raster_role() {
+fn alpha_dither_preserves_native_anchors_and_target_rate_detail() {
     let (device, queue, dual) = headless_device();
     for scale in [1, 2, 3, 4] {
         let mut renderer = SceneRenderer::new(&device, FORMAT, 16, 12, dual);
@@ -1368,9 +1368,15 @@ fn alpha_dither_is_deterministic_and_relative_to_each_raster_role() {
             {
                 let bytes = read_texture(&device, &queue, texture);
                 assert_rgba(texture, &bytes, |x, y| {
+                    let (sample_x, sample_y, width) =
+                        if factor > 1 && x.is_multiple_of(factor) && y.is_multiple_of(factor) {
+                            (x / factor, y / factor, 16)
+                        } else {
+                            (x, y, 16 * factor)
+                        };
                     if (2 * factor..6 * factor).contains(&x)
                         && (2 * factor..6 * factor).contains(&y)
-                        && alpha_threshold(x, y, 16 * factor, 7, 0x1234) <= 128
+                        && alpha_threshold(sample_x, sample_y, width, 7, 0x1234) <= 128
                     {
                         [255, 255, 255, 128]
                     } else {
