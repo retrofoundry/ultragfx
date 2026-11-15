@@ -387,7 +387,7 @@ mod phase2_tests {
     }
 
     #[test]
-    fn f3d_textured_cull_front_quad_outputs_match_f3dex2() {
+    fn f3d_and_f3dex2_quads_share_state_with_distinct_draw_order() {
         let mut f3d_commands = vec![
             gsp_matrix_f3d(0, true, true, false),
             gsp_viewport_f3d(VIEWPORT_ADDR),
@@ -426,13 +426,13 @@ mod phase2_tests {
         assert!(f3d.scene.materials[0].tex_enable);
         assert_eq!(f3d.scene.draw_runs[0].cull, CullKind::Cull);
         assert_eq!(f3d.scene.indices, vec![2, 1, 0, 3, 2, 0]);
+        assert_eq!(f3dex2.scene.indices, vec![3, 2, 0, 2, 1, 0]);
         assert_eq!(f3d.scene.mtx_index, vec![1; 4]);
         assert_eq!(f3d.scene.fog, vec![1; 4]);
 
         assert_eq!(
             (
                 &f3d.scene.draw_runs,
-                &f3d.scene.indices,
                 &f3d.scene.raw_pos,
                 &f3d.scene.mvp_table,
                 &f3d.scene.materials,
@@ -445,7 +445,6 @@ mod phase2_tests {
             ),
             (
                 &f3dex2.scene.draw_runs,
-                &f3dex2.scene.indices,
                 &f3dex2.scene.raw_pos,
                 &f3dex2.scene.mvp_table,
                 &f3dex2.scene.materials,

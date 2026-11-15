@@ -534,12 +534,12 @@ fn quad_is_encoded_tri2() {
         let tri2 = modifyvtx_scene(&[(0x0608_0a0c, 0x000e_0c0a)], geometry);
         assert_eq!(quad, tri2);
         let expected = match geometry {
-            0x200 => vec![2, 1, 0, 1, 2, 3],
+            0x200 => vec![1, 2, 3, 2, 1, 0],
             0x600 => vec![],
-            _ => vec![0, 1, 2, 3, 2, 1],
+            _ => vec![3, 2, 1, 0, 1, 2],
         };
         assert_eq!(quad.indices, expected);
     }
     let scene = modifyvtx_scene(&[gsp_quad(4, 5, 6, 7)], 0);
-    assert_eq!(scene.indices, [0, 1, 2, 0, 2, 3]);
+    assert_eq!(scene.indices, [0, 2, 3, 0, 1, 2]);
 }

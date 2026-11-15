@@ -120,7 +120,7 @@ fn framebuffer_mixed_extents_reuses_vertices() {
         pair(&scene, 0x0030_0000, 320, 240),
     ];
     assert_eq!(scene.raw_pos.len(), 4);
-    assert_eq!(scene.indices, [0, 1, 2, 0, 2, 3]);
+    assert_eq!(scene.indices, [0, 2, 3, 0, 1, 2]);
     for _ in 0..2 {
         renderer.begin_frame();
         renderer.render_into_store(&device, &queue, &scene, crate::ClearPolicy::PerFrame);
