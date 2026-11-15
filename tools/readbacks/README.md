@@ -151,6 +151,8 @@ exporters, row-producing tests and their inputs/helpers. Semantic suites that
 export no frozen rows, including `fog.rs` and `fog_mirror.rs`, keep their own
 revision's assertions, fixture data and module declarations. Both revisions must
 pass their assertions; no base test failures are waived.
+If an overlaid exporter requires a helper the base revision does not provide,
+the base build fails and the gate rejects the change.
 
 Captures record each compiled test target's available and selected libtest names.
 `comparison.json` lists selected candidate names absent from the base under
