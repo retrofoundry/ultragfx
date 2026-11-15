@@ -38,6 +38,21 @@ devenv shell -- cargo run -p ultragfx --features capture --example replay_captur
   frame.ugfxcap output --scale 3 --source presentation
 ```
 
+For an upscale comparison, use `--source both`, then run
+`python3 tools/upscale/compare_anchors.py output-native.rgba8 output.rgba8 --width W --height H --scale 3`,
+where `W` and `H` are the native scanout crop dimensions. The script compares native pixel
+`(x, y)` with presentation pixel `(3*x, 3*y)` and reports RGB differences and blurred block-average
+tone error. `identical` means exact RGB equality; alpha is not part of the screen-colour metric.
+
+RGB differences alone do not identify decision changes. `--decisions native.u8 presentation.u8`
+accepts fixture-oracle or diagnostic labels, one byte per pixel at each image's resolution;
+255 marks unknown decisions. With these labels the script counts `decision_mismatches` separately
+from `value_beyond_step` on agreeing labels, and reports `value_tested` and `unclassified` counts.
+Without labels those two metrics are null, not zero. `--step` supplies the rule's output-space
+quantisation step in RGB8 units; `--steps bounds.rgb8` supplies per-anchor RGB bounds instead.
+The default step of 1 is a byte-rounding screen, not a universal console tolerance. The tone split
+uses a fixed native 3×3 contrast threshold of 8, independent of the value bound.
+
 A single-frame fixture starts with default RDP registers, empty TMEM and no established color
 image. Replay preserves register state between its tasks. Each replay and clear-policy probe
 restarts the registers, so framebuffer initialization commands cannot affect the fixture's RDP
