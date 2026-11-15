@@ -49,8 +49,8 @@ pub use hooks::{HookFrame, RenderHook};
 #[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
 pub use hardware::HostRam;
 pub use hardware::{
-    Command, Hardware, Matrix, MemoryError, MemoryErrorKind, ObjBg, ObjBgKind, RawVertex, Rdram,
-    RdramImage, ViRegisters,
+    Command, Hardware, Matrix, MemoryError, MemoryErrorKind, ObjBg, ObjBgKind, ObjMtx, ObjMtxKind,
+    ObjSprite, ObjTxtr, RawVertex, Rdram, RdramImage, ViRegisters,
 };
 
 /// How internal framebuffers are cleared across frames (spec §4).

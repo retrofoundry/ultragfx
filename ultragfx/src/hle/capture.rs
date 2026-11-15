@@ -1,5 +1,8 @@
 use super::math::Mat4;
-use super::mem::{decode_obj_bg, Command, ObjBg, ObjBgKind, RawVertex, SEGMENT_SPACE_END};
+use super::mem::{
+    decode_obj_bg, decode_obj_mtx, decode_obj_sprite, decode_obj_txtr, Command, ObjBg, ObjBgKind,
+    ObjMtx, ObjMtxKind, ObjSprite, ObjTxtr, RawVertex, SEGMENT_SPACE_END,
+};
 use crate::{DataFormat, Hardware, MemoryError, MemoryErrorKind, Microcode, Rdram, ViRegisters};
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -481,6 +484,28 @@ trait DecodeMemory {
         })
     }
 
+    fn n64_obj(&self, address: u64) -> std::result::Result<(), MemoryError> {
+        match self.layout().obj_bg_abi {
+            ObjBgAbi::N64 => Ok(()),
+            ObjBgAbi::Host64 => Err(memory_error(address, 0, MemoryErrorKind::UnsupportedFormat)),
+        }
+    }
+
+    fn obj_txtr(&self, address: u64) -> std::result::Result<ObjTxtr, MemoryError> {
+        self.n64_obj(address)?;
+        decode_obj_txtr(address, |address, length| self.word(address, length))
+    }
+
+    fn obj_sprite(&self, address: u64) -> std::result::Result<ObjSprite, MemoryError> {
+        self.n64_obj(address)?;
+        decode_obj_sprite(address, |address, length| self.word(address, length))
+    }
+
+    fn obj_mtx(&self, address: u64, kind: ObjMtxKind) -> std::result::Result<ObjMtx, MemoryError> {
+        self.n64_obj(address)?;
+        decode_obj_mtx(address, kind, |address, length| self.word(address, length))
+    }
+
     fn command(&self, address: u64) -> std::result::Result<Command, MemoryError> {
         let layout = self.layout();
         let bytes = self.bytes(address, layout.command_stride as usize)?;
@@ -667,6 +692,25 @@ impl<R: Rdram> Rdram for RecordingRdram<'_, R> {
         let bg = self.source(self.inner.read_obj_bg(address, kind))?;
         self.obj_bg(address, kind)?;
         Ok(bg)
+    }
+    fn read_obj_txtr(&self, address: u64) -> std::result::Result<ObjTxtr, MemoryError> {
+        let txtr = self.source(self.inner.read_obj_txtr(address))?;
+        self.obj_txtr(address)?;
+        Ok(txtr)
+    }
+    fn read_obj_sprite(&self, address: u64) -> std::result::Result<ObjSprite, MemoryError> {
+        let sprite = self.source(self.inner.read_obj_sprite(address))?;
+        self.obj_sprite(address)?;
+        Ok(sprite)
+    }
+    fn read_obj_mtx(
+        &self,
+        address: u64,
+        kind: ObjMtxKind,
+    ) -> std::result::Result<ObjMtx, MemoryError> {
+        let mtx = self.source(self.inner.read_obj_mtx(address, kind))?;
+        self.obj_mtx(address, kind)?;
+        Ok(mtx)
     }
     fn read_command(&self, address: u64) -> std::result::Result<Command, MemoryError> {
         let command = self.source(self.inner.read_command(address))?;
@@ -982,6 +1026,19 @@ impl Rdram for ReplayRdram<'_> {
         kind: ObjBgKind,
     ) -> std::result::Result<ObjBg, MemoryError> {
         self.obj_bg(address, kind)
+    }
+    fn read_obj_txtr(&self, address: u64) -> std::result::Result<ObjTxtr, MemoryError> {
+        self.obj_txtr(address)
+    }
+    fn read_obj_sprite(&self, address: u64) -> std::result::Result<ObjSprite, MemoryError> {
+        self.obj_sprite(address)
+    }
+    fn read_obj_mtx(
+        &self,
+        address: u64,
+        kind: ObjMtxKind,
+    ) -> std::result::Result<ObjMtx, MemoryError> {
+        self.obj_mtx(address, kind)
     }
     fn read_command(&self, address: u64) -> std::result::Result<Command, MemoryError> {
         let command = self.command(address)?;

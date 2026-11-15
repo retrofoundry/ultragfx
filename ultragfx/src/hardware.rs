@@ -2,7 +2,8 @@
 #[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
 pub use crate::hle::host_mem::HostRam;
 pub use crate::hle::mem::{
-    Command, Matrix, MemoryError, MemoryErrorKind, ObjBg, ObjBgKind, RawVertex, Rdram, RdramImage,
+    Command, Matrix, MemoryError, MemoryErrorKind, ObjBg, ObjBgKind, ObjMtx, ObjMtxKind, ObjSprite,
+    ObjTxtr, RawVertex, Rdram, RdramImage,
 };
 
 /// Raw VI register words, exactly as the N64 VI presents them; `ultragfx` owns the bit-decode

@@ -1304,6 +1304,37 @@ fn obj_bg_recording_replay_omits_padding_and_preserves_typed_failure() {
 }
 
 #[test]
+fn obj_struct_recording_replay_omits_sprite_padding() {
+    use crate::ObjMtxKind;
+    let hardware = Image((1..=48).collect());
+    let recording = RecordingHardware::new(&hardware);
+    let (sprite, txtr, mtx) = {
+        let rdram = recording.rdram();
+        (
+            rdram.read_obj_sprite(0).unwrap(),
+            rdram.read_obj_txtr(24).unwrap(),
+            rdram.read_obj_mtx(24, ObjMtxKind::Full).unwrap(),
+        )
+    };
+    let task = recording
+        .finish(0, Microcode::S2dex2, DataFormat::Fixed, 0)
+        .unwrap();
+    assert_eq!(
+        task.spans
+            .iter()
+            .map(|span| (span.address, span.bytes.len()))
+            .collect::<Vec<_>>(),
+        vec![(0, 6), (8, 6), (16, 32)]
+    );
+    let replay = ReplayHardware::new(&task, None).unwrap();
+    let rdram = replay.rdram();
+    assert_eq!(rdram.read_obj_sprite(0).unwrap(), sprite);
+    assert_eq!(rdram.read_obj_txtr(24).unwrap(), txtr);
+    assert_eq!(rdram.read_obj_mtx(24, ObjMtxKind::Full).unwrap(), mtx);
+    replay.check().unwrap();
+}
+
+#[test]
 fn capture_snapshots_walk_bindings() {
     let hardware = Image(
         [0xe1000000u32, 0x8000, 0xdd0007ff, 0x1000, 0xdf000000, 0]
