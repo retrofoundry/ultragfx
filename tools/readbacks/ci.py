@@ -313,6 +313,10 @@ def committed_replacement_inventory(checkout, sha):
     return json.loads(command_output(["git", "show", f"{sha}:{replacements.INVENTORY}"], checkout))
 
 
+def committed_golden_inventory(checkout, sha):
+    return json.loads(command_output(["git", "show", f"{sha}:tools/readbacks/goldens.json"], checkout))
+
+
 def capture(checkout, output, base_sha, harness_checkout, inventory=None, replacement_inventory=None):
     inventory = INVENTORY if inventory is None else inventory
     checkout, output = checkout.resolve(), output.resolve()
@@ -321,7 +325,7 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None, replac
         raise ValueError("UPDATE_GOLDENS must be unset")
     freeze_lock(checkout)
     source_sha = command_output(["git", "rev-parse", "HEAD"], checkout)
-    goldens = json.loads((HERE / "goldens.json").read_text(encoding="utf-8"))
+    goldens = committed_golden_inventory(checkout, source_sha)
     actual_goldens = {path.relative_to(checkout).as_posix(): file_hash(path)
                       for path in sorted((checkout / "ultragfx/goldens").glob("*.bin"))}
     if actual_goldens != goldens:
@@ -380,6 +384,7 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None, replac
             if target is not None:
                 env["CARGO_TARGET_DIR"] = target.name
             binaries = {}
+            tests = {}
             executions = []
             with (directory / "build.log").open("w", encoding="utf-8") as build_log, \
                     (directory / "test.log").open("w", encoding="utf-8") as log:
@@ -393,27 +398,46 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None, replac
                                            env=env, text=True, encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                     build_log.write(build.stdout)
                     build_log.flush()
+                    test_binaries = {}
                     for line in build.stdout.splitlines():
                         try:
                             message = json.loads(line)
                             executable = message.get("executable")
                             if executable:
                                 binaries[str(Path(executable).resolve())] = file_hash(executable)
+                                if message["profile"]["test"] and "--doc" not in command:
+                                    test_binaries[f"{message['target']['kind'][0]}:{message['target']['name']}"] = executable
                         except json.JSONDecodeError:
                             continue
+                    skip = False
                     if build.returncode == 0 and platform.system() == "Windows" and inventory.get("section") and "--lib" in command:
                         listing = subprocess.check_output(cargo + ["--", "--list"], cwd=checkout, env=env,
                                                           text=True, encoding="utf-8")
                         names = [line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test")]
                         names = section_test_names(command[command.index("--") + 1:], config, inventory["section"], names)
                         if not names:
-                            raise ValueError("Windows section selected no tests")
+                            if checkout == harness_checkout.resolve():
+                                raise ValueError("Windows section selected no candidate tests")
+                            skip = True
                         command = cargo + ["--", "--exact"] + names
                         configuration["commands"][index] = command
+                    if build.returncode == 0:
+                        filters = command[command.index("--") + 1:] if "--" in command else []
+                        for name, executable in test_binaries.items():
+                            listing = subprocess.check_output([executable, "--list"], cwd=checkout, env=env,
+                                                              text=True, encoding="utf-8")
+                            available = sorted(line.removesuffix(": test") for line in listing.splitlines() if line.endswith(": test"))
+                            selected = [] if skip else [test for test in available if not filters or any(
+                                test == value if "--exact" in filters else value in test
+                                for value in filters if value != "--exact")]
+                            tests[name] = {"available": available, "selected": selected}
+                    if skip:
+                        print(f"{checkout}: {config}: no base tests in this section", file=log, flush=True)
+                        print(f"{checkout}: {config}: no base tests in this section", flush=True)
                     print(f"{checkout}: {config} test {json.dumps(command)}", flush=True)
-                    result = subprocess.run(command, cwd=checkout, env=env, stdout=log, stderr=subprocess.STDOUT) if build.returncode == 0 else build
+                    result = subprocess.run(command, cwd=checkout, env=env, stdout=log, stderr=subprocess.STDOUT) if build.returncode == 0 and not skip else build
                     executions.append({"command": command, "exit_code": result.returncode,
-                                       "build_exit_code": build.returncode, "seconds": time.monotonic() - started})
+                                       "build_exit_code": build.returncode, "skipped": skip, "seconds": time.monotonic() - started})
                     print(f"{checkout}: {config} exit {result.returncode} after {executions[-1]['seconds']:.1f}s", flush=True)
             test_log = (directory / "test.log").read_text(encoding="utf-8")
             manifest["configurations"][config] = {
@@ -422,6 +446,7 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None, replac
                 "build_exit_code": next((r["build_exit_code"] for r in executions if r["build_exit_code"]), 0),
                 "failed_tests": sorted(set(re.findall(r"(?m)^test (\S+) \.\.\. FAILED\s*$", test_log))),
                 "failed_targets": sorted(set(re.findall(r"(?m)^error: test failed, to rerun pass (.+)$", test_log))),
+                "tests": tests,
                 "build_log": f"{config}/build.log", "test_log": f"{config}/test.log",
                 "binaries": binaries, "environment": {key: env[key] for key in ["ULTRAGFX_GOLDEN_OUTPUT", "ULTRAGFX_DECODE_OUTPUT", "ULTRAGFX_GPU_DECODE_OUTPUT", "ULTRAGFX_RESIDENCY_OUTPUT", "ULTRAGFX_REPLACEMENT_OUTPUT", "CARGO_TARGET_DIR"] if key in env},
             }
@@ -499,14 +524,15 @@ def download_artifact(repository, run_id, artifact_name, destination):
     archive.unlink()
 
 
-def fetch_base(repository, base_sha, artifact_name, destination, inventory=None, replacement_inventory=None):
+def fetch_base(repository, base_sha, artifact_name, destination, inventory=None, replacement_inventory=None, golden_inventory=None):
     inventory = INVENTORY if inventory is None else inventory
     runs = gh_json(f"repos/{repository}/actions/workflows/validate.yml/runs?branch=main&event=push&status=success&head_sha={base_sha}&per_page=100")
     for run in runs["workflow_runs"]:
         if run["head_sha"] != base_sha or run["conclusion"] != "success" or run["event"] != "push":
             continue
         download_artifact(repository, str(run["id"]), artifact_name, destination)
-        load_capture(destination, inventory, base_sha, str(run["id"]), replacement_inventory=replacement_inventory)
+        load_capture(destination, inventory, base_sha, str(run["id"]), replacement_inventory=replacement_inventory,
+                     golden_inventory=golden_inventory)
         return str(run["id"])
     raise ValueError(f"no complete main artifact for exact base {base_sha}")
 
@@ -525,11 +551,12 @@ def gate(args):
     history = []
     base = output / "downloaded-base"
     base_replacements = committed_replacement_inventory(args.base_checkout, args.base_sha)
+    base_goldens = committed_golden_inventory(args.base_checkout, args.base_sha)
     try:
         load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
-        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory, base_replacements)
+        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory, base_replacements, base_goldens)
         report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"], run_id, manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
-                         base_replacement_inventory=base_replacements)
+                         base_replacement_inventory=base_replacements, base_golden_inventory=base_goldens)
         if not report["passed"]:
             (output / "cross-run-comparison.json").write_text(json.dumps(report, indent=2) + "\n")
             raise ValueError("cross-run RGBA delta; recapture both revisions on this runner")
@@ -543,12 +570,18 @@ def gate(args):
         try:
             report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"],
                              base_manifest["run_id"], manifest["run_id"], allow_incomplete=True, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
-                             base_replacement_inventory=base_replacements)
+                             base_replacement_inventory=base_replacements, base_golden_inventory=base_goldens)
         except (ValueError, KeyError, OSError) as error:
             report = {"passed": False, "complete": False, "error": str(error)}
     (output / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     for change in report.get("replacement_changes", []):
         print(f"declared replacement change: {change['id']} ({change['change']})")
+    for change in report.get("golden_changes", []):
+        print(f"declared golden change: {change['configuration']}/{change['id']}: "
+              f"{change['changed_pixels']} pixels, {change['changed_bytes']} bytes, channel maxima {change['channel_maxima']}"
+              + ("; unchanged declaration fails the gate" if change["changed_pixels"] == 0 else ""))
+    for test in report.get("base_missing_tests", []):
+        print(f"test absent from base: {test['configuration']}/{test['target']}/{test['name']}")
     if not report["passed"]:
         failures = [f"{label}: {failure}" for label, entries in report.get("failures", {}).items()
                     for failure in entries]

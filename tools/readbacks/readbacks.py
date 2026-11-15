@@ -14,6 +14,10 @@ def file_hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def goldens():
+    return json.loads(Path(__file__).with_name("goldens.json").read_text(encoding="utf-8"))
+
+
 def artifact_file(root, name):
     path = PurePosixPath(name)
     if path.is_absolute() or ".." in path.parts or "\\" in name or ":" in name:
@@ -185,7 +189,7 @@ def authenticate_rows(root, actual, expected, windows, *, roles=("render", "cpu-
 
 def load_capture(root, inventory, source_sha, run_id, *, allow_incomplete=False,
                  supplemental_inventory=None, require_gpu_decode=None, require_replacements=None,
-                 replacement_inventory=None):
+                 replacement_inventory=None, golden_inventory=None):
     root = Path(root)
     manifest = json.loads(artifact_file(root, "manifest.json").read_text(encoding="utf-8"))
     if manifest["schema"] != 1:
@@ -212,6 +216,9 @@ def load_capture(root, inventory, source_sha, run_id, *, allow_incomplete=False,
         raise ValueError("run ID does not match requested artifact")
     if manifest["inventory_sha256"] != json_hash(inventory):
         raise ValueError("incompatible inventory hash")
+    frozen_goldens = goldens() if golden_inventory is None else golden_inventory
+    if manifest.get("goldens") != frozen_goldens:
+        raise ValueError("golden inventory differs from requested commit")
     if set(manifest["configurations"]) != set(inventory["configurations"]):
         raise ValueError("configuration inventory differs")
     failures = capture_failures(manifest)
@@ -234,22 +241,27 @@ def load_capture(root, inventory, source_sha, run_id, *, allow_incomplete=False,
 
 def compare(base, candidate, inventory, base_sha, candidate_sha, base_run_id, candidate_run_id,
             *, allow_incomplete=False, supplemental_inventory=None, require_gpu_decode=None, require_replacements=None,
-            base_replacement_inventory=None, replacement_inventory=None):
+            base_replacement_inventory=None, replacement_inventory=None,
+            base_golden_inventory=None, golden_inventory=None):
     import replacements
     base_frozen = replacements.inventory() if base_replacement_inventory is None else base_replacement_inventory
     frozen = replacements.inventory() if replacement_inventory is None else replacement_inventory
     declared = replacements.changes(base_frozen, frozen)
+    base_goldens = goldens() if base_golden_inventory is None else base_golden_inventory
+    frozen_goldens = goldens() if golden_inventory is None else golden_inventory
     parent, parent_rows = load_capture(base, inventory, base_sha, base_run_id, allow_incomplete=allow_incomplete,
-                                     supplemental_inventory=supplemental_inventory, replacement_inventory=base_frozen)
+                                     supplemental_inventory=supplemental_inventory, replacement_inventory=base_frozen,
+                                     golden_inventory=base_goldens)
     head, head_rows = load_capture(candidate, inventory, candidate_sha, candidate_run_id, allow_incomplete=allow_incomplete,
                                   supplemental_inventory=supplemental_inventory, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
-                                  replacement_inventory=frozen)
+                                  replacement_inventory=frozen, golden_inventory=frozen_goldens)
     if head["base_sha"] != base_sha:
         raise ValueError("candidate base SHA does not match requested base")
     for field in ["runtime", "harness_sha256"]:
         if parent[field] != head[field]:
             raise ValueError(f"incompatible {field}; same-run base capture required")
-    missing = {label: sorted(set(expected_rows(inventory)) - set(rows))
+    expected = expected_rows(inventory)
+    missing = {label: sorted(set(expected) - set(rows))
                for label, rows in [("base", parent_rows), ("candidate", head_rows)]}
     failures = {"base": capture_failures(parent), "candidate": capture_failures(head)}
     gpu_decode = {"base": parent["_gpu_decode"], "candidate": head["_gpu_decode"]}
@@ -259,7 +271,16 @@ def compare(base, candidate, inventory, base_sha, candidate_sha, base_run_id, ca
     report = {"passed": complete, "complete": complete, "missing_rows": missing, "failures": failures, "gpu_decode": gpu_decode, "replacements": replacements,
               "threshold": 0, "base_sha": base_sha, "candidate_sha": candidate_sha,
               "base_run_id": str(base_run_id), "candidate_run_id": str(candidate_run_id), "rows": [],
-              "replacement_changes": declared}
+              "replacement_changes": declared, "golden_changes": [], "base_missing_tests": []}
+    for config, result in head["configurations"].items():
+        original = parent["configurations"][config]
+        if "tests" not in original or original.get("build_exit_code", 0):
+            continue
+        for target, tests in result.get("tests", {}).items():
+            available = original["tests"].get(target, {}).get("available", [])
+            report["base_missing_tests"].extend(
+                {"configuration": config, "target": target, "name": name}
+                for name in sorted(set(tests["selected"]) - set(available)))
     for key, row in head_rows.items():
         if key not in parent_rows:
             continue
@@ -273,10 +294,17 @@ def compare(base, candidate, inventory, base_sha, candidate_sha, base_run_id, ca
         right = artifact_file(Path(candidate), row["file"]).read_bytes()
         deltas = [abs(a - b) for a, b in zip(left, right)]
         changed = sum(delta != 0 for delta in deltas)
-        report["rows"].append({"configuration": key[0], "id": key[1], "changed_bytes": changed,
-                               "changed_pixels": sum(any(deltas[i:i + 4]) for i in range(0, len(deltas), 4)),
-                               "channel_maxima": [max(deltas[c::4], default=0) for c in range(4)]})
-        report["passed"] &= changed == 0
+        result = {"configuration": key[0], "id": key[1], "changed_bytes": changed,
+                  "changed_pixels": sum(any(deltas[i:i + 4]) for i in range(0, len(deltas), 4)),
+                  "channel_maxima": [max(deltas[c::4], default=0) for c in range(4)]}
+        report["rows"].append(result)
+        golden = expected[key].get("golden") if row["stage"] == "final" else None
+        path = f"ultragfx/goldens/{golden}.bin" if golden else None
+        if path and base_goldens[path] != frozen_goldens[path]:
+            report["golden_changes"].append(dict(result, golden=path, base=base_goldens[path], candidate=frozen_goldens[path]))
+            report["passed"] &= changed != 0
+        else:
+            report["passed"] &= changed == 0
     return report
 
 
@@ -289,11 +317,15 @@ def main():
     parser.add_argument("--base-run-id", required=True)
     parser.add_argument("--candidate-run-id", required=True)
     parser.add_argument("--inventory", type=Path, default=Path(__file__).with_name("inventory.json"))
+    parser.add_argument("--base-goldens", type=Path, default=Path(__file__).with_name("goldens.json"))
+    parser.add_argument("--goldens", type=Path, default=Path(__file__).with_name("goldens.json"))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
         report = compare(args.base, args.candidate, json.loads(args.inventory.read_text(encoding="utf-8")),
-                         args.base_sha, args.candidate_sha, args.base_run_id, args.candidate_run_id)
+                         args.base_sha, args.candidate_sha, args.base_run_id, args.candidate_run_id,
+                         base_golden_inventory=json.loads(args.base_goldens.read_text(encoding="utf-8")),
+                         golden_inventory=json.loads(args.goldens.read_text(encoding="utf-8")))
     except (ValueError, KeyError, OSError) as error:
         report = {"passed": False, "error": str(error)}
     args.output.parent.mkdir(parents=True, exist_ok=True)

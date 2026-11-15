@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -70,13 +71,15 @@ class CaptureFailures(unittest.TestCase):
         (self.checkout / "ultragfx/Cargo.toml").write_text("[dev-dependencies]\n")
         (self.checkout / "test-harness").write_text("test input")
         (self.harness / "harness-files.json").write_text('["test-harness"]')
-        (self.harness / "goldens.json").write_text(json.dumps({
-            "ultragfx/goldens/quad.bin": "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"}))
+        self.goldens = {"ultragfx/goldens/quad.bin": "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"}
+        (self.harness / "goldens.json").write_text(json.dumps(self.goldens))
         self.output = self.root / "output"
 
     def external_metadata(self, command, cwd, text, encoding, **kwargs):
         if command == ["git", "rev-parse", "HEAD"]:
             return "a" * 40
+        if command == ["git", "show", f"{'a' * 40}:tools/readbacks/goldens.json"]:
+            return json.dumps(self.goldens)
         if command == ["rustc", "-Vv"]:
             return "rustc test\nhost: aarch64-apple-darwin"
         if command[:2] == ["cargo", "tree"]:
@@ -85,12 +88,22 @@ class CaptureFailures(unittest.TestCase):
             return json.dumps({"resolve": {"nodes": [{"id": "ultragfx", "features": [], "deps": []}]}})
         raise AssertionError(command)
 
-    def capture(self, runner, inventory=None):
+    def capture(self, runner, inventory=None, harness_checkout=None):
         with patch.object(ci, "HERE", self.harness), \
                 patch.object(ci.subprocess, "check_output", self.external_metadata), \
                 patch.object(ci.subprocess, "run", runner), \
                 patch.dict(os.environ, {"GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1"}):
-            ci.capture(self.checkout, self.output, "a" * 40, self.checkout, inventory)
+            ci.capture(self.checkout, self.output, "a" * 40, harness_checkout or self.checkout, inventory)
+
+    def test_capture_uses_committed_goldens_despite_candidate_overlay(self):
+        (self.harness / "goldens.json").write_text('{"ultragfx/goldens/quad.bin": "overlaid candidate"}')
+        self.capture(lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout=""))
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["goldens"], self.goldens)
+        self.output = self.root / "corrupt"
+        (self.checkout / "ultragfx/goldens/quad.bin").write_bytes(bytes([1, 2, 3, 5]))
+        with self.assertRaisesRegex(ValueError, "committed golden inventory or bytes changed"):
+            self.capture(lambda command, **kwargs: self.fail("corrupt goldens must fail before tests"))
 
     def test_selected_configuration_captures_only_its_commands_and_requirements(self):
         for system, config in [(system, config) for system in ["Windows", "Darwin"]
@@ -183,17 +196,21 @@ class CaptureFailures(unittest.TestCase):
         source = self.checkout / "ultragfx/src/render/upscaling_tests.rs"
         source.parent.mkdir(parents=True)
         source.touch()
+        binary = self.root / "test-binary"
+        binary.write_text("libtest binary")
         metadata = self.external_metadata
 
         def external_metadata(command, **kwargs):
-            if command[-2:] == ["--", "--list"]:
+            if command[-1] == "--list":
                 self.assertTrue(Path(kwargs["env"]["CARGO_TARGET_DIR"]).is_dir())
                 return "".join(f"render::upscaling_tests::{name}: test\n" for name in ["a", "b", "c", "d"])
             return metadata(command, **kwargs)
 
         def runner(command, **kwargs):
             if "--no-run" in command:
-                return subprocess.CompletedProcess(command, 0, stdout="")
+                return subprocess.CompletedProcess(command, 0, stdout=json.dumps({
+                    "executable": str(binary), "profile": {"test": True},
+                    "target": {"name": "ultragfx", "kind": ["lib"]}}))
             self.assertEqual(command[command.index("--") + 1:],
                              ["--exact", "render::upscaling_tests::c"])
             return subprocess.CompletedProcess(command, 101)
@@ -207,6 +224,35 @@ class CaptureFailures(unittest.TestCase):
         self.assertEqual(manifest["configurations"]["all-features"]["exit_code"], 101)
         self.assertEqual(manifest["configurations"]["all-features"]["executions"][0]["command"][-1],
                          "render::upscaling_tests::c")
+        self.assertEqual(manifest["configurations"]["all-features"]["tests"], {"lib:ultragfx": {
+            "available": ["render::upscaling_tests::a", "render::upscaling_tests::b",
+                          "render::upscaling_tests::c", "render::upscaling_tests::d"],
+            "selected": ["render::upscaling_tests::c"]}})
+
+    def test_empty_base_section_does_not_run_unfiltered_tests_but_empty_candidate_fails(self):
+        candidate = self.root / "candidate"
+        shutil.copytree(self.checkout, candidate)
+        metadata = self.external_metadata
+
+        def external_metadata(command, **kwargs):
+            if command[-1] == "--list":
+                return "tests::unrelated: test\n"
+            return metadata(command, **kwargs)
+
+        def runner(command, **kwargs):
+            self.assertIn("--no-run", command)
+            return subprocess.CompletedProcess(command, 0, stdout="")
+
+        self.external_metadata = external_metadata
+        with patch.object(ci.platform, "system", return_value="Windows"):
+            inventory = ci.configuration_inventory("default", "fog-1")
+            self.capture(runner, inventory, candidate)
+            manifest = json.loads((self.output / "manifest.json").read_text())
+            self.assertEqual(manifest["configurations"]["default"]["exit_code"], 0)
+            self.assertTrue(manifest["configurations"]["default"]["executions"][0]["skipped"])
+            self.output = self.root / "candidate-output"
+            with self.assertRaisesRegex(ValueError, "selected no candidate tests"):
+                self.capture(runner, inventory)
 
     def test_failed_test_names_and_targets_are_retained(self):
         def runner(command, **kwargs):
@@ -222,7 +268,7 @@ class CaptureFailures(unittest.TestCase):
             self.assertEqual(result["failed_tests"], ["tmem_layouts"])
             self.assertEqual(result["failed_targets"], ["`-p ultragfx --test tmem_fixture_replay`"])
         with self.assertRaisesRegex(ValueError, "failed configuration: default.*tmem_layouts.*test.log"):
-            ci.load_capture(self.output, ci.INVENTORY, "a" * 40, "1")
+            ci.load_capture(self.output, ci.INVENTORY, "a" * 40, "1", golden_inventory=self.goldens)
 
     def test_subprocess_failure_retains_source_provenance(self):
         def runner(command, **kwargs):

@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -46,6 +47,7 @@ class CaptureCase(unittest.TestCase):
         manifest = {"schema": 1, "source_sha": source, "tested_sha": source, "base_sha": BASE,
                     "run_id": run, "run_attempt": "1", "workflow": "validate", "harness_sha256": "d" * 64,
                     "inventory_sha256": readbacks.json_hash(self.inventory),
+                    "goldens": readbacks.goldens(),
                     "runtime": {"os": "Windows", "compiler": "staticdxc", "rustc": "test",
                                 "backend": "dx12", "test_threads": "1", "dependencies": "e" * 64},
                     "configurations": {c: {"exit_code": 0, "command": ["cargo", "test"]}
@@ -93,6 +95,74 @@ class ConfigurationGates(CaptureCase):
         report = readbacks.compare(self.base, self.head, inventory, BASE, HEAD, "10", "20", allow_incomplete=True)
         self.assertFalse(report["passed"])
         self.assertIn("failed configuration: default", report["failures"]["candidate"][0])
+
+    def test_bootstrap_keeps_each_revisions_semantic_assertions_and_requires_both_to_pass(self):
+        suites = ["ultragfx/src/tests/fog.rs", "ultragfx/src/tests/fog_mirror.rs",
+                  "ultragfx/src/tests/mod.rs", "ultragfx/src/tests/tmem_fixtures.rs", "ultragfx/tests/tmem_preimage.rs"]
+        fixture = "ultragfx/tests/fog-mirror/cases.json"
+        for checkout, value in [(self.base, 1), (self.head, 2)]:
+            for name in json.loads((ci.HERE / "harness-files.json").read_text()) + suites + [fixture]:
+                path = checkout / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(str(value))
+            (checkout / "renderer.txt").write_text(str(value))
+            (checkout / "Cargo.lock").write_text("frozen lock")
+            (checkout / "ultragfx/Cargo.toml").write_text("[dev-dependencies]\n")
+            for name in suites:
+                (checkout / name).write_text(
+                    "from pathlib import Path\n"
+                    f"assert int(Path('renderer.txt').read_text()) == {value}\n"
+                    f"assert int(Path('{fixture}').read_text()) == {value}\n")
+
+        def metadata(command, checkout):
+            if command == ["git", "rev-parse", "HEAD"]:
+                return BASE
+            if command == ["git", "status", "--porcelain"]:
+                return ""
+            self.assertEqual(command[:2], ["cargo", "tree"])
+            return "unchanged production graph"
+
+        def capture(checkout, destination, base_sha, harness_checkout, inventory, replacement_inventory=None):
+            shutil.copytree(checkout, destination)
+            failures = [name for name in suites if subprocess.run(
+                [sys.executable, name], cwd=checkout, capture_output=True).returncode]
+            self.mutate(destination, lambda m: m["configurations"]["default"].update(
+                exit_code=101 if failures else 0, failed_tests=failures))
+            return json.loads((destination / "manifest.json").read_text())
+
+        for failing_side in [None, self.base, self.head]:
+            with self.subTest(failing_side=failing_side):
+                (self.base / "renderer.txt").write_text("3" if failing_side == self.base else "1")
+                (self.head / "renderer.txt").write_text("3" if failing_side == self.head else "2")
+                output = self.root / ("semantic-" + (failing_side.name if failing_side else "pass"))
+                arguments = ["ci.py", "--checkout", str(self.head), "--base-checkout", str(self.base),
+                             "--output", str(output), "--base-sha", BASE, "--artifact-name", "readbacks"]
+                with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
+                        patch.object(ci, "capture", capture), patch.object(ci, "command_output", metadata), \
+                        patch.object(ci, "committed_replacement_inventory", return_value=ci.replacements.inventory()), \
+                        patch.object(ci, "committed_golden_inventory", return_value=readbacks.goldens()), \
+                        patch.object(ci, "fetch_base", side_effect=ValueError("missing base artifact")):
+                    self.assertEqual(ci.main(), 1 if failing_side else 0)
+                report = json.loads((output / "comparison.json").read_text())
+                self.assertEqual(report["passed"], failing_side is None)
+                self.assertEqual(report["complete"], failing_side is None)
+                if failing_side:
+                    label = "base" if failing_side == self.base else "candidate"
+                    self.assertIn(suites[1], report["failures"][label][0])
+                self.assertEqual((self.base / "tools/readbacks/export.rs").read_text(), "2")
+
+    def test_missing_base_names_are_reported_without_confusing_other_shards_or_targets(self):
+        self.mutate(self.base, lambda m: m["configurations"]["default"].update(tests={
+            "lib:ultragfx": {"available": ["old", "other_shard"], "selected": ["old"]},
+            "test:integration": {"available": ["new"], "selected": ["new"]}}))
+        self.mutate(self.head, lambda m: m["configurations"]["default"].update(tests={
+            "lib:ultragfx": {"available": ["old", "other_shard", "new"], "selected": ["other_shard", "new"]},
+            "test:added": {"available": ["new"], "selected": ["new"]}}))
+        report = self.compare()
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["base_missing_tests"], [
+            {"configuration": "default", "target": "lib:ultragfx", "name": "new"},
+            {"configuration": "default", "target": "test:added", "name": "new"}])
 
     def test_selections_partition_every_frozen_row_without_changing_inventory(self):
         original = json.dumps(ci.INVENTORY, sort_keys=True)
@@ -166,6 +236,7 @@ class ConfigurationGates(CaptureCase):
                     with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
                             patch.object(ci, "capture", capture), patch.object(ci, "overlay", return_value={}), \
                             patch.object(ci, "committed_replacement_inventory", return_value=ci.replacements.inventory()), \
+                            patch.object(ci, "committed_golden_inventory", return_value=readbacks.goldens()), \
                             patch.object(ci, "gh_json", api), patch.object(ci, "download_artifact", download):
                         result = ci.main()
                     self.assertEqual(result, 0 if scenario in ["download", "bootstrap"] else 1)
@@ -240,6 +311,7 @@ class ExactReadbacks(CaptureCase):
                 with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
                         patch.object(ci, "capture", capture), patch.object(ci, "overlay", return_value={}), \
                         patch.object(ci, "committed_replacement_inventory", return_value=ci.replacements.inventory()), \
+                        patch.object(ci, "committed_golden_inventory", return_value=readbacks.goldens()), \
                         patch.object(ci, "fetch_base", side_effect=ValueError("missing base artifact")):
                     self.assertEqual(ci.main(), 1)
                 self.assertEqual(captured, [self.head, self.base])
@@ -429,6 +501,94 @@ class ExactReadbacks(CaptureCase):
             self.mutate(directory, lambda m: m["runtime"].update(compiler="fxc"))
         with self.assertRaisesRegex(ValueError, "staticdxc"):
             self.compare()
+
+
+class GoldenDeclarations(CaptureCase):
+    def setUp(self):
+        super().setUp()
+        self.inventory["rows"][0]["golden"] = "quad"
+        self.path = "ultragfx/goldens/quad.bin"
+        self.old = {self.path: "1" * 64}
+        self.new = {self.path: "2" * 64}
+        for directory in [self.base, self.head]:
+            self.mutate(directory, lambda m: m.update(
+                inventory_sha256=readbacks.json_hash(self.inventory), goldens=self.old))
+
+    def test_declaration_and_byte_change_must_agree_in_every_configuration(self):
+        for system in ["Windows", "Darwin"]:
+            for declared, changed in [(False, False), (False, True), (True, False), (True, True)]:
+                with self.subTest(system=system, declared=declared, changed=changed):
+                    frozen = self.new if declared else self.old
+                    for directory in [self.base, self.head]:
+                        self.mutate(directory, lambda m: m["runtime"].update(os=system))
+                    self.mutate(self.head, lambda m: m.update(goldens=frozen))
+                    for config in self.inventory["configurations"]:
+                        path = self.head / f"{config}.bin"
+                        path.write_bytes(bytes([18, 31, 65, 254] if changed else [17, 33, 65, 255]))
+                        self.mutate(self.head, lambda m: [r.update(sha256=readbacks.file_hash(path))
+                                                         for r in m["rows"] if r["configuration"] == config])
+                    report = readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20",
+                                               base_golden_inventory=self.old, golden_inventory=frozen)
+                    self.assertEqual(report["passed"], declared == changed)
+                    expected = [{"configuration": config, "id": "quad", "golden": self.path,
+                                 "base": "1" * 64, "candidate": "2" * 64,
+                                 "changed_bytes": 3 if changed else 0, "changed_pixels": 1 if changed else 0,
+                                 "channel_maxima": [1, 2, 0, 1] if changed else [0, 0, 0, 0]}
+                                for config in ["default", "debug-ui", "all-features"]] if declared else []
+                    self.assertEqual(report["golden_changes"], expected)
+
+    def test_one_unchanged_configuration_fails_and_is_printed(self):
+        self.mutate(self.head, lambda m: m.update(goldens=self.new))
+        for config in ["default", "all-features"]:
+            path = self.head / f"{config}.bin"
+            path.write_bytes(bytes([18, 31, 65, 254]))
+            self.mutate(self.head, lambda m: [r.update(sha256=readbacks.file_hash(path))
+                                             for r in m["rows"] if r["configuration"] == config])
+        output = self.root / "gate"
+        arguments = ["ci.py", "--checkout", str(self.head), "--base-checkout", str(self.base),
+                     "--output", str(output), "--base-sha", BASE, "--artifact-name", "readbacks"]
+
+        def capture(checkout, destination, *args):
+            shutil.copytree(checkout, destination)
+            return json.loads((destination / "manifest.json").read_text())
+
+        log = io.StringIO()
+        with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
+                patch.object(ci, "capture", capture), patch.object(ci, "overlay", return_value={}), \
+                patch.object(ci, "committed_replacement_inventory", return_value=ci.replacements.inventory()), \
+                patch.object(ci, "committed_golden_inventory", return_value=self.old), \
+                patch.object(readbacks, "goldens", return_value=self.new), \
+                patch.object(ci, "fetch_base", side_effect=ValueError("missing base artifact")), \
+                patch.object(sys, "stdout", log):
+            self.assertEqual(ci.main(), 1)
+        report = json.loads((output / "comparison.json").read_text())
+        self.assertEqual([r["changed_pixels"] for r in report["golden_changes"]], [1, 0, 1])
+        self.assertIn("declared golden change: debug-ui/quad: 0 pixels, 0 bytes, channel maxima [0, 0, 0, 0]; unchanged declaration fails the gate", log.getvalue())
+
+    def test_merged_declaration_expires_and_non_golden_rows_stay_exact(self):
+        for golden in [True, False]:
+            with self.subTest(golden=golden):
+                if not golden:
+                    del self.inventory["rows"][0]["golden"]
+                base_frozen = self.new if golden else self.old
+                for directory, frozen in [(self.base, base_frozen), (self.head, self.new)]:
+                    self.mutate(directory, lambda m: m.update(
+                        inventory_sha256=readbacks.json_hash(self.inventory), goldens=frozen))
+                for changed in [False, True]:
+                    path = self.head / "default.bin"
+                    path.write_bytes(bytes([17, 33, 65, 254 if changed else 255]))
+                    self.mutate(self.head, lambda m: m["rows"][0].update(sha256=readbacks.file_hash(path)))
+                    report = readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20",
+                                               base_golden_inventory=base_frozen, golden_inventory=self.new)
+                    self.assertEqual(report["passed"], not changed)
+                    self.assertEqual(report["golden_changes"], [])
+
+    def test_each_manifest_must_match_its_own_commit_ledger(self):
+        self.mutate(self.head, lambda m: m.update(goldens=self.new))
+        for base_frozen, frozen in [(self.new, self.new), (self.old, self.old)]:
+            with self.subTest(base=base_frozen, candidate=frozen), self.assertRaisesRegex(ValueError, "golden inventory"):
+                readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20",
+                                  base_golden_inventory=base_frozen, golden_inventory=frozen)
 
 
 if __name__ == "__main__":
