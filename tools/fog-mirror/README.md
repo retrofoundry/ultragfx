@@ -19,8 +19,10 @@ start with a little-endian u16 palette count, followed by palette records and on
 little-endian u16 palette index per selected pixel. A record contains a big-endian
 hardware word (RGBA16 or RGBA32), followed by three modern RGB bytes when `modern`
 is true. Only asserted pixels are stored. Alpha/coverage bits in hardware words
-are provenance, not GPU-alpha assertions. RGBA16 comparisons reduce GPU RGB with
-`channel >> 3`.
+are provenance, not GPU-alpha assertions. RGBA16 comparisons apply the case's magic
+or Bayer RGB dither before reducing GPU RGB to five bits, with at most one step of
+difference. Noise and disabled dither keep the `channel >> 3` comparison and the
+case's recorded tolerance.
 
 Precision cases assert saved, independently calculated modern RGB as well as the
 hardware bound. The modern model uses float fog weights, no patterned RDP dither,

@@ -128,7 +128,23 @@ fn check(case: &Value, pixels: &[u8], dual: bool) -> Option<String> {
         lookup.extend_from_slice(&bytes[end..]);
         assert_eq!(lookup.len(), word(&case["samples"]) as usize * 2, "{name}");
     }
-    let tolerance = word(&case["hardware_tolerance"]) as u8;
+    let dither = case["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|op| op.get("command"))
+        .map(|command| word(&command[0]))
+        .rfind(|w0| w0 >> 24 == 0xef)
+        .and_then(|w0| match (packed, (w0 >> 6) & 3) {
+            (true, 0) => Some([0, 6, 1, 7, 4, 2, 5, 3, 3, 5, 2, 4, 7, 1, 6, 0]),
+            (true, 1) => Some([0, 4, 1, 5, 4, 0, 5, 1, 3, 7, 2, 6, 7, 3, 6, 2]),
+            _ => None,
+        });
+    let tolerance = if dither.is_some() {
+        1
+    } else {
+        word(&case["hardware_tolerance"]) as u8
+    };
     let modern_tolerance = word(&case["modern_tolerance"]) as u8;
     let mut samples = 0;
     let mut differing = 0;
@@ -154,7 +170,11 @@ fn check(case: &Value, pixels: &[u8], dual: bool) -> Option<String> {
             let actual: [u8; 3] = pixels[(y * 320 + x) * 4..(y * 320 + x) * 4 + 3]
                 .try_into()
                 .unwrap();
-            let reduced = actual.map(|v| if packed { v >> 3 } else { v });
+            let reduced = actual.map(|v| match dither {
+                Some(matrix) if v & 7 > matrix[(y & 3) * 4 + (x & 3)] => ((v >> 3) + 1).min(31),
+                _ if packed => v >> 3,
+                _ => v,
+            });
             let hardware = hardware_rgb(&record[..size], packed);
             let delta = reduced
                 .into_iter()
