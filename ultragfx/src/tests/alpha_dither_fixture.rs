@@ -171,8 +171,8 @@ fn transparent_mario_commands_preserve_environment_alpha_for_dither() {
 #[test]
 fn fixture_sm64_transparent_mario() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
-    let output = pollster::block_on(fixture.replay(device, queue)).unwrap();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
+    let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(
         output.diagnostics.iter().all(Vec::is_empty),
         "{:?}",

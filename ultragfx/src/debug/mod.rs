@@ -459,7 +459,7 @@ mod tests {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod render_tests {
     use super::*;
-    use crate::render::headless_device;
+    use crate::render::guarded_headless_device as headless_device;
     use crate::scene::Scene;
 
     fn target(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {

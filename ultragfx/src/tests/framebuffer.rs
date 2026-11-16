@@ -1,5 +1,5 @@
 use crate::hle::{ColorImage, FramebufferPair, Scene, SceneOp, Scissor};
-use crate::render::{headless_device, SceneRenderer};
+use crate::render::{guarded_headless_device as headless_device, SceneRenderer};
 use crate::tests::common::{pixel, pixels_from_render, render_to_pixels, scene_from_fixture};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;

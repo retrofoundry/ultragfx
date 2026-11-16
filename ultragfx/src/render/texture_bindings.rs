@@ -380,7 +380,7 @@ mod tests {
     use super::*;
     use crate::{
         profiling::{Mode, Recorder},
-        render::{headless_device, SceneRenderer},
+        render::{guarded_headless_device as headless_device, SceneRenderer},
     };
 
     #[test]

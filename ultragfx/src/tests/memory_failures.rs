@@ -172,10 +172,10 @@ fn image_address_overflow_is_diagnostic() {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn renderer() -> crate::Renderer {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     crate::Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,

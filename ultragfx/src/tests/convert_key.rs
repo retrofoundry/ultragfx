@@ -367,7 +367,7 @@ fn yuv_and_chroma_key_mode_are_rejected() {
 #[test]
 fn unused_texture_conversion_preserves_shaded_triangle() {
     use super::common::{pixel, render_to_pixels};
-    use crate::render::{headless_device, SceneRenderer};
+    use crate::render::{guarded_headless_device as headless_device, SceneRenderer};
     use n64_gbi::consts::{G_SHADE, G_SHADING_SMOOTH};
 
     let (device, queue, dual) = headless_device();
@@ -761,7 +761,10 @@ fn unused_register_setters_preserve_draw_state() {
 #[test]
 fn unused_register_setters_preserve_pixels() {
     use super::common::render_to_pixels;
-    use crate::render::{headless_device, headless_device_forced_fallback, SceneRenderer};
+    use crate::render::{
+        guarded_headless_device as headless_device,
+        guarded_headless_device_forced_fallback as headless_device_forced_fallback, SceneRenderer,
+    };
 
     for fallback in [true, false] {
         let (device, queue, dual) = if fallback {
@@ -797,7 +800,10 @@ fn unused_register_setters_preserve_pixels() {
 #[test]
 fn unsupported_register_inputs_render_no_pixels() {
     use super::common::render_to_pixels;
-    use crate::render::{headless_device, headless_device_forced_fallback, SceneRenderer};
+    use crate::render::{
+        guarded_headless_device as headless_device,
+        guarded_headless_device_forced_fallback as headless_device_forced_fallback, SceneRenderer,
+    };
     for fallback in [true, false] {
         let (device, queue, dual) = if fallback {
             let (device, queue) = headless_device_forced_fallback();

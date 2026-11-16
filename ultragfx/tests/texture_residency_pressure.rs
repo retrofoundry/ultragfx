@@ -2,6 +2,10 @@
 
 use ultragfx::profiling::Snapshot;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "common/queue.rs"]
+mod test_queue;
+
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
@@ -27,6 +31,8 @@ async fn pressure() {
         })
         .await
         .unwrap();
+    #[cfg(not(target_arch = "wasm32"))]
+    let queue = test_queue::TestQueue::new(&device, queue);
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let snapshots = ultragfx::profiling::gpu_residency_pressure_probe(&device, &queue)
         .await

@@ -4,7 +4,10 @@ use crate::hle::gbi::GbiUcode;
 use crate::hle::interp::interpret;
 use crate::hle::mem::{GbiDataFormat, RdramImage};
 use crate::hle::{Scene, SceneOp};
-use crate::render::{headless_device, headless_device_forced_fallback, SceneRenderer};
+use crate::render::{
+    guarded_headless_device as headless_device,
+    guarded_headless_device_forced_fallback as headless_device_forced_fallback, SceneRenderer,
+};
 use n64_gbi::encode::{mtx_to_bytes, VtxColored};
 
 use super::render::{render_scene_to_rgba8, run_compute_outputs};
@@ -671,7 +674,12 @@ type FogPixelCase = (u8, u8, u8, [[u8; 3]; 2]);
 const INPUT_RGB: [u8; 3] = [200, 100, 50];
 const FOG_RGB: [u8; 3] = [20, 70, 140];
 
-type BlenderTarget = (wgpu::Device, wgpu::Queue, bool, SceneRenderer);
+type BlenderTarget = (
+    wgpu::Device,
+    crate::tests::queue::TestQueue,
+    bool,
+    SceneRenderer,
+);
 
 fn blender_target(fallback: bool) -> BlenderTarget {
     let (device, queue, dual) = if fallback {

@@ -48,7 +48,7 @@ impl Default for Case {
 
 struct Probe {
     device: wgpu::Device,
-    queue: wgpu::Queue,
+    queue: crate::tests::queue::TestQueue,
     renderer: SceneRenderer,
     depth: DepthImage,
     presentation_depth: DepthImage,
@@ -68,9 +68,9 @@ struct Planes {
 impl Probe {
     fn new(fallback: bool, has_depth: bool) -> Self {
         let (device, queue) = if fallback {
-            crate::render::headless_device_forced_fallback()
+            crate::render::guarded_headless_device_forced_fallback()
         } else {
-            let (device, queue, _) = crate::render::headless_device();
+            let (device, queue, _) = crate::render::guarded_headless_device();
             (device, queue)
         };
         let renderer =

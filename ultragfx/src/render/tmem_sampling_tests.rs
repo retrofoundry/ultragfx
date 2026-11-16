@@ -51,7 +51,7 @@ fn palette_bank() -> [u8; 4096] {
 }
 
 fn assert_probes(cases: impl IntoIterator<Item = (Scene, [u8; 4])>) {
-    let (device, queue) = super::headless_device_forced_fallback();
+    let (device, queue) = super::guarded_headless_device_forced_fallback();
     let mut renderer =
         super::SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 320, 240, false);
     for (scene, expected) in cases {

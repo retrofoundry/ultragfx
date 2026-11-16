@@ -372,7 +372,10 @@ fn combiner_missing_texture_checks_both_cycles() {
 mod pixels {
     use super::*;
     use crate::hle::{AlphaCompare, BlendClass, RenderMode};
-    use crate::render::{headless_device, headless_device_forced_fallback, SceneRenderer};
+    use crate::render::{
+        guarded_headless_device as headless_device,
+        guarded_headless_device_forced_fallback as headless_device_forced_fallback, SceneRenderer,
+    };
     use crate::tests::common::{pixel, render_to_pixels};
 
     fn scene() -> Scene {

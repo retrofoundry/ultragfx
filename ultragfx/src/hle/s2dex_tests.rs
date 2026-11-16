@@ -436,10 +436,10 @@ fn s2dex_select_dl_rejects_without_consuming_sentinel() {
 
 #[test]
 fn s2dex_stateful_unsupported_command_rejects_task() {
-    let (device, queue, _) = crate::render::headless_device();
+    let (device, queue, _) = crate::render::guarded_headless_device();
     let mut renderer = crate::Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,

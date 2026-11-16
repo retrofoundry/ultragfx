@@ -547,14 +547,14 @@ mod gpu {
 
     fn renderer(fallback: bool) -> Renderer {
         let (device, queue) = if fallback {
-            crate::render::headless_device_forced_fallback()
+            crate::render::guarded_headless_device_forced_fallback()
         } else {
-            let (device, queue, _) = crate::render::headless_device();
+            let (device, queue, _) = crate::render::guarded_headless_device();
             (device, queue)
         };
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             crate::PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 320,
@@ -2428,14 +2428,14 @@ mod gpu {
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let fixture = capture.present_last(&mut r).unwrap();
         let fixture = Fixture::from_bytes(&fixture.to_bytes().unwrap()).unwrap();
-        let (device, queue, _) = crate::render::headless_device();
-        let recorded = pollster::block_on(fixture.replay(device, queue)).unwrap();
+        let (device, queue, _) = crate::render::guarded_headless_device();
+        let recorded = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
         let headless = pollster::block_on(fixture.replay_headless()).unwrap();
         assert_eq!(headless.rgba8, recorded.rgba8);
         let mut clamped = fixture.clone();
         clamped.frame.dual_source_blending = false;
-        let (device, queue) = crate::render::headless_device_forced_fallback();
-        let error = pollster::block_on(clamped.replay(device, queue)).unwrap_err();
+        let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
+        let error = pollster::block_on(clamped.replay(device, queue.clone())).unwrap_err();
         assert!(error.to_string().contains("depth-clip"), "{error}");
     }
 

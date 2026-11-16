@@ -1,5 +1,7 @@
 use crate::render::workload::TargetId;
-use crate::render::{headless_device_forced_fallback, SceneRenderer};
+use crate::render::{
+    guarded_headless_device_forced_fallback as headless_device_forced_fallback, SceneRenderer,
+};
 use crate::tests::common::pixels_from_render;
 use crate::tests::dl_builder::{Built, Command, DlBuilder};
 use crate::ClearPolicy;
@@ -556,7 +558,7 @@ fn workload_interleaving_fixture_pixels() {
     );
     assert!(fixture.tasks[0].entry.is_multiple_of(8));
     let (device, queue) = headless_device_forced_fallback();
-    let output = pollster::block_on(fixture.replay(device, queue)).unwrap();
+    let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(
         output.diagnostics.iter().all(Vec::is_empty),
         "{:?}",

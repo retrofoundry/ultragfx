@@ -144,8 +144,8 @@ fn provenance(eu: bool) -> crate::capture::Provenance {
 #[cfg(feature = "capture")]
 fn assert_hud(eu: bool) {
     let fixture = hud_fixture(eu);
-    let (device, queue) = crate::render::headless_device_forced_fallback();
-    let output = pollster::block_on(fixture.replay(device, queue)).unwrap();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
+    let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(
         output.diagnostics.iter().all(Vec::is_empty),
         "{:?}",
@@ -208,7 +208,9 @@ fn write_rt64_sm64_hud_eu_point_fixture() {
 #[test]
 fn texrect_nonzero_origin_matches_triangle_sampling() {
     use super::common::{pixel, render_to_pixels, scene_from_fixture};
-    use crate::render::{headless_device_forced_fallback, SceneRenderer};
+    use crate::render::{
+        guarded_headless_device_forced_fallback as headless_device_forced_fallback, SceneRenderer,
+    };
     let mut bytes = hud_memory(true);
     for command in bytes[0x2000..].as_chunks_mut::<8>().0 {
         let mut a = u32::from_be_bytes(command[..4].try_into().unwrap());

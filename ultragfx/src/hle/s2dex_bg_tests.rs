@@ -175,7 +175,7 @@ fn rectangles(result: &interp::InterpResult) -> Vec<(crate::scene::TexRectBounds
 }
 
 fn pixels(result: &interp::InterpResult, w: u32, h: u32) -> Vec<u8> {
-    let (device, queue, dual) = crate::render::headless_device();
+    let (device, queue, dual) = crate::render::guarded_headless_device();
     let mut renderer =
         crate::render::SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, w, h, dual);
     crate::tests::common::render_to_pixels(&device, &queue, &mut renderer, &result.scene, w, h)
@@ -474,10 +474,10 @@ fn bg_dispatch_is_atomic_for_observer_and_prefix() {
         }
     }
     reads.borrow_mut().clear();
-    let (device, queue, _) = crate::render::headless_device();
+    let (device, queue, _) = crate::render::guarded_headless_device();
     let mut renderer = crate::Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 320,

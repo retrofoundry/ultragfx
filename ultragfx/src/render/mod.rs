@@ -483,6 +483,11 @@ impl CombinerUniform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::{
+        guarded_headless_device as headless_device,
+        guarded_headless_device_forced_fallback as headless_device_forced_fallback,
+    };
 
     #[test]
     fn tile_sampling_uniform_and_shaders_fit_webgpu() {
@@ -676,6 +681,48 @@ mod tests {
             assert!(device
                 .features()
                 .contains(wgpu::Features::DUAL_SOURCE_BLENDING));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn test_queue_drains_on_return_and_unwind() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        for assertion_fails in [false, true] {
+            for callback_fails in [false, true] {
+                let (device, queue) = headless_device_forced_fallback();
+                let _keep_alive = (device.clone(), queue.clone());
+                let completed = Arc::new(AtomicBool::new(false));
+                let observed = completed.clone();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    let queue = queue;
+                    let encoder = device.create_command_encoder(&Default::default());
+                    queue.submit([encoder.finish()]);
+                    queue.on_submitted_work_done(move || {
+                        completed.store(true, Ordering::SeqCst);
+                        assert!(!callback_fails, "completion callback");
+                    });
+                    assert!(!assertion_fails, "original assertion");
+                }));
+                assert!(observed.load(Ordering::SeqCst));
+                if assertion_fails || callback_fails {
+                    let panic = result.unwrap_err();
+                    assert_eq!(
+                        panic.downcast_ref::<&str>(),
+                        Some(&if assertion_fails {
+                            "original assertion"
+                        } else {
+                            "completion callback"
+                        })
+                    );
+                } else {
+                    assert!(result.is_ok());
+                }
+            }
         }
     }
 
@@ -2725,6 +2772,21 @@ pub fn headless_device_forced_fallback() -> (wgpu::Device, wgpu::Queue) {
         trace: wgpu::Trace::Off,
     }))
     .expect("no device");
+    (device, queue)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn guarded_headless_device() -> (wgpu::Device, crate::tests::queue::TestQueue, bool) {
+    let (device, queue, dual) = headless_device();
+    let queue = crate::tests::queue::TestQueue::new(&device, queue);
+    (device, queue, dual)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn guarded_headless_device_forced_fallback(
+) -> (wgpu::Device, crate::tests::queue::TestQueue) {
+    let (device, queue) = headless_device_forced_fallback();
+    let queue = crate::tests::queue::TestQueue::new(&device, queue);
     (device, queue)
 }
 

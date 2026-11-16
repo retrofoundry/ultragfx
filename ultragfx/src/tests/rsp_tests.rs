@@ -339,7 +339,7 @@ fn phase4_modify_vertex_screen_override_renders_requested_pixel_and_depth() {
         0,
     )];
 
-    let (device, queue, dual) = crate::render::headless_device();
+    let (device, queue, dual) = crate::render::guarded_headless_device();
     let mut renderer =
         crate::render::SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, W, H, dual);
     let pixels = common::render_to_pixels(&device, &queue, &mut renderer, &scene, W, H);

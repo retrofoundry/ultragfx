@@ -1,6 +1,9 @@
 use super::common::{render_to_pixels, scene_from_fixture};
 use crate::hle::{AlphaCompare, BlendClass, RenderMode, Scene, ZMode};
-use crate::render::{headless_device_forced_fallback, CombinerUniform, SceneRenderer};
+use crate::render::{
+    guarded_headless_device_forced_fallback as headless_device_forced_fallback, CombinerUniform,
+    SceneRenderer,
+};
 
 const FRAME_0: [u64; 32] = [
     0x57b9a53c07ec2b4e,
@@ -254,7 +257,7 @@ fn alpha_dither_seed_replays_exactly() {
     }
     let mut changed = restored;
     changed.frame.dither_seed ^= 1;
-    let third = pollster::block_on(changed.replay(device, queue)).unwrap();
+    let third = pollster::block_on(changed.replay(device, queue.clone())).unwrap();
     assert_ne!(first.rgba8, third.rgba8);
 }
 
@@ -306,7 +309,7 @@ fn alpha_dither_capture_records_renderer_frame_count() {
     let recorded = recorded.unwrap();
     assert_eq!(recorded.frame.serial, 3);
     assert_eq!(recorded.frame.dither_seed, 3);
-    let replayed = pollster::block_on(recorded.replay(device, queue)).unwrap();
+    let replayed = pollster::block_on(recorded.replay(device, queue.clone())).unwrap();
     assert_eq!(live, replayed.rgba8);
     assert_eq!(
         &live[(104 * 320 + 145) * 4..(104 * 320 + 146) * 4],
@@ -434,7 +437,7 @@ fn alpha_compare_and_cvg_x_alpha_both_apply() {
 #[test]
 #[ignore = "requires a DUAL_SOURCE_BLENDING adapter"]
 fn alpha_dither_dualsrc_matches_fallback_mask() {
-    let (device, queue, dual) = crate::render::headless_device();
+    let (device, queue, dual) = crate::render::guarded_headless_device();
     assert!(dual, "requires dual-source blending");
     let (fallback_device, fallback_queue) = headless_device_forced_fallback();
     let mut dual_renderer =

@@ -160,8 +160,8 @@ fn fixture(ia16: bool) -> crate::capture::Fixture {
 #[test]
 fn fixture_tlut_two_palettes_pixels() {
     for ia16 in [false, true] {
-        let (device, queue) = crate::render::headless_device_forced_fallback();
-        let output = pollster::block_on(fixture(ia16).replay(device, queue)).unwrap();
+        let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
+        let output = pollster::block_on(fixture(ia16).replay(device, queue.clone())).unwrap();
         assert!(
             output.diagnostics.iter().all(Vec::is_empty),
             "{:?}",

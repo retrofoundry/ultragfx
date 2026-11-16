@@ -332,7 +332,7 @@ fn retained_tmem_ignores_unrelated_framebuffer_texture_image() {
 
 #[test]
 fn exact_base_fb_alias_keeps_compatibility_pixels() {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer =
         crate::render::SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 64, false);
     let scene = crate::tests::common::scene_from_fixture("offscreen-then-sample--white1");

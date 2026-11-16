@@ -7,7 +7,7 @@
 
 use crate::tests::common;
 
-use crate::render::{headless_device, SceneRenderer};
+use crate::render::{guarded_headless_device as headless_device, SceneRenderer};
 use common::{clear_color_rgb, pixel, render_to_pixels, scene_from_fixture};
 
 const W: u32 = 64;

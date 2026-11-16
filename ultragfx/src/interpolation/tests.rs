@@ -181,10 +181,10 @@ fn fixture_with_lighting(models: &[Mat4], view: Mat4, p: Mat4, lit: bool) -> Fix
     }
 }
 fn renderer(scale: u32) -> Renderer {
-    let (device, queue, _) = crate::render::headless_device();
+    let (device, queue, _) = crate::render::guarded_headless_device();
     Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,

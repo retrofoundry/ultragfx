@@ -276,7 +276,10 @@ fn pixel_z_draw_state_unchanged() {
 #[test]
 fn pixel_z_draws_unchanged() {
     use super::common::render_to_pixels;
-    use crate::render::{headless_device, headless_device_forced_fallback, SceneRenderer};
+    use crate::render::{
+        guarded_headless_device as headless_device,
+        guarded_headless_device_forced_fallback as headless_device_forced_fallback, SceneRenderer,
+    };
 
     for fallback in [true, false] {
         let (device, queue, dual) = if fallback {

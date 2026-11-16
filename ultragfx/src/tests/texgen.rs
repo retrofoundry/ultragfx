@@ -3,7 +3,7 @@ use crate::hle::interp::interpret;
 use crate::hle::math::identity;
 use crate::hle::mem::{GbiDataFormat, RdramImage};
 use crate::hle::Scene;
-use crate::render::{headless_device, triangle_inv_tex_size};
+use crate::render::{guarded_headless_device as headless_device, triangle_inv_tex_size};
 use n64_gbi::encode::*;
 
 use super::render::{render_scene_to_rgba8, run_compute_outputs};

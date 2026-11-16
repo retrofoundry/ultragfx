@@ -1990,10 +1990,10 @@ mod present_headless_tests {
     fn present_on_a_headless_target_is_a_noop_ok() {
         // No swapchain exists for a Headless target: present() must not acquire; it returns Ok(()).
         // (The surface acquire path + 7-variant handling needs a real window — P5.3 in-browser/in-game.)
-        let (device, queue, _dual) = crate::render::headless_device();
+        let (device, queue, _dual) = crate::render::guarded_headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2313,10 +2313,10 @@ mod begin_frame_tests {
             rdram: rdram.to_vec(),
         };
 
-        let (device, queue, _dual) = crate::render::headless_device();
+        let (device, queue, _dual) = crate::render::guarded_headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2364,10 +2364,10 @@ mod begin_frame_tests {
         };
         let empty = ImgHw { rdram: Vec::new() }; // out-of-bounds entry → draw-nothing walk
 
-        let (device, queue, _dual) = crate::render::headless_device();
+        let (device, queue, _dual) = crate::render::guarded_headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2461,7 +2461,7 @@ mod config_construction_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn with_device_headless_builds_and_exposes_handles() {
-        let (device, queue, _dual) = crate::render::headless_device();
+        let (device, queue, _dual) = crate::render::guarded_headless_device();
         let cfg = RendererConfig {
             resolution_multiplier: 1,
             sample_count: 1,
@@ -2472,7 +2472,7 @@ mod config_construction_tests {
         };
         let r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2492,7 +2492,7 @@ mod config_construction_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn shutdown_headless_drains_without_panic() {
-        let (device, queue, _dual) = crate::render::headless_device();
+        let (device, queue, _dual) = crate::render::guarded_headless_device();
         let cfg = RendererConfig {
             resolution_multiplier: 1,
             sample_count: 1,
@@ -2503,7 +2503,7 @@ mod config_construction_tests {
         };
         let r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 32,
@@ -2540,7 +2540,7 @@ mod config_construction_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn resize_headless_is_noop_and_keeps_surface_format() {
-        let (device, queue, _dual) = crate::render::headless_device();
+        let (device, queue, _dual) = crate::render::guarded_headless_device();
         let cfg = RendererConfig {
             resolution_multiplier: 1,
             sample_count: 1,
@@ -2551,7 +2551,7 @@ mod config_construction_tests {
         };
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2567,7 +2567,7 @@ mod config_construction_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn reconfigure_headless_rebuilds_and_stores_config() {
-        let (device, queue, _dual) = crate::render::headless_device();
+        let (device, queue, _dual) = crate::render::guarded_headless_device();
         let base = RendererConfig {
             resolution_multiplier: 1,
             sample_count: 1,
@@ -2578,7 +2578,7 @@ mod config_construction_tests {
         };
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 64,
@@ -2627,7 +2627,7 @@ mod debugger_toggle_tests {
     // `ultragfx::` (lib.rs has no `extern crate self as ultragfx`) — using `ultragfx::` here would fail with
     // E0433 `use of undeclared crate or module 'ultragfx'`.
     use crate::debug::{DebugButton, DebugInput};
-    use crate::render::headless_device;
+    use crate::render::guarded_headless_device as headless_device;
 
     fn cfg() -> RendererConfig {
         RendererConfig {
@@ -2645,7 +2645,7 @@ mod debugger_toggle_tests {
         let (device, queue, _dual) = headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 8,
@@ -2672,7 +2672,7 @@ mod debugger_toggle_tests {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod hook_lifecycle_tests {
     use super::*;
-    use crate::render::headless_device;
+    use crate::render::guarded_headless_device as headless_device;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -2710,7 +2710,7 @@ mod hook_lifecycle_tests {
         let (device, queue, _dual) = headless_device();
         Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 8,
@@ -2807,7 +2807,7 @@ mod hook_lifecycle_tests {
 #[cfg(all(test, feature = "debug-ui", not(target_arch = "wasm32")))]
 mod debugger_present_tests {
     use super::*;
-    use crate::render::headless_device;
+    use crate::render::guarded_headless_device as headless_device;
 
     fn cfg() -> RendererConfig {
         RendererConfig {
@@ -2839,7 +2839,7 @@ mod debugger_present_tests {
         let (device, queue, _dual) = headless_device();
         let mut r = Renderer::with_device(
             device,
-            queue,
+            queue.clone(),
             PresentTarget::Headless {
                 format: wgpu::TextureFormat::Rgba8Unorm,
                 width: 256,

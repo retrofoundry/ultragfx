@@ -116,10 +116,10 @@ fn close(p: [u8; 4], q: [u8; 4]) -> bool {
 #[test]
 fn hook_overlay_composites_over_scanout() {
     let (hw, entry) = flat_color_hw();
-    let (device, queue, _dual) = crate::render::headless_device();
+    let (device, queue, _dual) = crate::render::guarded_headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,
@@ -246,7 +246,7 @@ fn u32_buf(device: &wgpu::Device, val: u32, extra: wgpu::BufferUsages) -> wgpu::
 fn hook_extra_command_buffers_run_before_frame_encoder() {
     // No content: with nothing scanned out, the hook STILL runs (RN) — so this needs no DL.
     let hw = ImgHw { rdram: Vec::new() };
-    let (device, queue, _dual) = crate::render::headless_device();
+    let (device, queue, _dual) = crate::render::guarded_headless_device();
     // A is initialised NON-ZERO (0x1111_1111); clear_buffer would zero-fill, so init it explicitly.
     // A and B are both used as copy SOURCEs, so they need COPY_SRC explicitly.
     let a = u32_buf(&device, 0x1111_1111, wgpu::BufferUsages::COPY_SRC);
@@ -254,7 +254,7 @@ fn hook_extra_command_buffers_run_before_frame_encoder() {
     let c = u32_buf(&device, 0x0000_0000, wgpu::BufferUsages::MAP_READ);
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 4,
@@ -285,10 +285,10 @@ fn present_to_reports_target_dimensions() {
     // The hook still fires with nothing scanned out (RN); HookFrame dims come from the target view's
     // texture (RM). No DL needed.
     let hw = ImgHw { rdram: Vec::new() };
-    let (device, queue, _dual) = crate::render::headless_device();
+    let (device, queue, _dual) = crate::render::guarded_headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 8,
@@ -314,10 +314,10 @@ fn present_to_reports_target_dimensions() {
 fn present_without_hook_is_unchanged() {
     // Regression guard: with no hook installed, present_to still scans the FB out identically to P3.
     let (hw, entry) = flat_color_hw();
-    let (device, queue, _dual) = crate::render::headless_device();
+    let (device, queue, _dual) = crate::render::guarded_headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,
@@ -413,10 +413,10 @@ impl RenderHook for LifecycleHook {
 #[test]
 fn hook_full_lifecycle_end_to_end() {
     let (hw, entry) = flat_color_hw();
-    let (device, queue, _dual) = crate::render::headless_device();
+    let (device, queue, _dual) = crate::render::guarded_headless_device();
     let mut r = Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 64,

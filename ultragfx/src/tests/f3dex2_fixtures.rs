@@ -358,7 +358,7 @@ fn f3dex2_fixtures_are_exportable_images() {
 
 #[test]
 fn f3dex2_fixture_pixels() {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     for case in CASES {
         let output =
             pollster::block_on(fixture(case).replay(device.clone(), queue.clone())).unwrap();

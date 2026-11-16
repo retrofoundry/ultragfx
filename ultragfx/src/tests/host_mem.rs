@@ -658,10 +658,10 @@ fn checked_host_writeback_checks_separate_depth_only_when_drawn() {
 }
 
 fn writeback_renderer() -> crate::Renderer {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = crate::Renderer::with_device(
         device,
-        queue,
+        queue.clone(),
         crate::PresentTarget::Headless {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: 8,

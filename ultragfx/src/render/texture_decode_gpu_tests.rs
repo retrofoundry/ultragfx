@@ -2,7 +2,7 @@ use super::{readback_requests, test_support};
 
 #[test]
 fn texture_decode_gpu_component_and_layout_readbacks() {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let vectors = test_support::vectors();
     let requests: Vec<_> = vectors
         .iter()
@@ -31,7 +31,7 @@ fn texture_decode_gpu_literal_load_readbacks() {
             }
         })
         .collect();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let requests: Vec<_> = vectors
         .iter()
         .map(|vector| vector.request.clone())
@@ -50,7 +50,7 @@ fn texture_decode_gpu_angrylion_fetch_readbacks() {
             expected,
         })
         .collect();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let requests: Vec<_> = vectors.iter().map(|v| v.request.clone()).collect();
     let decoded = pollster::block_on(readback_requests(&device, &queue, &requests)).unwrap();
     test_support::assert_decoded(&vectors, &decoded);

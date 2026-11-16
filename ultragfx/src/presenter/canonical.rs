@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn a_third_submission_waits_until_one_of_the_first_two_completes() {
-        let (device, queue, _) = crate::render::headless_device();
+        let (device, queue, _) = crate::render::guarded_headless_device();
         let mut in_flight = InFlight::default();
         let first = in_flight.begin(&device, &queue);
         let second = in_flight.begin(&device, &queue);

@@ -1,3 +1,4 @@
+use super::guarded_headless_device_forced_fallback as headless_device_forced_fallback;
 use super::*;
 use crate::hle::{gbi::GbiUcode, mem::RdramImage, SceneOp};
 use n64_gbi::encode::*;
