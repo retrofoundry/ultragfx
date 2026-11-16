@@ -50,6 +50,7 @@ pub struct Rsp {
     pub(crate) obj_render_mode: u32,
     pub(crate) obj_status: [u32; 4],
     pub(crate) obj_mtx: ObjMtx,
+    pub(crate) obj_tile: u8,
     /// The MVP and its table index that the microcode keeps in DMEM: the last one a vertex load
     /// computed or a force wrote.
     dmem_mvp: (Mat4, Option<[i32; 16]>, u32),
@@ -116,6 +117,7 @@ impl Default for Rsp {
             obj_render_mode: 0,
             obj_status: [0; 4],
             obj_mtx: OBJ_MTX_IDENTITY,
+            obj_tile: 2,
             dmem_mvp: (identity(), Some(FX_IDENTITY), 0),
             profiling: Default::default(),
             cache_global_index: [0u32; RSP_MAX_VERTICES],
@@ -250,6 +252,7 @@ impl Rsp {
                 self.obj_render_mode = 0;
                 self.obj_status = [0; 4];
                 self.obj_mtx = OBJ_MTX_IDENTITY;
+                self.obj_tile = 2;
             }
             crate::hle::gbi::GbiUcode::F3d => {}
         }

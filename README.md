@@ -36,7 +36,9 @@ renderer.present(&hw)?;
 - **`begin_frame` → `process_dl` → `present`** — reset per-frame state, interpret one display list
   into the internal framebuffer, then scan the VI framebuffer out to the owned surface (or
   `present_to` a view you own).
-- **Supported microcodes** — `F3dex2` and `F3d`. The fixed-vs-float vertex/matrix layout is an
+- **Supported microcodes** — `F3dex2`, `F3d`, and `S2dex2` backgrounds and object rectangles.
+  Rotated object sprites and short combined texture-load/rectangle commands remain unsupported.
+  The fixed-vs-float vertex/matrix layout is an
   orthogonal `DataFormat` axis: `Fixed` (authentic N64, the default) or `Float` (`GBI_FLOATS`, as
   PC ports like sm64/wafel emit) — select it once with `Renderer::set_data_format`.
 

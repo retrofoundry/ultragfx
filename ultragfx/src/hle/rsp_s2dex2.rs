@@ -22,9 +22,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-use super::interp::{emit_texrect, memory_try, Cmd, Ctx, Handler, TexRect};
+use super::interp::{checked_span, emit_texrect, memory_try, Cmd, Ctx, Handler, TexRect};
 use super::mem::Rdram;
-use super::mem::{ObjBg, ObjBgKind, ObjMtxKind};
+use super::mem::{ObjBg, ObjBgKind, ObjMtx, ObjMtxKind, ObjSprite};
 use super::rdp::{load_tile_typed, set_tile_size_typed, set_tile_typed, TileDescriptor};
 use crate::inspect::Emission;
 use crate::{DiagKind, Diagnostic};
@@ -45,6 +45,192 @@ pub(crate) fn install<M: Rdram>(table: &mut [Handler<M>; 256]) {
 
 fn obj_render_mode<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     cx.rsp.obj_render_mode = c.w1;
+}
+
+fn object_reciprocal(scale: u16) -> Option<i64> {
+    if scale == 0 || scale > i16::MAX as u16 {
+        return None;
+    }
+    let shift = (16 - scale.leading_zeros()).saturating_sub(10);
+    let denominator = (scale >> shift) << shift;
+    let reciprocal = (1i64 << 31) / i64::from(denominator);
+    Some(reciprocal + (reciprocal >> 16))
+}
+
+fn object_rectangle(
+    sprite: &ObjSprite,
+    matrix: Option<&ObjMtx>,
+    mode: u32,
+    scissor: [u16; 4],
+) -> Result<Option<TexRect>, ()> {
+    let (offset, subtraction) = [
+        (0, 0),
+        (16, 32),
+        (32, 64),
+        (48, 96),
+        (0, -12),
+        (16, 20),
+        (32, 52),
+        (48, 84),
+    ][((mode >> 4) & 7) as usize];
+    let bias = [1, -2, 1, 0][((mode >> 3) & 3) as usize];
+    let bilerp = mode & 8 != 0;
+    let mask = if bilerp { -1 } else { -4 };
+    let mut corners = [[0; 2]; 2];
+    let mut starts = [0; 2];
+    let mut steps = [0; 2];
+    for (axis, (position, scale, size, flip)) in [
+        (sprite.obj_x, sprite.scale_w, sprite.image_w, 1),
+        (sprite.obj_y, sprite.scale_h, sprite.image_h, 0x10),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut step = i64::from(scale);
+        let (mut start, fraction) = if let Some(matrix) = matrix {
+            let (translation, base) = if axis == 0 {
+                (matrix.x, matrix.base_scale_x)
+            } else {
+                (matrix.y, matrix.base_scale_y)
+            };
+            let fixed = (i64::from(position) * 2048 * object_reciprocal(base).ok_or(())?) >> 16;
+            step = (step * i64::from(base)) >> 10;
+            (
+                (fixed >> 16) + ((i64::from(translation) + bias) & mask),
+                fixed & 0xffff,
+            )
+        } else {
+            ((i64::from(position) + bias) & mask, 0)
+        };
+        let extent = ((i64::from(size) - subtraction)
+            * 256
+            * object_reciprocal(u16::try_from(step).map_err(|_| ())?).ok_or(())?)
+            >> 16;
+        let end = (start + ((fraction + extent) >> 16)).min(i64::from(scissor[axis + 2]));
+        let mut texture = if sprite.image_flags & flip != 0 {
+            step = -step;
+            i64::from(size) - subtraction + offset - 1
+        } else {
+            offset
+        };
+        if bilerp {
+            texture -= 16;
+        }
+        let clipped = (i64::from(scissor[axis]) - start).max(0);
+        texture += (clipped * step) >> 7;
+        start += clipped;
+        if start >= end {
+            return Ok(None);
+        }
+        if bilerp && axis == 1 {
+            texture -= (step * (start & 3)) >> 7;
+        }
+        corners[axis] = [start as i32, end as i32];
+        starts[axis] = texture as i16;
+        steps[axis] = step as i16;
+    }
+    Ok(Some(TexRect {
+        rect: crate::scene::TexRectBounds {
+            ulx: corners[0][0],
+            uly: corners[1][0],
+            lrx: corners[0][1],
+            lry: corners[1][1],
+        },
+        tile: 0,
+        uls: starts[0],
+        ult: starts[1],
+        dsdx: steps[0],
+        dtdy: steps[1],
+        flip: false,
+    }))
+}
+
+pub(crate) fn obj_rectangle<M: Rdram>(
+    c: &Cmd,
+    cx: &mut Ctx<M>,
+) -> Result<Vec<Emission<'static>>, ()> {
+    let cycle = (cx.rdp.other_mode_h >> 20) & 3;
+    let combined = matches!(c.opcode(), 0x07 | 0x08);
+    if combined && c.p0(0, 24) != 47 {
+        invalid_parameters(cx, c.opcode());
+        return Err(());
+    }
+    if cycle == 3 {
+        unsupported(c, cx);
+        return Err(());
+    }
+    let sprite = cx
+        .mem
+        .resolve_masked(c.w1_addr)
+        .and_then(|address| checked_span(address, if combined { 24 } else { 0 }))
+        .and_then(|address| cx.mem.read_obj_sprite(address))
+        .map_err(|error| {
+            cx.diags.push(Diagnostic {
+                at: cx.pc,
+                kind: DiagKind::MemoryRead {
+                    access: crate::MemoryAccess::ObjSprite,
+                    error,
+                },
+            })
+        })?;
+    if combined {
+        let diagnostics = cx.diags.len();
+        obj_load_txtr(
+            &Cmd {
+                w0: (c.w0 & 0xff00_0000) | 23,
+                w1: c.w1,
+                w1_addr: c.w1_addr,
+            },
+            cx,
+        );
+        if cx.diags.len() != diagnostics {
+            return Err(());
+        }
+    }
+    let rectangle = object_rectangle(
+        &sprite,
+        matches!(c.opcode(), 0x08 | 0xda).then_some(&cx.rsp.obj_mtx),
+        cx.rsp.obj_render_mode,
+        cx.rdp.raw_scissor.unwrap_or([0, 0, 1280, 960]),
+    )
+    .map_err(|()| unsupported(c, cx))?;
+    let Some(mut rectangle) = rectangle else {
+        return Ok(Vec::new());
+    };
+    if cycle == 2 {
+        rectangle.dsdx = rectangle.dsdx.wrapping_mul(4);
+        let corner = ((rectangle.rect.lrx as u32) << 12) | rectangle.rect.lry as u32;
+        let corner = corner.wrapping_sub(0x4004);
+        rectangle.rect.lrx = ((corner >> 12) & 0xfff) as i32;
+        rectangle.rect.lry = (corner & 0xfff) as i32;
+    }
+    cx.rsp.obj_tile ^= 2;
+    rectangle.tile = cx.rsp.obj_tile;
+    let w0 = (u32::from(sprite.image_fmt) << 21)
+        | (u32::from(sprite.image_siz) << 19)
+        | (u32::from(sprite.image_stride) << 9)
+        | u32::from(sprite.image_adrs);
+    let w1 = 0x0008_0200
+        | ((u32::from(sprite.image_pal) << 20) & 0xffffff)
+        | (u32::from(rectangle.tile) << 24);
+    let size = ((u32::from(sprite.image_w & 0x7ff8) << 9) | (u32::from(sprite.image_h) >> 3))
+        .wrapping_sub(0x4004);
+    super::rdp::set_tile(
+        &Cmd {
+            w0,
+            w1,
+            w1_addr: u64::from(w1),
+        },
+        cx,
+    );
+    set_tile_size_typed(
+        usize::from(rectangle.tile),
+        [0, 0, ((size >> 12) & 0xfff) as u16, (size & 0xfff) as u16],
+        cx,
+    );
+    emit_texrect(rectangle, cx)
+        .map(|emission| vec![emission])
+        .ok_or(())
 }
 
 fn move_word<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
