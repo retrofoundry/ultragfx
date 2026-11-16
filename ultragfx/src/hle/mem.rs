@@ -43,7 +43,7 @@ pub struct MemoryError {
     pub kind: MemoryErrorKind,
 }
 
-fn memory_error(address: u64, length: u64, kind: MemoryErrorKind) -> MemoryError {
+pub(crate) fn memory_error(address: u64, length: u64, kind: MemoryErrorKind) -> MemoryError {
     MemoryError {
         address,
         length,
