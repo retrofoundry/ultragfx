@@ -13,7 +13,7 @@ fn texrect_console_samples() {
     let texture: Vec<_> = (0..32u16)
         .flat_map(|y| {
             (0..32u16).flat_map(move |x| {
-                ((x % 2) * 0xf800 | (y % 2) * 0x07c0 | ((3 * x + 5 * y) % 32) << 1 | 1)
+                (((x % 2) * 0xf800) | ((y % 2) * 0x07c0) | (((3 * x + 5 * y) % 32) << 1) | 1)
                     .to_be_bytes()
             })
         })
