@@ -3,6 +3,131 @@ use super::*;
 use crate::hle::{gbi::GbiUcode, mem::RdramImage, SceneOp};
 use n64_gbi::encode::*;
 
+#[test]
+fn texrect_console_samples() {
+    use crate::tests::{
+        common::{pixel, render_to_pixels},
+        dl_builder::DlBuilder,
+    };
+
+    let texture: Vec<_> = (0..32u16)
+        .flat_map(|y| {
+            (0..32u16).flat_map(move |x| {
+                ((x % 2) * 0xf800 | (y % 2) * 0x07c0 | ((3 * x + 5 * y) % 32) << 1 | 1)
+                    .to_be_bytes()
+            })
+        })
+        .collect();
+    let (device, queue) = headless_device_forced_fallback();
+    // Expected pixels are NTSC console RGBA5551 readbacks from the named cases.
+    for (name, cycle, rect, origin, base, step, samples) in [
+        (
+            "fx-18-bilerp-0555-plain-1",
+            0,
+            0xe4060060,
+            0x00021020,
+            0x00180013,
+            0x05550555,
+            [(9, 8, 0x4c91), (10, 8, 0xec99), (23, 23, 0x6c49)],
+        ),
+        (
+            "fx-24-bilerp-0555-plain-right-3",
+            0,
+            0xe4063060,
+            0x00022020,
+            0x00180013,
+            0x05550555,
+            [(9, 8, 0x948f), (10, 8, 0xb497), (23, 23, 0x1447)],
+        ),
+        (
+            "y-1-flip-1",
+            0,
+            0xe5060060,
+            0x00020021,
+            0x00180013,
+            0x05550555,
+            [(8, 9, 0x1493), (8, 10, 0x949b), (23, 23, 0xb44b)],
+        ),
+        (
+            "signed-flip-0-cycle-0",
+            0,
+            0xe402602d,
+            0x0000500b,
+            0x000bfff3,
+            0x014dfcf7,
+            [(2, 3, 0x8e79), (5, 6, 0x7427), (9, 11, 0xd5c9)],
+        ),
+        (
+            "signed-flip-1-cycle-0",
+            0,
+            0xe502602d,
+            0x0000500b,
+            0x000bfff3,
+            0x014dfcf7,
+            [(2, 3, 0xa7fb), (5, 6, 0x65ab), (9, 11, 0xba95)],
+        ),
+        (
+            "signed-flip-0-cycle-1-combined",
+            1,
+            0xe402602d,
+            0x0000500b,
+            0x000bfff3,
+            0x014dfcf7,
+            [(2, 3, 0x8e79), (5, 6, 0x7427), (9, 11, 0xd5c9)],
+        ),
+        (
+            "signed-flip-1-cycle-1-combined",
+            1,
+            0xe502602d,
+            0x0000500b,
+            0x000bfff3,
+            0x014dfcf7,
+            [(2, 3, 0xa7fb), (5, 6, 0x65ab), (9, 11, 0xba95)],
+        ),
+    ] {
+        let mut builder = DlBuilder::new();
+        let address = builder.bytes(8, &texture);
+        builder.list(
+            "main",
+            &[
+                gdp_set_color_image(0, 2, 64, 0x100000),
+                gdp_set_scissor(0, 0, 0, 256, 256),
+                gdp_set_texture_image(0, 2, 32, address),
+                gdp_set_tile(0, 2, 8, 0, 7, 0, 0, 0, 0, 0, 0, 0),
+                (0xf4000000, 0x0707c07c),
+                gdp_set_tile(0, 2, 8, 0, 0, 0, 0, 5, 0, 0, 5, 0),
+                gdp_set_tile_size(0, 0, 0, 124, 124),
+                (0xef002cf0 | (cycle << 20), 0x0f0a4000),
+                (0xfcffffff, if cycle == 0 { 0xfffcf279 } else { 0xfffcf238 }),
+                (rect, origin),
+                (0xe1000000, base),
+                (0xf1000000, step),
+                gsp_enddl(),
+            ],
+        );
+        let built = builder.finish("main");
+        let result = crate::hle::interpret(
+            RdramImage::new(&built.rdram),
+            u64::from(built.entry),
+            GbiUcode::F3dex2,
+            crate::DataFormat::Fixed,
+            None,
+        );
+        assert!(result.diags.is_empty(), "{name}: {:?}", result.diags);
+        let mut renderer =
+            SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 64, false);
+        let pixels = render_to_pixels(&device, &queue, &mut renderer, &result.scene, 64, 64);
+        for (x, y, expected) in samples {
+            let [r, g, b, a] = pixel(&pixels, 64, x, y);
+            let packed = (u16::from(r >> 3) << 11)
+                | (u16::from(g >> 3) << 6)
+                | (u16::from(b >> 3) << 1)
+                | u16::from(a >= 128);
+            assert_eq!(packed, expected, "{name} ({x},{y})");
+        }
+    }
+}
+
 fn decode(bounds: [u32; 4], base: [i16; 2], step: [i16; 2], cycle: u32, flip: bool) -> SceneOp {
     let [ulx, uly, lrx, lry] = bounds;
     let mut words = vec![
@@ -130,9 +255,15 @@ fn texrect_adjacent_edges_have_no_extra_pixel() {
 }
 
 #[test]
-fn texrect_fractional_bounds_follow_reference() {
+fn texrect_fractional_bounds_follow_console() {
     for cycle in [0, 1] {
         for x in 5..=7 {
+            let [s0, s1, t0, t1] = match x {
+                5 => [2407.0, 13063.0, -3995.0, -28859.0],
+                6 => [2074.0, 12730.0, -3218.0, -28082.0],
+                _ => [1741.0, 12397.0, -2441.0, -27305.0],
+            }
+            .map(|v| v / 4096.0);
             for y in 9..=11 {
                 let q = quad(&decode(
                     [x, y, 38, 45],
@@ -142,14 +273,14 @@ fn texrect_fractional_bounds_follow_reference() {
                     false,
                 ));
                 assert_mask(&q, [2, 3, 10, 12]);
-                assert_eq!(q[0].uv, [0.34375, -1.1875]);
-                assert_eq!(q[2].uv, [2.9375, -8.03125]);
+                assert_eq!(q[0].uv, [s0, -1193.0 / 1024.0]);
+                assert_eq!(q[2].uv, [s1, -8186.0 / 1024.0]);
                 let q = quad(&decode([x, y, 38, 45], [11, -13], [333, -777], cycle, true));
                 assert_mask(&q, [2, 3, 10, 12]);
-                assert_eq!(q[0].uv, [0.65625, -0.40625]);
-                assert_eq!(q[5].uv, [0.65625, -6.5]);
-                assert_eq!(q[2].uv, [3.5625, -6.5]);
-                assert_eq!(q[1].uv, [3.5625, -0.40625]);
+                assert_eq!(q[0].uv, [685.0 / 1024.0, t0]);
+                assert_eq!(q[5].uv, [685.0 / 1024.0, t1]);
+                assert_eq!(q[2].uv, [3682.0 / 1024.0, t1]);
+                assert_eq!(q[1].uv, [3682.0 / 1024.0, t0]);
             }
         }
     }

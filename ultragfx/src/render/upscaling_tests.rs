@@ -1121,6 +1121,68 @@ fn texrect_scene(
 }
 
 #[test]
+fn texrect_fractional_grid_survives_large_coordinates() {
+    let mut draw = texrect_scene([32000, 32000], [0x555, 0x555], false, false, false);
+    let target = &mut draw.framebuffer_pairs[0];
+    target.color_image.width = 328;
+    target.size_extent = (328, 248);
+    target.active_scissor.lrx = 328;
+    target.active_scissor.lry = 248;
+    let SceneOp::TexRect { rect, .. } = &mut target.ops[0] else {
+        unreachable!()
+    };
+    *rect = crate::scene::TexRectBounds {
+        ulx: 17,
+        uly: 16,
+        lrx: 1297,
+        lry: 976,
+    };
+    let material = &mut draw.materials[0];
+    material.tex_h = 16;
+    material.sampling = crate::hle::tile_sampling::TileSampling::from_tile(
+        &crate::hle::rdp::TileDescriptor {
+            width: 16,
+            height: 16,
+            masks: 4,
+            maskt: 4,
+            ..Default::default()
+        },
+        0,
+    );
+    material.texture = crate::hle::texture_request::TextureSource::Rgba(
+        (0..16)
+            .flat_map(|y| (0..16).flat_map(move |x| [x * 12, y * 16, 0, 255]))
+            .collect::<Vec<u8>>()
+            .into(),
+    );
+    let (fallback_device, fallback_queue) = headless_device_forced_fallback();
+    for (device, queue, dual) in [(fallback_device, fallback_queue, false), headless_device()] {
+        for scale in [1, 2, 4] {
+            let mut renderer = SceneRenderer::new(&device, FORMAT, 328, 248, dual);
+            renderer.set_test_scale(scale, BUDGET);
+            renderer.begin_frame();
+            renderer.render_into_store(&device, &queue, &draw, ClearPolicy::PerFrame);
+            let fb = &renderer.framebuffers[&workload::TargetId::Guest(A.into())];
+            let mut targets = vec![(1, &fb.color)];
+            if let Some(presentation) = &fb.presentation {
+                targets.push((scale, &presentation.texture));
+            }
+            for (m, texture) in targets {
+                let bytes = read_texture(&device, &queue, texture);
+                assert_rgba_samples(texture, &bytes, |x, y| {
+                    if !(5 * m..325 * m).contains(&x) || !(4 * m..244 * m).contains(&y) {
+                        return None;
+                    }
+                    let s = (1000 * 4096 * m + (4 * x - 17 * m) * 0x555) / (4096 * m);
+                    let t = (1000 * 4096 * m + (4 * y - 16 * m) * 0x555) / (4096 * m);
+                    Some([((s % 16) * 12) as u8, ((t % 16) * 16) as u8, 0, 255])
+                });
+            }
+        }
+    }
+}
+
+#[test]
 fn identity_texrect_phase_uses_both_signed_derivatives() {
     let (device, queue, dual) = headless_device();
     for scale in [2, 3, 4] {

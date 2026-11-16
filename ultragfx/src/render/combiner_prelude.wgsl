@@ -351,12 +351,11 @@ fn tile_coordinate(tile: TileSampling, uv: vec2<f32>, high_resolution: bool) -> 
         return shifted - vec2<f32>(tile.bounds.xy) / 4.0;
     }
     if combiner.is_rect != 0u {
-        // Rectangle coordinates lie on a 1/1024-texel grid per output pixel, which the RDP
-        // truncates to S10.5; upscaled passes keep the finer fraction triangles get.
         let scale = f32(max(combiner.raster.x, 1u));
         let fraction = select(32.0, 128.0, scale > 1.0);
-        let exact = round(shifted * 1024.0 * scale);
-        return floor(exact * fraction / (1024.0 * scale)) / fraction - vec2<f32>(tile.bounds.xy) / 4.0;
+        // Quarter-pixel origins times 1/1024-texel steps require 12 fractional bits.
+        let exact = round(shifted * 4096.0 * scale);
+        return floor(exact * fraction / (4096.0 * scale)) / fraction - vec2<f32>(tile.bounds.xy) / 4.0;
     }
     return round(shifted * 128.0) / 128.0 - vec2<f32>(tile.bounds.xy) / 4.0;
 }
