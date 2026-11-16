@@ -86,7 +86,7 @@ fn capture_v2_s2dex_replays_after_source_drop() {
         .unwrap();
         template.frame.width = 64;
         template.frame.height = 32;
-        let (device, queue) = crate::render::headless_device_forced_fallback();
+        let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
         let mut renderer = template.renderer(device, queue.clone(), crate::ClearPolicy::PerFrame);
         let mut capture = CaptureFrame::begin(&mut renderer, 0, 17, Provenance::default());
         let mut diagnostics = Vec::new();
@@ -267,7 +267,7 @@ fn capture_bindings_are_task_local() {
         })
         .collect();
     let fixture = Fixture::from_bytes(&fixture.to_bytes().unwrap()).unwrap();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = fixture.renderer(device.clone(), queue.clone(), crate::ClearPolicy::Persist);
     let mut capture = CaptureFrame::begin(
         &mut renderer,

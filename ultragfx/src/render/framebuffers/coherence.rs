@@ -1154,7 +1154,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn writeback_coverage_follows_prefixes_and_unstamped_edges() {
-        let (device, queue, _) = crate::render::headless_device();
+        let (device, queue, _) = crate::render::guarded_headless_device();
         let texture = |format| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
@@ -1370,7 +1370,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn canonical_literal_fill_red_green_bytes_and_reader() {
-        let (device, _, _) = crate::render::headless_device();
+        let (device, _, _) = crate::render::guarded_headless_device();
         let mut coherence = Coherence::new(FramebufferEncoding::BigEndian);
         coherence.fill(image(0, 2, 2, false), (0, 0, 2, 1), 0xf801_07c1);
         coherence.resolve(&device);
@@ -1385,7 +1385,7 @@ mod tests {
     #[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
     #[test]
     fn native_literal_fill_red_green_bytes_and_reader() {
-        let (device, _, _) = crate::render::headless_device();
+        let (device, _, _) = crate::render::guarded_headless_device();
         let mut coherence = Coherence::default();
         let mut words = [0u16; 2];
         let address = words.as_mut_ptr() as u64;
@@ -1478,7 +1478,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn canonical_odd_i8_overlap_and_one_byte_tail_preserve_lanes() {
-        let (device, _, _) = crate::render::headless_device();
+        let (device, _, _) = crate::render::guarded_headless_device();
         let mut coherence = Coherence::new(FramebufferEncoding::BigEndian);
         coherence.fill(image(0, 3, 2, true), (0, 0, 3, 1), 0x4000_6000);
         let color = image(0, 2, 2, false);
@@ -1942,7 +1942,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn reconfigure_keeps_replay_pipelines_warm() {
-        let (device, queue, _) = crate::render::headless_device();
+        let (device, queue, _) = crate::render::guarded_headless_device();
         let config = crate::RendererConfig {
             clear_policy: crate::ClearPolicy::Persist,
             resolution_multiplier: 1,

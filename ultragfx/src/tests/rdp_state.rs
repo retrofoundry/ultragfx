@@ -375,7 +375,7 @@ fn reset_makes_backward_inspector_prefixes_and_dither_repeatable() {
     use crate::capture::ReplayHardware;
     use crate::{PresentTarget, Renderer};
     let fixture = crate::tests::alpha_dither_fixture::fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let make_renderer = || {
         Renderer::with_device(
             device.clone(),

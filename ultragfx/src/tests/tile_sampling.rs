@@ -3,7 +3,7 @@ use crate::hle::combiner::build_material;
 use crate::hle::rdp::{Rdp, TileDescriptor};
 use crate::hle::rsp::Rsp;
 use crate::hle::Scene;
-use crate::render::{headless_device, SceneRenderer};
+use crate::render::{guarded_headless_device as headless_device, SceneRenderer};
 
 fn tile() -> TileDescriptor {
     TileDescriptor {

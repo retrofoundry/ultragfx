@@ -125,7 +125,7 @@ pub(super) fn harness(
     faults: Vec<PresentError>,
     acquire: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
 ) -> Harness {
-    let (device, queue, _) = crate::render::headless_device();
+    let (device, queue, _) = crate::render::guarded_headless_device();
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,

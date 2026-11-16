@@ -157,7 +157,7 @@ fn missing_vertices_draw_nothing_and_preserve_the_next_draw() {
             RdramImage::new(&self.0)
         }
     }
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut baseline = None;
     for (bad_address, segment, physical, skip_bad_draw) in [
         (0x200, 0, 0x200, true),

@@ -69,7 +69,7 @@ fn pixels(request: &Arc<FramebufferTexture>) -> Vec<[u8; 4]> {
 }
 
 fn decode(requests: &[&Arc<FramebufferTexture>]) -> Vec<Vec<[u8; 4]>> {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let recorder = Recorder::new(crate::profiling::Mode::Counters);
     let mut copies = Copies::default();
     let copied = &requests[0].tags.copies;
@@ -266,7 +266,7 @@ fn framebuffer_decode_multiple_copies_and_cross_copy_pair() {
 fn framebuffer_decode_uploads_preserve_interleaved_copy_bytes_and_source_order() {
     use crate::hle::{framebuffer_load::Tags, texture_request::EncodedTextureRequest};
 
-    let (device, _) = crate::render::headless_device_forced_fallback();
+    let (device, _) = crate::render::guarded_headless_device_forced_fallback();
     let mut rdp = Rdp::default();
     copy(&mut rdp, 0, 1);
     let recipe = request(&rdp, &tile(0, 2, 4, 1), 0).encoded.recipe().clone();

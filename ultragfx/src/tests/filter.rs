@@ -3,7 +3,9 @@ use crate::hle::combiner::build_material;
 use crate::hle::rdp::{Rdp, TileDescriptor};
 use crate::hle::rsp::Rsp;
 use crate::hle::Scene;
-use crate::render::{headless_device_forced_fallback, SceneRenderer};
+use crate::render::{
+    guarded_headless_device_forced_fallback as headless_device_forced_fallback, SceneRenderer,
+};
 
 const TEXELS: [[u8; 4]; 4] = [
     [32, 64, 96, 128],

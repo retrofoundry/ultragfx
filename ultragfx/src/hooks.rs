@@ -83,7 +83,7 @@ where
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::render::headless_device;
+    use crate::render::guarded_headless_device as headless_device;
 
     fn clear(encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, color: wgpu::Color) {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

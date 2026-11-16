@@ -1,6 +1,9 @@
 use super::common::{render_to_pixels, scene_from_fixture};
 use crate::hle::{AlphaCompare, BlendClass, RenderMode, Scene, ZMode};
-use crate::render::{headless_device_forced_fallback, CombinerUniform, SceneRenderer};
+use crate::render::{
+    guarded_headless_device_forced_fallback as headless_device_forced_fallback, CombinerUniform,
+    SceneRenderer,
+};
 
 const FRAME_0: [u64; 32] = [
     0x57b9a53c07ec2b4e,
@@ -434,7 +437,7 @@ fn alpha_compare_and_cvg_x_alpha_both_apply() {
 #[test]
 #[ignore = "requires a DUAL_SOURCE_BLENDING adapter"]
 fn alpha_dither_dualsrc_matches_fallback_mask() {
-    let (device, queue, dual) = crate::render::headless_device();
+    let (device, queue, dual) = crate::render::guarded_headless_device();
     assert!(dual, "requires dual-source blending");
     let (fallback_device, fallback_queue) = headless_device_forced_fallback();
     let mut dual_renderer =

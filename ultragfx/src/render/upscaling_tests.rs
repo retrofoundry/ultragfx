@@ -1,4 +1,8 @@
 use super::*;
+use super::{
+    guarded_headless_device as headless_device,
+    guarded_headless_device_forced_fallback as headless_device_forced_fallback,
+};
 use crate::scene::{ColorImage, FramebufferPair, Rect, SceneOp, Scissor};
 use crate::tests::{
     common,

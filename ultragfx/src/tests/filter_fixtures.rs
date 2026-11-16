@@ -169,7 +169,7 @@ fn fixture(bytes: Vec<u8>, source: &str) -> Fixture {
 }
 
 fn assert_frame(fixture: Fixture, case: super::sm64_semantics::Case) {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(
         output.diagnostics.iter().all(Vec::is_empty),

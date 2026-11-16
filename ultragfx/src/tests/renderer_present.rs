@@ -32,7 +32,7 @@ fn present_to_scans_out_the_last_rendered_framebuffer() {
         rdram: rdram.to_vec(),
     };
 
-    let (device, queue, _dual) = crate::render::headless_device();
+    let (device, queue, _dual) = crate::render::guarded_headless_device();
     let mut r = Renderer::with_device(
         device,
         queue.clone(),
@@ -119,7 +119,7 @@ fn present_to_scans_out_the_last_rendered_framebuffer() {
 #[test]
 fn host_scanout_selects_full_width_address_and_falls_back() {
     use n64_gbi::encode::*;
-    let (device, queue, _) = crate::render::headless_device();
+    let (device, queue, _) = crate::render::guarded_headless_device();
     let mut r = Renderer::with_device(
         device.clone(),
         queue.clone(),
@@ -181,7 +181,7 @@ fn vi_scanout_maps_rows_and_alternates_stored_buffers() {
     use crate::ViRegisters;
     use n64_gbi::encode::*;
 
-    let (device, queue, _) = crate::render::headless_device();
+    let (device, queue, _) = crate::render::guarded_headless_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut renderer = Renderer::with_device(
         device.clone(),

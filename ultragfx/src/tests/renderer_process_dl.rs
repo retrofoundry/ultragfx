@@ -28,7 +28,7 @@ fn cfg() -> RendererConfig {
 }
 
 fn headless_renderer() -> Renderer {
-    let (device, queue, _dual) = crate::render::headless_device();
+    let (device, queue, _dual) = crate::render::guarded_headless_device();
     Renderer::with_device(
         device,
         queue.clone(),

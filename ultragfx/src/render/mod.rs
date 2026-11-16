@@ -483,6 +483,11 @@ impl CombinerUniform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::{
+        guarded_headless_device as headless_device,
+        guarded_headless_device_forced_fallback as headless_device_forced_fallback,
+    };
 
     #[test]
     fn tile_sampling_uniform_and_shaders_fit_webgpu() {
@@ -2712,8 +2717,10 @@ impl SceneRenderer {
 /// Uses Limits::default() (WebGPU) so compute + storage buffers are available for the RSP-process pass.
 /// Returns `(device, queue, dual_source)` where `dual_source` is true when the adapter advertised
 /// `DUAL_SOURCE_BLENDING` and it was successfully requested (B3/B4 use this to select pipelines).
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub fn headless_device() -> (wgpu::Device, crate::tests::queue::TestQueue, bool) {
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn headless_device() -> (wgpu::Device, wgpu::Queue, bool) {
+    #[cfg(test)]
     let _ = env_logger::try_init();
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -2737,15 +2744,16 @@ pub fn headless_device() -> (wgpu::Device, crate::tests::queue::TestQueue, bool)
         trace: wgpu::Trace::Off,
     }))
     .expect("no device");
-    let queue = crate::tests::queue::TestQueue::new(&device, queue);
     (device, queue, dual)
 }
 
 /// Headless device with dual-source blending forcibly disabled — mirrors the §11 forced-fallback
 /// CI mode. Requests `Features::empty()` even when the adapter supports `DUAL_SOURCE_BLENDING`,
 /// so the fallback blender path (B3) can be exercised deterministically.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub fn headless_device_forced_fallback() -> (wgpu::Device, crate::tests::queue::TestQueue) {
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn headless_device_forced_fallback() -> (wgpu::Device, wgpu::Queue) {
+    #[cfg(test)]
     let _ = env_logger::try_init();
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -2764,6 +2772,20 @@ pub fn headless_device_forced_fallback() -> (wgpu::Device, crate::tests::queue::
         trace: wgpu::Trace::Off,
     }))
     .expect("no device");
+    (device, queue)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn guarded_headless_device() -> (wgpu::Device, crate::tests::queue::TestQueue, bool) {
+    let (device, queue, dual) = headless_device();
+    let queue = crate::tests::queue::TestQueue::new(&device, queue);
+    (device, queue, dual)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn guarded_headless_device_forced_fallback(
+) -> (wgpu::Device, crate::tests::queue::TestQueue) {
+    let (device, queue) = headless_device_forced_fallback();
     let queue = crate::tests::queue::TestQueue::new(&device, queue);
     (device, queue)
 }

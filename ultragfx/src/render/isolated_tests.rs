@@ -1,3 +1,4 @@
+use super::guarded_headless_device as headless_device;
 use super::*;
 use crate::scene::{ColorImage, FramebufferPair, Rect, SceneOp, Scissor};
 use crate::tests::common;

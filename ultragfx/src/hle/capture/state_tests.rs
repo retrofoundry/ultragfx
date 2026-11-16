@@ -295,7 +295,7 @@ fn framebuffer_primers_do_not_inherit_the_fixtures_final_registers() {
         ],
         1,
     );
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(output
         .rgba8
@@ -308,7 +308,7 @@ fn framebuffer_primers_do_not_inherit_the_fixtures_final_registers() {
 #[test]
 fn replay_resets_prior_registers_but_inherits_between_recorded_tasks() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let expected = pollster::block_on(fixture.replay(device.clone(), queue.clone())).unwrap();
     assert!(expected
         .rgba8
@@ -344,7 +344,7 @@ fn replay_resets_prior_registers_but_inherits_between_recorded_tasks() {
 #[test]
 fn capture_rejects_unrecorded_starting_registers_without_resetting_live_state() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = fixture.renderer(device, queue.clone(), ClearPolicy::PerFrame);
     let setup = ReplayHardware::new(&fixture.tasks[0], None).unwrap();
     renderer.process_dl(&setup, 0, Microcode::F3dex2, &mut crate::NopSink);
@@ -371,7 +371,7 @@ fn capture_rejects_unrecorded_starting_registers_without_resetting_live_state() 
 #[test]
 fn capture_accepts_default_start_equivalent_tasks_after_previous_work() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = fixture.renderer(device.clone(), queue.clone(), ClearPolicy::PerFrame);
     for _ in 0..2 {
         let mut capture = CaptureFrame::begin(&mut renderer, 0, 0, Provenance::default());
@@ -423,7 +423,7 @@ fn capture_accepts_framebuffer_loads_after_earlier_loads() {
     ));
     commands.push(gsp_enddl());
     let load = task(&commands, 0);
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = fixture().renderer(device, queue.clone(), ClearPolicy::PerFrame);
     for _ in 0..2 {
         let mut capture = CaptureFrame::begin(&mut renderer, 0, 0, Provenance::default());
@@ -479,7 +479,7 @@ fn output_target(renderer: &Renderer) -> wgpu::Texture {
 #[test]
 fn capture_rejects_reset_between_tasks_even_when_final_registers_match() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     for reset in [Renderer::reset_rdp_state, Renderer::reset] {
         let mut renderer = fixture.renderer(device.clone(), queue.clone(), ClearPolicy::PerFrame);
         let mut capture = CaptureFrame::begin(&mut renderer, 0, 0, Provenance::default());
@@ -517,7 +517,7 @@ fn capture_rejects_reset_between_tasks_even_when_final_registers_match() {
 #[test]
 fn capture_accepts_unused_convert_and_key_state_in_fill() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = fixture.renderer(device.clone(), queue.clone(), ClearPolicy::PerFrame);
     let setup = task(
         &[
@@ -548,7 +548,7 @@ fn capture_accepts_unused_convert_and_key_state_in_fill() {
 #[test]
 fn capture_accepts_no_work_before_independent_fill() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = fixture.renderer(device, queue.clone(), ClearPolicy::PerFrame);
     let fill = full_fill();
     let hardware = ReplayHardware::new(&fill, None).unwrap();
@@ -566,7 +566,7 @@ fn capture_accepts_no_work_before_independent_fill() {
 #[test]
 fn capture_rejects_mutations_at_every_completion_method() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     for reset in [Renderer::reset_rdp_state, Renderer::reset] {
         for completion in 0..4 {
             let mut renderer =
@@ -591,7 +591,7 @@ fn capture_rejects_mutations_at_every_completion_method() {
 #[test]
 fn capture_rejects_unrecorded_submissions_frame_boundaries_and_restored_config() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     for mutation in 0..6 {
         let mut renderer = fixture.renderer(device.clone(), queue.clone(), ClearPolicy::PerFrame);
         let mut capture = CaptureFrame::begin(&mut renderer, 0, 0, Provenance::default());
@@ -634,7 +634,7 @@ fn capture_rejects_unrecorded_submissions_frame_boundaries_and_restored_config()
 #[test]
 fn capture_host_rejects_reset_and_still_executes_the_task() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     for reset in [Renderer::reset_rdp_state, Renderer::reset] {
         let mut renderer = fixture.renderer(device.clone(), queue.clone(), ClearPolicy::PerFrame);
         let mut capture = CaptureFrame::begin(&mut renderer, 0, 0, Provenance::default());
@@ -678,7 +678,7 @@ fn capture_host_rejects_reset_and_still_executes_the_task() {
 #[test]
 fn capture_rejects_unsupported_active_use_even_when_both_walks_do_no_work() {
     let fixture = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = fixture.renderer(device, queue.clone(), ClearPolicy::PerFrame);
     let color = CcPass {
         a: 15,
@@ -781,7 +781,7 @@ fn capture_writeback_requires_native_encoding_when_enabled() {
         "../../../tests/fixtures/host64-fill.ugfxcap"
     ))
     .unwrap();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = fixture.renderer(device, queue.clone(), ClearPolicy::Persist);
     for (enabled, encoding) in [
         (false, crate::FramebufferEncoding::Native),
@@ -825,7 +825,7 @@ fn capture_writeback_requires_native_encoding_when_enabled() {
 #[test]
 fn captures_record_the_effective_fixed_scale() {
     let template = fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     for scale in 1..=4 {
         let mut renderer = template.renderer_with_options(
             device.clone(),

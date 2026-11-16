@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn pooled_textures_wait_for_both_cpu_release_and_gpu_completion() {
-        let (device, queue, _) = super::super::headless_device();
+        let (device, queue, _) = super::super::guarded_headless_device();
         let source = device.create_texture(&super::super::framebuffers::color_descriptor(
             "source",
             (8, 8),
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn retired_extents_release_pool_ownership_without_invalidating_live_images() {
-        let (device, queue, _) = super::super::headless_device();
+        let (device, queue, _) = super::super::guarded_headless_device();
         let source =
             device.create_texture(&super::super::framebuffers::color_descriptor("old", (8, 8)));
         let mut pool = SnapshotPool::default();
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn reset_releases_snapshot_pool_ownership() {
-        let (device, queue, _) = super::super::headless_device();
+        let (device, queue, _) = super::super::guarded_headless_device();
         let mut renderer =
             super::super::SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 8, 8, false);
         let source = device.create_texture(&super::super::framebuffers::color_descriptor(
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn retirement_preserves_all_current_extents_and_formats() {
-        let (device, queue, _) = super::super::headless_device();
+        let (device, queue, _) = super::super::guarded_headless_device();
         let sources: Vec<_> = [
             (8, wgpu::TextureFormat::Rgba8Unorm),
             (16, wgpu::TextureFormat::Rgba8Unorm),

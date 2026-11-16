@@ -3,8 +3,8 @@
 mod decal_depth;
 
 use crate::render::{
-    decode_rgba16, headless_device, CombinerUniform, OutVertex, RspProcessParams,
-    RspProcessPipeline, TexturedPipeline, CLEAR_COLOR, DEPTH_FORMAT,
+    decode_rgba16, guarded_headless_device as headless_device, CombinerUniform, OutVertex,
+    RspProcessParams, RspProcessPipeline, TexturedPipeline, CLEAR_COLOR, DEPTH_FORMAT,
 };
 use wgpu::util::DeviceExt;
 

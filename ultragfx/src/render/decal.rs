@@ -214,7 +214,7 @@ impl Replay {
 mod tests {
     #[test]
     fn triangle_delta_normalization_literals() {
-        let (device, queue, _) = super::super::headless_device();
+        let (device, queue, _) = super::super::guarded_headless_device();
         let source = format!(
             "{}\n{}",
             include_str!("combiner_prelude.wgsl"),

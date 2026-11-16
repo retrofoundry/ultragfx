@@ -3,7 +3,7 @@
 
 use crate::tests::common;
 
-use crate::render::{headless_device, SceneRenderer};
+use crate::render::{guarded_headless_device as headless_device, SceneRenderer};
 use crate::{render::workload::TargetId, ClearPolicy};
 use common::{dl_2d_fill, dl_2d_fill_rect, pixel, scene_from_fixture}; // B1: no `solid_env_texture` (unused → -D warnings error)
 

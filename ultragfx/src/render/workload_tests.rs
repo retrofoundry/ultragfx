@@ -1,5 +1,8 @@
 use super::*;
-use crate::render::{extents::TargetExtents, headless_device, inputs::RenderInputs, SceneRenderer};
+use crate::render::{
+    extents::TargetExtents, guarded_headless_device as headless_device, inputs::RenderInputs,
+    SceneRenderer,
+};
 use crate::scene::{ColorImage, FramebufferPair, Rect};
 use crate::ClearPolicy;
 

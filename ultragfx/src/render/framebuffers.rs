@@ -1040,7 +1040,7 @@ pub(super) mod delta_tests {
 
     #[test]
     fn scaled_delta_growth_rebuild_and_strict_rollback() {
-        let (device, queue, _) = super::super::headless_device();
+        let (device, queue, _) = super::super::guarded_headless_device();
         let mut renderer =
             SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 2, false);
         renderer.set_test_scale(2, 256 * 1024 * 1024);
@@ -1157,7 +1157,7 @@ pub(super) mod delta_tests {
 
     #[test]
     fn authored_fill_growth_snapshot_clear_and_visible_only_import() {
-        let (device, queue, _) = super::super::headless_device();
+        let (device, queue, _) = super::super::guarded_headless_device();
         let mut renderer =
             SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 2, false);
         let layout = ImageLayout {

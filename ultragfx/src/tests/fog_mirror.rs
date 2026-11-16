@@ -216,11 +216,11 @@ fn verify(dual: bool, bug: Option<&str>) -> Vec<String> {
     let manifest: Value =
         serde_json::from_str(include_str!("../../tests/fog-mirror/cases.json")).unwrap();
     let (device, queue) = if dual {
-        let (d, q, supported) = crate::render::headless_device();
+        let (d, q, supported) = crate::render::guarded_headless_device();
         assert!(supported, "dual-source adapter required");
         (d, q)
     } else {
-        crate::render::headless_device_forced_fallback()
+        crate::render::guarded_headless_device_forced_fallback()
     };
     let mut renderer =
         crate::render::SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 320, 240, dual);

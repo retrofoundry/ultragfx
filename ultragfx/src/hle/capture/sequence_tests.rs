@@ -133,7 +133,7 @@ fn switch_second_frame_color(sequence: &mut Sequence) {
 
 #[test]
 fn sequence_cimg_depth_control_mutations() {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let original = depth_sequence();
     let mut switched = original.clone();
     switch_second_frame_color(&mut switched);
@@ -237,7 +237,7 @@ fn sequence_identical_cimg_keeps_epoch_across_frames() {
 #[test]
 fn single_frame_rejects_prior_depth_dependency() {
     let fixture = depth_sequence().frames.remove(1);
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     assert_eq!(
         pollster::block_on(fixture.replay(device, queue.clone())).unwrap_err(),
         CaptureError::ClearPolicyMismatch
@@ -247,7 +247,7 @@ fn single_frame_rejects_prior_depth_dependency() {
 #[test]
 fn capture_sequence_replays_from_reset() {
     let source = depth_sequence();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer =
         source.frames[0].renderer(device.clone(), queue.clone(), ClearPolicy::Persist);
     renderer.begin_frame();
@@ -300,7 +300,7 @@ fn capture_sequence_replays_from_reset() {
 #[test]
 fn capture_host_swaps_do_not_add_frames_or_invalidate_writeback() {
     let source = depth_sequence();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut renderer = source.frames[0].renderer(device, queue.clone(), ClearPolicy::Persist);
     renderer.set_guest_writeback(true);
     let mut capture = CaptureSequence::begin(&mut renderer, 123).unwrap();
@@ -379,7 +379,7 @@ fn capture_host_swaps_do_not_add_frames_or_invalidate_writeback() {
 fn sequence_depth_controls_distinguish_task_and_frame_boundaries() {
     let mut sequence = depth_sequence();
     switch_second_frame_color(&mut sequence);
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     for (policy, expected) in [
         (DepthResetPolicy::Never, [[0, 0, 0, 255], [0, 0, 0, 255]]),
         (
@@ -415,7 +415,7 @@ fn v1_capture_still_replays() {
         "../../../tests/fixtures/host64-fill.ugfxcap"
     ))
     .unwrap();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let output = pollster::block_on(fixture.replay(device, queue.clone())).unwrap();
     assert!(output
         .rgba8
@@ -490,7 +490,7 @@ fn sequence_warmup_preserves_registers_and_presentation_serials() {
     .collect();
     sequence.warmup_frames = 1;
     sequence.presentations = vec![2];
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let output =
         pollster::block_on(sequence.replay(device, queue.clone(), DepthResetPolicy::Never))
             .unwrap();
@@ -524,7 +524,7 @@ fn single_frame_rejects_prior_rgba32_color_dependency() {
             command[..8].copy_from_slice(&w0.to_le_bytes());
         }
     }
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     assert_eq!(
         pollster::block_on(fixture.replay(device, queue.clone())).unwrap_err(),
         CaptureError::ClearPolicyMismatch
@@ -556,7 +556,7 @@ fn scissor_growth_repro_spans_later_rows() {
 #[test]
 fn single_frame_rejects_prior_contents_in_scissor_growth_rows() {
     let fixture = scissor_growth_fixture();
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     assert_eq!(
         pollster::block_on(fixture.replay(device, queue.clone())).unwrap_err(),
         CaptureError::ClearPolicyMismatch
@@ -575,7 +575,7 @@ fn sequence_cimg_reset_occurs_within_one_task() {
     sequence.frames.truncate(1);
     sequence.frames[0].tasks = vec![combined];
     sequence.presentations = vec![1];
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     for (policy, expected) in [
         (DepthResetPolicy::Never, [0, 0, 0, 255]),
         (DepthResetPolicy::TaskBoundary, [0, 0, 0, 255]),
@@ -594,7 +594,7 @@ fn sequence_cimg_reset_occurs_within_one_task() {
 
 #[test]
 fn replay_options_cover_the_prefix_and_selected_crop() {
-    let (device, queue) = crate::render::headless_device_forced_fallback();
+    let (device, queue) = crate::render::guarded_headless_device_forced_fallback();
     let mut sequence = depth_sequence();
     let mut setup = sequence.frames[0].clone();
     setup.tasks.truncate(1);
