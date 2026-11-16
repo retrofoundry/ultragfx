@@ -220,9 +220,7 @@ pub(crate) fn move_word<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
         // seg = p0(2,4), value = w1 (stored RAW).
         Rdram::set_segment(cx.mem, c.p0(2, 4), c.w1_addr);
     } else if ty == cx.gbi_consts.g_mw_perspnorm as u32 {
-        // perspNorm is the RSP's fixed-point W-normalization coefficient. Our f32 transform is
-        // exact, so it does not change geometry; honor the command as a no-op (emitted for ROM
-        // fidelity + the future Fog milestone). (spec §2)
+        cx.rsp.persp_norm = c.w1 as u16;
     } else if ty == cx.gbi_consts.g_mw_clip as u32 {
         // clip ratio — RSP viewport state, no scene effect
     } else if ty == cx.gbi_consts.g_mw_numlight as u32 {

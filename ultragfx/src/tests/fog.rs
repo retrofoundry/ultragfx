@@ -261,6 +261,79 @@ fn assert_alphas(scene: &Scene, expected: &[f32]) {
     }
 }
 
+#[test]
+fn fog_at_and_behind_eye_keeps_signed_parameters_and_normalization() {
+    use super::dl_builder::DlBuilder;
+    use n64_gbi::encode::*;
+
+    // Saturated cases are from the F3DZEX console witness; one-LSB Z cases exercise
+    // the source's normalization and finite reciprocal without saturating the fog byte.
+    let cases = [
+        (-3.0, -1.0, 4096, 256i16, 0i16, 0.0),
+        (-272.0, -270.0, 22, 21333, -21077, 0.0),
+        (1.0, -1.0, 4096, 256, 0, 255.0),
+        (-3.0, -1.0, 4096, -256, 255, 255.0),
+        (-2.0, 0.0, 4096, 256, 0, 0.0),
+        (-1.0 / 65536.0, -1.0, 4096, 256, 128, 120.0),
+        (1.0 / 65536.0, -1.0, 4096, 256, 128, 135.0),
+        (1.0 / 65536.0, -1.0, 22, 256, 128, 128.0),
+        (1.0 / 65536.0, 0.0, 4096, 256, 128, 135.0),
+        (0.0, -1.0, 4096, 256, 93, 93.0),
+        (10.0, 12.0, 4096, 256, 0, 213.33333),
+        (-2.0, 1.0 / 65536.0, 4096, -1, -32768, 255.0),
+    ];
+    let mut b = DlBuilder::new();
+    let vertex = b.vertices(&[VtxColored {
+        x: 0,
+        y: 0,
+        z: 0,
+        flag: 0,
+        s: 0,
+        t: 0,
+        r: 64,
+        g: 128,
+        b: 192,
+        a: 17,
+    }]);
+    let mut commands = Vec::new();
+    let mut expected = Vec::new();
+    for (z, w, norm, mul, offset, alpha) in cases {
+        let matrix = b.matrix([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, z, w],
+        ]);
+        commands.extend([
+            gsp_matrix(matrix, true, true, false),
+            gsp_persp_normalize(norm),
+            (
+                0xdb08_0000,
+                (mul as u16 as u32) << 16 | offset as u16 as u32,
+            ),
+            gsp_set_geometrymode(n64_gbi::consts::G_FOG),
+            gsp_vertex(0, 1, vertex),
+            gsp_clear_geometrymode(n64_gbi::consts::G_FOG),
+            gsp_vertex(0, 1, vertex),
+        ]);
+        expected.extend([alpha, 17.0]);
+    }
+    commands.push(gsp_enddl());
+    b.list("main", &commands);
+    let built = b.finish("main");
+    for ucode in [GbiUcode::F3dex2, GbiUcode::F3dex2NoN, GbiUcode::F3dzexNoN] {
+        let result = interpret(
+            RdramImage::new(&built.rdram),
+            built.entry.into(),
+            ucode,
+            GbiDataFormat::Fixed,
+            None,
+        );
+        assert!(result.diags.is_empty(), "{:?}", result.diags);
+        assert_alphas(&result.scene, &expected);
+    }
+}
+
 // JRB command settings from areas/1/{5,2}/model.inc.c; geometry is synthetic.
 fn jrb_commands(append_unused: bool) -> Vec<(u32, u32)> {
     let mut commands = vec![

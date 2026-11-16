@@ -4,6 +4,7 @@ pub mod blender;
 pub mod capture;
 pub mod combiner;
 pub use n64_gbi::consts;
+mod fog;
 pub mod gbi;
 #[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
 pub mod host_mem;

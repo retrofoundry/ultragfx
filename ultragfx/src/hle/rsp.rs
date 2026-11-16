@@ -4,7 +4,7 @@
 use crate::hle::gbi::f3dex2::F3DEX2_CONSTS;
 use crate::hle::interp::checked_span;
 use crate::hle::math::{
-    identity, mul4, mul_col_vec3, mul_fx, mul_row_vec4, w_int_fx, Mat4, FX_IDENTITY,
+    clip_zw_fx, identity, mul4, mul_col_vec3, mul_fx, mul_row_vec4, w_int_fx, Mat4, FX_IDENTITY,
 };
 use crate::hle::mem::Rdram;
 use crate::hle::mem::{MemoryError, MemoryErrorKind, ObjMtx};
@@ -71,6 +71,7 @@ pub struct Rsp {
     mvp_fx: Option<[i32; 16]>,
     vp_scale: [f32; 3],
     vp_trans: [f32; 3],
+    pub(crate) persp_norm: u16,
     geom: u32,
     consts: crate::hle::gbi::GbiConstants,
     data_format: crate::hle::mem::GbiDataFormat,
@@ -133,6 +134,7 @@ impl Default for Rsp {
             // Default: a full-screen FB_WIDTH x FB_HEIGHT viewport (half-extent = center).
             vp_scale: [FB_WIDTH / 2.0, FB_HEIGHT / 2.0, 511.0 / DEPTH_RANGE],
             vp_trans: [FB_WIDTH / 2.0, FB_HEIGHT / 2.0, 511.0 / DEPTH_RANGE],
+            persp_norm: 0xffff,
             geom: F3DEX2_CONSTS.g_clipping,
             consts: F3DEX2_CONSTS,
             data_format: crate::hle::mem::GbiDataFormat::Fixed,
@@ -552,17 +554,26 @@ impl Rsp {
                 self.last_lookat_key = Some(key);
             }
         }
-        let fog_index = if (self.geom & self.consts.g_fog_geom) != 0 {
-            let factors = [rdp.fog_mul, rdp.fog_offset];
+        let intern_fog = |scene: &mut Scene, factors| {
             let index = scene.fog_table.iter().position(|&entry| entry == factors);
             index.unwrap_or_else(|| {
                 scene.fog_table.push(factors);
                 scene.fog_table.len() - 1
             }) as u32
                 + 1
+        };
+        let fog_index = if (self.geom & self.consts.g_fog_geom) != 0 {
+            intern_fog(scene, [rdp.fog_mul, rdp.fog_offset])
         } else {
             0
         };
+        let guarded_fog = fog_index != 0
+            && matches!(
+                self.microcode,
+                crate::Microcode::F3dex2
+                    | crate::Microcode::F3dex2NoN
+                    | crate::Microcode::F3dzexNoN
+            );
         if let Some(capture) = &mut self.annotations {
             capture.load_vertices(
                 self.model_stack[self.model_stack_size - 1],
@@ -618,6 +629,24 @@ impl Rsp {
                 w_int_fx([x as i16, y as i16, z as i16], mvp)
             });
             self.w_int[slot] = self.clip_codes[slot].map(|_| w_int);
+            let mut vertex_fog = fog_index;
+            if guarded_fog && w_int <= 0 {
+                let [z, w] = self.mvp_fx.map_or_else(
+                    || [clip[2], clip[3]].map(|v| (f64::from(v) * 65536.0) as i32),
+                    |mvp| clip_zw_fx([x as i16, y as i16, z as i16], mvp),
+                );
+                if w <= 0 && (self.mvp_fx.is_some() || clip[3] <= 0.0) {
+                    let alpha = crate::hle::fog::alpha(
+                        z,
+                        w,
+                        self.persp_norm,
+                        [rdp.fog_mul, rdp.fog_offset],
+                    );
+                    // A constant factor carries the exceptional byte through the existing GPU
+                    // fog path without changing geometry or positive-W fog precision.
+                    vertex_fog = intern_fog(scene, [0, i16::from(alpha)]);
+                }
+            }
             scene.raw_pos.push(v.pos);
             scene.modify_flags.push(0);
             scene.modify_screen.push([0.0; 4]);
@@ -632,7 +661,7 @@ impl Rsp {
                 .push(if lit { self.cur_light_index } else { 0 });
             scene.light_count.push(light_count);
             scene.texgen_mode.push(texgen_mode);
-            scene.fog.push(fog_index);
+            scene.fog.push(vertex_fog);
             scene.lookat_index.push(if texgen_mode != 0 {
                 self.cur_lookat_index
             } else {
