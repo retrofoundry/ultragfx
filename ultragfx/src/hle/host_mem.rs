@@ -2,21 +2,13 @@
 #![cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
 
 use crate::hle::mem::{
-    decode_obj_bg, Command, GbiDataFormat, Matrix, MemoryError, MemoryErrorKind, ObjBg, ObjBgKind,
-    RawVertex, Rdram, SEGMENT_SPACE_END,
+    decode_obj_bg, memory_error, Command, GbiDataFormat, Matrix, MemoryError, MemoryErrorKind,
+    ObjBg, ObjBgKind, RawVertex, Rdram, SEGMENT_SPACE_END,
 };
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{marker::PhantomData, ptr};
 use std::borrow::Cow;
 use std::ops::Range;
-
-fn memory_error(address: u64, length: u64, kind: MemoryErrorKind) -> MemoryError {
-    MemoryError {
-        address,
-        length,
-        kind,
-    }
-}
 
 fn probe_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
