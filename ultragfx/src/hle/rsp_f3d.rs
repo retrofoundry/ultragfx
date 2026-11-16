@@ -49,7 +49,7 @@ pub(crate) fn install_overrides<M: Rdram>(t: &mut [Handler<M>; 256]) {
     t[G_SETOTHERMODE_L as usize] = set_other_mode_l::<M>;
     t[G_MOVEWORD as usize] = move_word::<M>;
     t[G_POPMTX as usize] = pop_matrix::<M>;
-    t[G_SETTIMG as usize] = set_texture_image::<M>;
+    t[G_SETTIMG as usize] = super::rsp_f3dex2::set_texture_image::<M>;
 }
 
 fn no_op<M: Rdram>(_c: &Cmd, _cx: &mut Ctx<M>) {}
@@ -233,15 +233,6 @@ fn pop_matrix<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
     if c.w1 == 0 {
         cx.rsp.pop_matrix(1);
     }
-}
-
-fn set_texture_image<M: Rdram>(c: &Cmd, cx: &mut Ctx<M>) {
-    let fmt = c.p0(21, 3) as u8;
-    let siz = c.p0(19, 2) as u8;
-    // The width field is (actual_width - 1), but tex_image stores the field value directly.
-    let width = (c.w0 & 0xFFF) as u16;
-    let addr = memory_try!(cx, Texture, cx.mem.resolve(c.w1_addr));
-    cx.rsp.set_texture_image(fmt, siz, width, addr, cx.rdp);
 }
 
 #[cfg(test)]
