@@ -1651,17 +1651,12 @@ mod slice2_tests {
     }
 
     #[test]
-    fn persp_normalize_is_a_silent_no_op() {
-        // A bare gsSPPerspNormalize + EndDL must produce NO diagnostic (the RSP no-ops it).
+    fn persp_normalize_is_accepted_without_diagnostics() {
         let mut rdram = Vec::new();
         push(&mut rdram, gsp_persp_normalize(129));
         push(&mut rdram, gsp_enddl());
         let r = interpret_rdram(&rdram, 0);
-        assert!(
-            r.diags.is_empty(),
-            "perspNorm must be a no-op, got: {:?}",
-            r.diags
-        );
+        assert!(r.diags.is_empty(), "{:?}", r.diags);
     }
 }
 

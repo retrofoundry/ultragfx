@@ -164,7 +164,7 @@ pub struct Scene {
     pub texgen_mode: Vec<u32>,
     /// Fog state at vertex load: 0 = disabled, n + 1 = `fog_table[n]`.
     pub fog: Vec<u32>,
-    /// Raw signed G_MW_FOG multiplier and offset pairs.
+    /// Signed fog multiplier and offset pairs; [0, alpha] carries a precomputed fog byte.
     pub fog_table: Vec<[i16; 2]>,
     /// Index into `lookat_table` of the (S,T) axis pair active at this vertex (0 if no texgen).
     pub lookat_index: Vec<u32>,

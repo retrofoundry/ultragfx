@@ -57,6 +57,25 @@ pub fn w_int_fx(pos: [i16; 3], m: [i32; 16]) -> i16 {
     (acc48(acc) >> 16).clamp(i16::MIN.into(), i16::MAX.into()) as i16
 }
 
+pub(crate) fn clip_zw_fx(pos: [i16; 3], m: [i32; 16]) -> [i32; 2] {
+    [2, 3].map(|c| {
+        let full = acc48(
+            i64::from(m[12 + c])
+                + (0..3)
+                    .map(|r| i64::from(pos[r]) * i64::from(m[r * 4 + c]))
+                    .sum::<i64>(),
+        );
+        // Vertex write reads the fraction before the final Z × matrix-integer term.
+        let early = acc48(full - ((i64::from(pos[2]) * i64::from(m[8 + c] >> 16)) << 16));
+        let frac = match early >> 16 {
+            h if h < -0x8000 => 0,
+            h if h > 0x7fff => 0xffff,
+            _ => early & 0xffff,
+        };
+        (((full >> 16).clamp(-0x8000, 0x7fff) << 16) | frac) as i32
+    })
+}
+
 /// Row-vector * matrix: out[c] = sum_k v[k] * m[k][c].
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn mul_row_vec4(v: [f32; 4], m: Mat4) -> [f32; 4] {
