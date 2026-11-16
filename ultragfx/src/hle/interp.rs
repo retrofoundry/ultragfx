@@ -1080,11 +1080,13 @@ pub(crate) fn interpret_borrowed<M: Rdram>(
                 dropped_runs: &mut dropped_runs,
                 unknown_seen: &mut unknown_seen,
             };
-            if ucode == crate::hle::gbi::GbiUcode::S2dex2 && matches!(op, 0x09 | 0x0a) {
-                let result = if op == 0x09 {
-                    crate::hle::rsp_s2dex2::bg_1cyc(&c, &mut cx)
-                } else {
-                    crate::hle::rsp_s2dex2::bg_copy(&c, &mut cx)
+            if ucode == crate::hle::gbi::GbiUcode::S2dex2
+                && matches!(op, 0x01 | 0x07 | 0x08 | 0x09 | 0x0a | 0xda)
+            {
+                let result = match op {
+                    0x09 => crate::hle::rsp_s2dex2::bg_1cyc(&c, &mut cx),
+                    0x0a => crate::hle::rsp_s2dex2::bg_copy(&c, &mut cx),
+                    _ => crate::hle::rsp_s2dex2::obj_rectangle(&c, &mut cx),
                 };
                 match result {
                     Ok(emissions) => {

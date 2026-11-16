@@ -39,6 +39,7 @@ pub enum MemoryAccess {
     ObjBg,
     ObjTxtr,
     ObjMtx,
+    ObjSprite,
 }
 
 /// Unsupported GPU framebuffer texture access; no guest-memory fallback is performed.
