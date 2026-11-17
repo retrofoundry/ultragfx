@@ -583,3 +583,86 @@ fn coverage_rect_sampling_origin() {
         }
     }
 }
+
+#[test]
+fn texrect_filter_rounding_console_samples() {
+    use crate::tests::{
+        common::{pixel, render_to_pixels},
+        dl_builder::DlBuilder,
+    };
+
+    let texture: Vec<_> = (0..32u16)
+        .flat_map(|y| {
+            (0..32u16).flat_map(move |x| {
+                (((x % 2) * 0xf800) | ((y % 2) * 0x07c0) | (((3 * x + 5 * y) % 32) << 1) | 1)
+                    .to_be_bytes()
+            })
+        })
+        .collect();
+    let (device, queue) = headless_device_forced_fallback();
+    // Expected words are literal NTSC console RGBA5551 readbacks.
+    for (name, rect, origin, base, step, combine, primitive, samples) in [
+        (
+            "fx-20-bilerp-0555-plain-3",
+            0xe4060060,
+            0x00023020,
+            0x00180013,
+            0x05550555,
+            (0xfcffffff, 0xfffcf279),
+            0xffffffff,
+            [(22, 8, 0x6cb7), (17, 10, 0x4de9), (20, 13, 0x4de9)],
+        ),
+        (
+            "tie-159-half-filtered, primitive 170",
+            0xe4078078,
+            0x00070070,
+            0x01770068,
+            0,
+            (0xfc11fe23, 0xfffff3f9),
+            0xaaaaaaff,
+            [(28, 28, 0x33db), (29, 28, 0x33db), (28, 29, 0x33db)],
+        ),
+    ] {
+        let mut builder = DlBuilder::new();
+        let address = builder.bytes(8, &texture);
+        builder.list(
+            "main",
+            &[
+                gdp_set_color_image(0, 2, 64, 0x100000),
+                gdp_set_scissor(0, 0, 0, 256, 256),
+                gdp_set_texture_image(0, 2, 32, address),
+                gdp_set_tile(0, 2, 8, 0, 7, 0, 0, 0, 0, 0, 0, 0),
+                (0xf4000000, 0x0707c07c),
+                gdp_set_tile(0, 2, 8, 0, 0, 0, 0, 5, 0, 0, 5, 0),
+                gdp_set_tile_size(0, 0, 0, 124, 124),
+                (0xef002cf0, 0x0f0a4000),
+                (0xfa000000, primitive),
+                combine,
+                (rect, origin),
+                (0xe1000000, base),
+                (0xf1000000, step),
+                gsp_enddl(),
+            ],
+        );
+        let built = builder.finish("main");
+        let result = crate::hle::interpret(
+            RdramImage::new(&built.rdram),
+            u64::from(built.entry),
+            GbiUcode::F3dex2,
+            crate::DataFormat::Fixed,
+            None,
+        );
+        assert!(result.diags.is_empty(), "{name}: {:?}", result.diags);
+        let mut renderer =
+            SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 64, false);
+        let pixels = render_to_pixels(&device, &queue, &mut renderer, &result.scene, 64, 64);
+        for (x, y, expected) in samples {
+            let [r, g, b, a] = pixel(&pixels, 64, x, y);
+            let packed = (u16::from(r >> 3) << 11)
+                | (u16::from(g >> 3) << 6)
+                | (u16::from(b >> 3) << 1)
+                | u16::from(a >= 128);
+            assert_eq!(packed, expected, "{name} ({x},{y})");
+        }
+    }
+}

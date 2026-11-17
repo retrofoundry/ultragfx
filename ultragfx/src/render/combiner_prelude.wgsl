@@ -585,7 +585,7 @@ fn tile_resolve(quad: TileQuad, plan: TilePlan) -> vec4<f32> {
     if plan.yuv {
         result = vec4<f32>(tile_interpolate(c00, c10, c01, c11, plan.fraction_rg, plan.mode).rg, result.ba);
     }
-    return result;
+    return floor(result * 255.0 + 0.5) / 255.0;
 }
 
 fn sample_physical(texture: texture_2d<f32>, index: u32, uv: SampleCoordinates, cycle: u32) -> vec4<f32> {
