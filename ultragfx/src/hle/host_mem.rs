@@ -5,30 +5,9 @@ use crate::hle::mem::{
     decode_obj_bg, memory_error, Command, GbiDataFormat, Matrix, MemoryError, MemoryErrorKind,
     ObjBg, ObjBgKind, RawVertex, Rdram, SEGMENT_SPACE_END,
 };
-use core::sync::atomic::{AtomicU32, Ordering};
 use core::{marker::PhantomData, ptr};
 use std::borrow::Cow;
 use std::ops::Range;
-
-fn probe_on() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("HELIX_DL_PROBE").is_ok())
-}
-
-static PROBE_LOGS: AtomicU32 = AtomicU32::new(0);
-static PROBE_NONIDENT: AtomicU32 = AtomicU32::new(0);
-
-fn probe_log(args: core::fmt::Arguments<'_>) {
-    if probe_on() && PROBE_LOGS.fetch_add(1, Ordering::Relaxed) < 128 {
-        log::trace!(target: "ultragfx::host_mem", "{args}");
-    }
-}
-
-fn probe_log_nonident(args: core::fmt::Arguments<'_>) {
-    if probe_on() && PROBE_NONIDENT.fetch_add(1, Ordering::Relaxed) < 4096 {
-        log::trace!(target: "ultragfx::host_mem", "{args}");
-    }
-}
 
 /// A safe descriptor for one native display-list walk.
 ///
@@ -143,10 +122,6 @@ impl Rdram for HostMemory<'_> {
     }
 
     fn set_segment(&mut self, segment: u32, value: u64) {
-        probe_log(format_args!(
-            "set_segment seg={} value={value:#018x}",
-            segment & 0x0f
-        ));
         self.ram.segments[(segment & 0x0f) as usize] = value;
     }
 
@@ -156,18 +131,12 @@ impl Rdram for HostMemory<'_> {
         }
         let segment = ((address >> 24) & 0x0f) as usize;
         let base = self.ram.segments[segment];
-        let resolved = if base == 0 {
-            address
+        if base == 0 {
+            Ok(address)
         } else {
             base.checked_add(address & 0x00ff_ffff)
-                .ok_or_else(|| memory_error(address, 0, MemoryErrorKind::AddressOverflow))?
-        };
-        if resolved != address {
-            probe_log_nonident(format_args!(
-                "resolve non-identity in={address:#018x} out={resolved:#018x} seg={segment} segval={base:#018x}"
-            ));
+                .ok_or_else(|| memory_error(address, 0, MemoryErrorKind::AddressOverflow))
         }
-        Ok(resolved)
     }
 
     fn resolve_masked(&self, address: u64) -> Result<u64, MemoryError> {
