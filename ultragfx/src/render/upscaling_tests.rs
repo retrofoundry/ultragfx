@@ -1183,6 +1183,46 @@ fn texrect_fractional_grid_survives_large_coordinates() {
 }
 
 #[test]
+fn replacement_texrect_preserves_fractions_below_texel_edges() {
+    let (fallback_device, fallback_queue) = headless_device_forced_fallback();
+    for (device, queue, dual) in [(fallback_device, fallback_queue, false), headless_device()] {
+        for scale in [2, 4] {
+            let mut renderer = SceneRenderer::new(&device, FORMAT, 16, 12, dual);
+            renderer.set_test_scale(scale, BUDGET);
+            let mut draw = texrect_scene([160, 160], [1365, 1365], false, false, false);
+            let SceneOp::TexRect { rect, .. } = &mut draw.framebuffer_pairs[0].ops[0] else {
+                unreachable!()
+            };
+            rect.ulx = 9;
+            rect.lrx = 25;
+            let (source, registration) = replacement_source(20, 8);
+            draw.materials[0].texture = source;
+            renderer.set_replacement_provider(Some(std::sync::Arc::new(
+                crate::replacement::ReplacementProvider::new(1, [registration]),
+            )));
+            renderer.begin_frame();
+            renderer.render_into_store(&device, &queue, &draw, ClearPolicy::PerFrame);
+            let texture = &renderer.framebuffers[&workload::TargetId::Guest(A.into())]
+                .presentation
+                .as_ref()
+                .unwrap()
+                .texture;
+            let pixels = read_texture(&device, &queue, texture);
+            assert_rgba_samples(texture, &pixels, |x, y| {
+                if !(3 * scale..7 * scale).contains(&x) || !(2 * scale..6 * scale).contains(&y) {
+                    return None;
+                }
+                let coordinate = |p, origin| {
+                    ((5 * 4096 * scale + (4 * p - origin * scale) * 1365) * 8 / (4096 * scale))
+                        as u8
+                };
+                Some([coordinate(x, 9), coordinate(y, 8), 20, 255])
+            });
+        }
+    }
+}
+
+#[test]
 fn identity_texrect_phase_uses_both_signed_derivatives() {
     let (device, queue, dual) = headless_device();
     for scale in [2, 3, 4] {
