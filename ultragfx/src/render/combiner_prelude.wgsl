@@ -499,8 +499,9 @@ fn tile_plan(index: u32, coordinates: SampleCoordinates, cycle: u32, dimensions:
     let scaled = tile.image.z != 1u && tile.image.w > 1u;
     if scaled { coordinate *= f32(tile.image.w); }
     if high_resolution && combiner.is_rect != 0u {
-        // Rectangles sample on texel edges, where float noise would otherwise pick the texel before.
-        coordinate = round(coordinate * 256.0) / 256.0;
+        // Recover float noise without rounding valid fractional steps onto the next texel.
+        let grid = select(4096.0 * f32(max(combiner.raster.x, 1u)), 256.0, combiner.cycle_type == 2u);
+        coordinate = round(coordinate * grid) / grid;
     }
     let base = vec2<i32>(floor(coordinate));
     var plan: TilePlan;
