@@ -84,6 +84,78 @@ fn texrect_console_samples() {
             0x014dfcf7,
             [(2, 3, 0xa7fb), (5, 6, 0x65ab), (9, 11, 0xba95)],
         ),
+        (
+            "copy-corner-flip",
+            2,
+            0xe503c03c,
+            0x00020020,
+            0x00180018,
+            0x10000400,
+            [(8, 8, 0x0001), (9, 8, 0xf807), (12, 9, 0x07e3)],
+        ),
+        (
+            "copy-wide-4095-63",
+            2,
+            0xe40f803c,
+            0x00000020,
+            0x00010018,
+            0x0fff0400,
+            [(36, 8, 0x0019), (37, 8, 0xf81f), (62, 15, 0x07fb)],
+        ),
+        (
+            "copy-wide-4095-64",
+            2,
+            0xe40fc03c,
+            0x00000020,
+            0x00010018,
+            0x0fff0400,
+            [(36, 8, 0x0019), (37, 8, 0xf81f), (63, 15, 0xffc1)],
+        ),
+        (
+            "copy-negative-low-bits",
+            2,
+            0xe40fc03c,
+            0x00000020,
+            0x00010018,
+            0xefff0400,
+            [(36, 8, 0x0029), (37, 8, 0xf82f), (63, 15, 0xfff1)],
+        ),
+        (
+            "copy-fractional-x",
+            2,
+            0xe40fc03c,
+            0x00025020,
+            0x00010018,
+            0x07ff0400,
+            [(9, 8, 0x0001), (12, 8, 0xf813), (45, 8, 0x002d)],
+        ),
+        (
+            "copy-fractional-y-plain",
+            2,
+            0xe40fc03c,
+            0x00024021,
+            0x00010018,
+            0x0fff0555,
+            [(9, 8, 0x0001), (13, 8, 0x0019), (45, 9, 0x002d)],
+        ),
+        (
+            "copy-fractional-y-flip",
+            2,
+            0xe50fc03c,
+            0x00024021,
+            0x00010018,
+            0x0fff0555,
+            [(9, 8, 0x0001), (13, 8, 0x0015), (45, 9, 0x0011)],
+        ),
+        (
+            "copy-flip-fractional-step",
+            2,
+            0xe50fc03c,
+            0x00024020,
+            0x00180001,
+            0x0fff07ff,
+            [(45, 8, 0x0035), (46, 8, 0xf83b), (63, 15, 0x0039)],
+        ),
     ] {
         let mut builder = DlBuilder::new();
         let address = builder.bytes(8, &texture);
@@ -97,7 +169,11 @@ fn texrect_console_samples() {
                 (0xf4000000, 0x0707c07c),
                 gdp_set_tile(0, 2, 8, 0, 0, 0, 0, 5, 0, 0, 5, 0),
                 gdp_set_tile_size(0, 0, 0, 124, 124),
-                (0xef002cf0 | (cycle << 20), 0x0f0a4000),
+                if cycle == 2 {
+                    (0xef200cf0, 0)
+                } else {
+                    (0xef002cf0 | (cycle << 20), 0x0f0a4000)
+                },
                 (0xfcffffff, if cycle == 0 { 0xfffcf279 } else { 0xfffcf238 }),
                 (rect, origin),
                 (0xe1000000, base),
@@ -287,13 +363,13 @@ fn texrect_fractional_bounds_follow_console() {
 }
 
 #[test]
-fn texrect_flip_and_signed_copy_step() {
-    let q = quad(&decode([5, 11, 38, 45], [640, 960], [-4097, -513], 2, true));
-    assert_mask(&q, [1, 2, 10, 12]);
-    assert_eq!(q[0].uv, [20.0, 30.0]);
-    assert_eq!(q[5].uv, [20.0, 25.46875]);
-    assert_eq!(q[2].uv, [9.96875, 25.46875]);
-    assert_eq!(q[1].uv, [9.96875, 30.0]);
+fn texrect_flip_and_fractional_copy_step() {
+    let q = quad(&decode([36, 32, 252, 60], [24, 1], [4095, 2047], 2, true));
+    assert_mask(&q, [9, 8, 64, 16]);
+    assert_eq!(q[0].uv, [0.75, 0.03125]);
+    assert_eq!(q[5].uv, [0.75, 112713.0 / 4096.0]);
+    assert_eq!(q[2].uv, [33528.0 / 1024.0, 112713.0 / 4096.0]);
+    assert_eq!(q[1].uv, [33528.0 / 1024.0, 0.03125]);
 }
 
 #[test]
@@ -486,7 +562,13 @@ fn coverage_rect_sampling_origin() {
             for y in 0..64 {
                 for x in 0..64 {
                     let expected = if (8..16).contains(&x) && (8..16).contains(&y) {
-                        let (s, t) = if flip { (y - 8, x - 8) } else { (x - 8, y - 8) };
+                        let (s, t) = if flip && cycle == 2 {
+                            ((4 * (y - 8) + (x - 8) % 4).min(15), (x - 8) / 4)
+                        } else if flip {
+                            (y - 8, x - 8)
+                        } else {
+                            (x - 8, y - 8)
+                        };
                         [(s * 8) as u8, (t * 8) as u8, 64, 255]
                     } else {
                         [13, 13, 20, 255]

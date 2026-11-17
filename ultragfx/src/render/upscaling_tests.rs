@@ -1265,6 +1265,19 @@ fn identity_texrect_phase_uses_both_signed_derivatives() {
                                 if !(2..6).contains(&x) || !(top..6).contains(&y) {
                                     return [13, 13, 20, 255];
                                 }
+                                if copy {
+                                    let row = (y - top) as i32;
+                                    let lane = (x - 2) as i32;
+                                    let s =
+                                        5 + lane + if flip { row * i32::from(ds) / 256 } else { 0 };
+                                    let t = 5 + if flip { 0 } else { row * i32::from(dt) / 1024 };
+                                    return [
+                                        (s.clamp(0, 15) * 12) as u8,
+                                        (t.clamp(0, 11) * 16) as u8,
+                                        0,
+                                        255,
+                                    ];
+                                }
                                 let (s, t) = if flip {
                                     (y - top, x - 2)
                                 } else {
@@ -1545,55 +1558,38 @@ fn non_square_replacement_copy_uses_target_rate_and_unrounded_coordinates() {
         let mut renderer = SceneRenderer::new(&device, FORMAT, 16, 12, dual);
         renderer.set_test_scale(scale, BUDGET);
         for dsdx in [4096, -4096, 4095, -4097, 2047] {
-            let base_s = 170;
-            let mut draw = texrect_scene([base_s, 169], [dsdx, 1024], false, true, false);
-            let (source, registration) = replacement_source(20, 8);
-            draw.materials[0].texture = source;
-            renderer.set_replacement_provider(Some(std::sync::Arc::new(
-                crate::replacement::ReplacementProvider::new(1, [registration]),
-            )));
-            renderer.begin_frame();
-            renderer.render_into_store(&device, &queue, &draw, ClearPolicy::PerFrame);
-            let fb = &renderer.framebuffers[&workload::TargetId::Guest(A.into())];
-            for (texture, factor) in std::iter::once((&fb.color, 1))
-                .chain(fb.presentation.as_ref().map(|p| (&p.texture, scale)))
-            {
-                let bytes = read_texture(&device, &queue, texture);
-                assert_rgba_samples(texture, &bytes, |x, y| {
-                    if !(2 * factor..6 * factor).contains(&x)
-                        || !(2 * factor..6 * factor).contains(&y)
-                    {
-                        return Some([13, 13, 20, 255]);
-                    }
-                    let slope = match dsdx {
-                        4096 => 1.0,
-                        -4096 => -1.0,
-                        4095 => 127.0 / 128.0,
-                        -4097 => -129.0 / 128.0,
-                        2047 => 63.0 / 128.0,
-                        _ => unreachable!(),
-                    };
-                    let s = f64::from(base_s) / 32.0 + (x as f64 / f64::from(factor) - 2.0) * slope;
-                    let t = 169.0 / 32.0 + y as f64 / f64::from(factor) - 2.0;
-                    if texel_boundary_distance(s, 8.0, slope, factor) < 1.0 / 64.0
-                        || texel_boundary_distance(t, 8.0, 1.0, factor) < 1.0 / 64.0
-                    {
-                        return None;
-                    }
-                    let coordinate = |v: f64| {
-                        if factor == 1 {
-                            ((v * 1024.0).round() / 32.0).floor() / 32.0
-                        } else {
-                            v
+            for (base_t, dt) in [(169, 1024), (160, 4095)] {
+                let base_s = 170;
+                let mut draw = texrect_scene([base_s, base_t], [dsdx, dt], false, true, false);
+                let (source, registration) = replacement_source(20, 8);
+                draw.materials[0].texture = source;
+                renderer.set_replacement_provider(Some(std::sync::Arc::new(
+                    crate::replacement::ReplacementProvider::new(1, [registration]),
+                )));
+                renderer.begin_frame();
+                renderer.render_into_store(&device, &queue, &draw, ClearPolicy::PerFrame);
+                let fb = &renderer.framebuffers[&workload::TargetId::Guest(A.into())];
+                for (texture, factor) in std::iter::once((&fb.color, 1))
+                    .chain(fb.presentation.as_ref().map(|p| (&p.texture, scale)))
+                {
+                    let bytes = read_texture(&device, &queue, texture);
+                    assert_rgba(texture, &bytes, |x, y| {
+                        if !(2 * factor..6 * factor).contains(&x)
+                            || !(2 * factor..6 * factor).contains(&y)
+                        {
+                            return [13, 13, 20, 255];
                         }
-                    };
-                    Some([
-                        (coordinate(s) * 8.0).floor() as u8,
-                        (coordinate(t) * 8.0).floor() as u8,
-                        20,
-                        255,
-                    ])
-                });
+                        let s = f64::from(base_s) / 32.0 + x as f64 / f64::from(factor) - 2.0;
+                        let t = f64::from(base_t) / 32.0
+                            + (y as f64 / f64::from(factor) - 2.0) * f64::from(dt) / 1024.0;
+                        [
+                            (s * 8.0).floor() as u8,
+                            ((t * 8.0).floor() as u8).min(95),
+                            20,
+                            255,
+                        ]
+                    });
+                }
             }
         }
     }

@@ -95,7 +95,7 @@ struct Combiner {
     primitive_depth: vec4<u32>,
     native_scale: vec4<f32>,
     raster:          vec4<u32>,
-    texture_mode:    vec4<u32>, // .x = 1 for G_TP_NONE triangles; .y = rgb_dither << 2 | alpha_dither
+    texture_mode:    vec4<u32>, // .x = G_TP_NONE; .y = dither selectors; .z = signed copy left edge
 };
 
 @group(0) @binding(0) var tex0:  texture_2d<f32>;
@@ -346,7 +346,12 @@ fn tile_shift(value: f32, shift: u32) -> f32 {
 }
 
 fn tile_coordinate(tile: TileSampling, uv: vec2<f32>, high_resolution: bool) -> vec2<f32> {
-    let shifted = vec2<f32>(tile_shift(uv.x, tile.shift_mask.x), tile_shift(uv.y, tile.shift_mask.y));
+    var source = uv;
+    if high_resolution && combiner.is_rect != 0u && combiner.cycle_type == 2u {
+        let grid = 1024.0 * f32(max(combiner.raster.x, 1u));
+        source = round(source * grid) / grid;
+    }
+    let shifted = vec2<f32>(tile_shift(source.x, tile.shift_mask.x), tile_shift(source.y, tile.shift_mask.y));
     if high_resolution {
         return shifted - vec2<f32>(tile.bounds.xy) / 4.0;
     }
@@ -498,9 +503,9 @@ fn tile_plan(index: u32, coordinates: SampleCoordinates, cycle: u32, dimensions:
     }
     let scaled = tile.image.z != 1u && tile.image.w > 1u;
     if scaled { coordinate *= f32(tile.image.w); }
-    if high_resolution && combiner.is_rect != 0u {
+    if high_resolution && combiner.is_rect != 0u && combiner.cycle_type != 2u {
         // Recover float noise without rounding valid fractional steps onto the next texel.
-        let grid = select(4096.0 * f32(max(combiner.raster.x, 1u)), 256.0, combiner.cycle_type == 2u);
+        let grid = 4096.0 * f32(max(combiner.raster.x, 1u));
         coordinate = round(coordinate * grid) / grid;
     }
     let base = vec2<i32>(floor(coordinate));
@@ -644,6 +649,16 @@ fn eval_combiner(in: VsOut) -> CycleResult {
         let m = f32(combiner.raster.x);
         let delta = in.clip_position.xy - floor(in.clip_position.xy / m) * m;
         uv.snapped = target_uv - (delta.x * ddx_uv + delta.y * ddy_uv) * uv_scale;
+    }
+    if combiner.is_rect != 0u && combiner.cycle_type == 2u {
+        let m = f32(max(combiner.raster.x, 1u));
+        let left = f32(bitcast<i32>(combiner.texture_mode.z));
+        let phase = vec2<f32>((in.clip_position.x - 0.5) / m, floor(in.clip_position.x / m)) - left;
+        let lane = phase - floor(phase / 4.0) * 4.0;
+        // Copy emits four consecutive S texels even when its group origins advance T.
+        let lane_step = (vec2<f32>(1.0, 0.0) - m * ddx_uv) * uv_scale;
+        uv.unsnapped += lane.x * lane_step;
+        uv.snapped += lane.y * lane_step;
     }
 
     if combiner.primitive_depth.w != 0u {
