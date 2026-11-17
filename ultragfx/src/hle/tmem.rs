@@ -964,7 +964,7 @@ impl<'a> BankDecoder<'a> {
                 [v, v, v, v]
             }
             // I4: even column = high nibble; 4->8 by replication, broadcast incl. alpha.
-            (4, 0) => {
+            (0 | 4, 0) => {
                 let byte = self.load_byte(base, rel, odd_row, reads);
                 let v4 = if x & 1 == 0 { byte >> 4 } else { byte & 0x0F };
                 let v8 = (v4 << 4) | v4;

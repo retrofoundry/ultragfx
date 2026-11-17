@@ -138,7 +138,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         case 14u: {
             color = vec4<u32>(first, first, first, second);
         }
-        case 16u: { color = vec4<u32>(nibble * 17u); }
+        case 0u, 16u: { color = vec4<u32>(nibble * 17u); }
         case 17u: { color = vec4<u32>(first); }
         default: {}
     }
