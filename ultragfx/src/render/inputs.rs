@@ -621,10 +621,14 @@ impl<'a> RenderInputs<'a> {
                                         None => super::triangle_inv_tex_size(mat),
                                     };
                                     uniform.inv_tex_size[2] = 1.0;
-                                    let (ds, dt) = super::texrect_steps((*dsdx, *dtdy), *copy_mode);
                                     uniform.raster[2] = u32::from(
-                                        ds.unsigned_abs() == 1024 && dt.unsigned_abs() == 1024,
+                                        *copy_mode
+                                            || (dsdx.unsigned_abs() == 1024
+                                                && dtdy.unsigned_abs() == 1024),
                                     );
+                                    if *copy_mode {
+                                        uniform.texture_mode[2] = (rect.ulx >> 2) as u32;
+                                    }
                                     inputs.rectangles.extend_from_slice(&super::texrect_quad(
                                         rect,
                                         (*uls, *ult),

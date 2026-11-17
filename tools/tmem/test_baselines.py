@@ -14,6 +14,9 @@ def sha(data):
 
 
 GOLDEN_OVERRIDES = {
+    '2d-fill-texrect.bin': '54fdba72aed3c0b120de4075622ccad6b9662267f5dcc698ef7c4a47e9fe4f18',
+    '2d-hud-over-3d.bin': '437f2a196e784d0d89d5efc48976948311673f64cd9a5a1ca2891501d1bddc67',
+    '2d-texrectflip.bin': 'b4d7448776f5fa6df703d63bf01255c1b0493b6c2f863d84c8de7ef13ffd7c98',
     'fogworld.bin': '5d170dfd6a0c099c053502a8e9c273a95c7fd974574a2eb2c7e47e6c09592550',
     'i4-ramp.bin': 'f4f2c0ba9cbf4eba8c748bf35886a8689d49a3c67d7ae3f1b56826082a8fbdcf',
     'i8-ramp.bin': 'af4e0045dfac3f4bc5d933731efb1537a3e3db91a4b7d944dfcb5020ffe5438d',

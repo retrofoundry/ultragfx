@@ -68,6 +68,13 @@ pub fn ultragfx_expected(case: Case, x: u32, y: u32) -> [u8; 4] {
     if case == Case::ShortcutRect {
         if (88..120).contains(&y) {
             [0, 0, 0, 255]
+        } else if (40..104).contains(&x) && (40..72).contains(&y) {
+            let column = (x - 40) / 16 + (x - 40) % 4;
+            if column < 4 {
+                PRODUCER[((y - 40) / 16 * 4 + column) as usize]
+            } else {
+                [0, 0, 0, 255]
+            }
         } else {
             expected(x, y, PRODUCER, [REPLACEMENT; 8])
         }

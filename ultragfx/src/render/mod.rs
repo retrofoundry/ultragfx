@@ -225,6 +225,7 @@ pub struct CombinerUniform {
     pub raster: [u32; 4],
     /// `.x` = 1 when triangle texture coordinates skip the perspective divide (G_TP_NONE);
     /// `.y` = the RDP's dither selectors, `rgb_dither << 2 | alpha_dither`.
+    /// `.z` = signed integer left edge of a copy rectangle.
     pub texture_mode: [u32; 4],
 }
 const _: () = assert!(std::mem::size_of::<CombinerUniform>() == 256);
@@ -798,10 +799,6 @@ pub fn triangle_inv_tex_size(mat: &crate::hle::Material) -> [f32; 4] {
     }
 }
 
-fn texrect_steps(step: (i16, i16), copy_mode: bool) -> (i16, i16) {
-    (if copy_mode { step.0 >> 2 } else { step.0 }, step.1)
-}
-
 fn texrect_quad(
     rect: &crate::hle::TexRectBounds,
     base: (i16, i16),
@@ -823,20 +820,11 @@ fn texrect_quad(
     let bounds = [left, top, right.max(left), bottom.max(top)];
     let width = i64::from(bounds[2] - left);
     let height = i64::from(bounds[3] - top);
-    let (ds, dt) = texrect_steps(step, copy_mode);
-    let (ds, dt) = (i64::from(ds), i64::from(dt));
+    let (ds, dt) = (i64::from(step.0), i64::from(step.1));
     let (sw, th) = if flip {
         (height, width)
     } else {
         (width, height)
-    };
-    let endpoint = |base: i16, step: i64, pixels: i64| {
-        if copy_mode {
-            // rt64 drawRect truncates endpoints to S10.5.
-            (((i64::from(base) << 7) + step * (pixels << 2)) >> 7) as f32 / 32.0
-        } else {
-            f32::from(base) / 32.0 + (step * pixels) as f32 / 1024.0
-        }
     };
     let row_offset = if !copy_mode && rect.uly & 3 != 0 {
         (if flip { ds } else { dt }) as f32 / 1024.0
@@ -855,8 +843,10 @@ fn texrect_quad(
     };
     let s0 = f32::from(base.0) / 32.0 + s_offset;
     let t0 = f32::from(base.1) / 32.0 + t_offset;
-    let s1 = endpoint(base.0, ds, sw) + s_offset;
-    let t1 = endpoint(base.1, dt, th) + t_offset;
+    let s_divisor = if copy_mode && !flip { 4096.0 } else { 1024.0 };
+    let t_divisor = if copy_mode && flip { 4096.0 } else { 1024.0 };
+    let s1 = f32::from(base.0) / 32.0 + (ds * sw) as f32 / s_divisor + s_offset;
+    let t1 = f32::from(base.1) / 32.0 + (dt * th) as f32 / t_divisor + t_offset;
     let uv = if flip {
         [[s0, t0], [s0, t1], [s1, t1], [s1, t0]]
     } else {

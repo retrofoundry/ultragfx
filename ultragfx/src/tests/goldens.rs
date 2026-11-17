@@ -1086,8 +1086,7 @@ fn golden_2d_hud_over_3d() {
     compare_or_write("2d-hud-over-3d", &buf, 64, 64);
 }
 
-/// Scene 4 — `texrectflip`: COPY TEXRECT with S/T axes swapped (`gsSPTextureRectangleFlip`). The
-/// flipped UVs transpose the checker vs `fill-texrect`'s un-flipped layout.
+/// Scene 4 — `texrectflip`: COPY TEXRECT advances T per horizontal group and S per row.
 #[test]
 fn golden_2d_texrectflip() {
     use crate::render::SceneRenderer;
@@ -1097,9 +1096,7 @@ fn golden_2d_texrectflip() {
     let mut sr = SceneRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm, 64, 64, dual);
     let buf = common::render_to_pixels(&device, &queue, &mut sr, &flip, 64, 64);
     let buf_plain = common::render_to_pixels(&device, &queue, &mut sr, &plain, 64, 64);
-    // Flip transposes the pattern: under FLIP the texel ALPHA period runs along X (left columns
-    // sample texrows 0–1 → α≈255) instead of along Y. So col 0 is opaque where the un-flipped col 0
-    // (row 2) was transparent — a direct flip-vs-plain orientation discriminator at pixel (0,2).
+    // Flip moves the alpha period from rows to horizontal groups of four pixels.
     assert!(
         common::pixel(&buf, 64, 0, 2)[3] > 200,
         "texrectflip: left column must be opaque (texrows 0–1 run along X under flip)"
