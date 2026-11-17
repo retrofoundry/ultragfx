@@ -113,12 +113,15 @@ output avoids another RGB16 quantization that could hide an unquantized copy.
 No threshold above zero is allowed for the grid-exact rows and the alpha panels. rt64 returns the unquantised render target on the non-grid upper rows, which is the convention ultragfx follows, so those rows are compared against ultragfx, not rt64.
 
 The shortcut uses copy mode because today's one-cycle load-free path rejects
-`NoTextureLoaded`. Its first group sees the shaded RGB8 column; its second sees
-`203,53,107` everywhere. It has no alpha panels. Only its first group's lower row,
-`[40,104)×[56,72)`, has the same RGB prediction as the exact-base real load:
-those colors already lie on the RGBA16 grid. Neither the first upper row nor the
-post-overwrite group is an equality claim. The saved load-free source acquires
-no hardware-load semantics from this comparison.
+`NoTextureLoaded`. The NTSC `copy-zero-both-plain` capture establishes that zero
+steps still emit four consecutive S texels per group. Each shortcut patch repeats
+those four columns, beginning at its selected producer column; samples beyond
+column three read the cleared black part of the 32-pixel-wide producer. Its second
+group sees `203,53,107` everywhere. It has no alpha panels. Only lane zero of each
+four-pixel group in `[40,104)×[56,72)` has the same RGB prediction as the exact-base
+real load: those colors already lie on the RGBA16 grid. Neither the first upper
+row nor the post-overwrite group is an equality claim. The console capture backs
+the copy coordinates, not the load-free host shortcut or its unquantised colors.
 
 ## Run the gates
 
