@@ -17,7 +17,7 @@ pub struct FormatInfo {
 impl FormatInfo {
     pub fn validate(&self) -> Result<(), DiagKind> {
         match (self.fmt, self.siz) {
-            (0, 2 | 3) | (2, 0..=3) | (3, 0..=2) | (4, 0 | 1) => Ok(()),
+            (0, 0 | 2 | 3) | (2, 0..=3) | (3, 0..=2) | (4, 0 | 1) => Ok(()),
             (fmt, siz) => Err(DiagKind::UnsupportedTextureFormat { fmt, siz }),
         }
     }
@@ -33,7 +33,7 @@ impl FormatInfo {
     ///
     /// Dispatches on `(fmt, siz)`:
     /// - `(4, 1)` → I8 intensity
-    /// - `(4, 0)` → I4 packed nibbles
+    /// - `(0 | 4, 0)` → I4 packed nibbles
     /// - `(3, 2)` → IA16 intensity+alpha
     /// - `(3, 1)` → IA8 intensity+alpha
     /// - `(3, 0)` → IA4 intensity+alpha
@@ -71,7 +71,7 @@ impl FormatInfo {
         }
         Ok(match (self.fmt, self.siz) {
             (4, 1) => decode_i8(src, w, h),
-            (4, 0) => decode_i4(src, w, h),
+            (0 | 4, 0) => decode_i4(src, w, h),
             (3, 2) => decode_ia16(src, w, h),
             (3, 1) => decode_ia8(src, w, h),
             (3, 0) => decode_ia4(src, w, h),

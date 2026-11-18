@@ -7,7 +7,7 @@ use crate::hle::tmem::Tmem;
 use n64_gbi::encode::*;
 
 #[test]
-fn unset_tile_reports_effective_default_format_at_draw() {
+fn zero_rgba4_descriptor_is_supported_at_draw() {
     for configure in [false, true] {
         let mut dl = DlBuilder::new();
         let mut commands = vec![
@@ -17,7 +17,6 @@ fn unset_tile_reports_effective_default_format_at_draw() {
         if configure {
             commands.push(gdp_set_tile(0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0));
         }
-        let draw_offset = commands.len() as u64 * 8;
         commands.extend(gsp_texture_rectangle(
             0, 0, 12, 4, 3, 0, 0, 4096, 1024, false,
         ));
@@ -25,15 +24,9 @@ fn unset_tile_reports_effective_default_format_at_draw() {
         dl.list("main", &commands);
         let built = dl.finish("main");
         let result = interpret_rdram(&built.rdram, built.entry);
-        assert_eq!(
-            result.diags,
-            [Diagnostic {
-                at: u64::from(built.entry) + draw_offset,
-                kind: DiagKind::UnsupportedTextureFormat { fmt: 0, siz: 0 },
-            }]
-        );
-        assert_eq!(result.dropped_runs, 1);
-        assert!(result.scene.materials.is_empty());
+        assert!(result.diags.is_empty());
+        assert_eq!(result.dropped_runs, 0);
+        assert_eq!(result.scene.materials.len(), 1);
     }
 }
 
@@ -99,6 +92,7 @@ fn unsupported_format_emits_once_at_draw() {
 #[test]
 fn unsupported_format_never_decodes_rgba16_with_angrylion_ci16_and_ci32_admitted() {
     let supported = [
+        (0, 0),
         (0, 2),
         (0, 3),
         (2, 0),
@@ -140,7 +134,7 @@ fn unsupported_format_never_decodes_rgba16_with_angrylion_ci16_and_ci32_admitted
             assert_eq!(Tmem::default().sample_tile(&empty, 0), Err(error));
         }
     }
-    assert_eq!(encoded_unsupported, 21);
+    assert_eq!(encoded_unsupported, 20);
     assert_eq!(
         FormatInfo { fmt: 0, siz: 3 }.decode(&[0xf8, 1], 1, 1, &[], 0, 0),
         Err(DiagKind::UnsupportedTextureFormat { fmt: 0, siz: 3 })
