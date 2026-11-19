@@ -105,8 +105,27 @@ in every owning configuration on both operating systems. `comparison.json` lists
 these rows under `golden_changes`, with both hashes, changed bytes and pixels,
 and channel maxima; the job log prints the counts and maxima. Each declared row
 must change: an unchanged row fails and is named in the log. The declaration
-expires when base and candidate have the same hash. Decode witnesses and IMAGE
-fixtures have no committed golden and cannot declare changes.
+expires when base and candidate have the same hash.
+
+IMAGE fixtures declare intended output changes by changing their nonnegative
+integer revision in `images.json`. Only the three final IMAGE rows can appear
+in that ledger; decode witnesses remain undeclarable. Revisions start at zero,
+including for commits predating the ledger, so adding this mechanism declares
+nothing. Each capture records its own commit's ledger, read with `git show`
+rather than the harness overlay. The comparator authenticates both ledgers and
+lists changes under `image_changes`, with both revisions, changed bytes, changed
+pixels and channel maxima. Each declared row must change in every owning
+configuration; an unchanged declaration fails and is named in the log. When
+both revisions agree, exact comparison applies again.
+
+Revisions do not prescribe a cross-platform output hash. The existing IMAGE
+tests assert their literal pixels on Metal and WARP, but that does not establish
+byte identity for future arithmetic or interpolation changes. Comparisons still
+require matching runtime and adapter provenance and compare all four channels
+at threshold zero for undeclared rows. IMAGE semantic assertions still run on
+each side; a declaration cannot override a failing test or a corrupt capture.
+The bootstrap overlay preserves each revision's `tmem_semantics.rs`, so the
+base is checked against its own literal expectations, not the candidate's.
 
 Every undeclared comparison uses all four RGBA channels, threshold zero and zero
 differing pixels. The existing tolerance-two golden assertions still run. A missing
@@ -209,6 +228,9 @@ against its manifest. For a same-run bootstrap the two run IDs are equal.
 When golden ledgers differ, pass `--base-goldens` and `--goldens` to `readbacks.py`,
 using ledger files extracted from the respective commits with `git show`.
 Both default to the comparator checkout's `goldens.json`.
+For IMAGE revisions, use `--base-images` and `--images` the same way; both default
+to the comparator checkout's `images.json`. A commit without that file uses the
+three initial zero revisions.
 
 ```sh
 python3 '/Volumes/DS Vault/hub/wt/fast3d-rs-tmem/tools/readbacks/readbacks.py' \

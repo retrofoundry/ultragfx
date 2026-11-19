@@ -73,6 +73,7 @@ class CaptureFailures(unittest.TestCase):
         (self.harness / "harness-files.json").write_text('["test-harness"]')
         self.goldens = {"ultragfx/goldens/quad.bin": "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"}
         (self.harness / "goldens.json").write_text(json.dumps(self.goldens))
+        self.images = None
         self.output = self.root / "output"
 
     def external_metadata(self, command, cwd, text, encoding, **kwargs):
@@ -80,6 +81,10 @@ class CaptureFailures(unittest.TestCase):
             return "a" * 40
         if command == ["git", "show", f"{'a' * 40}:tools/readbacks/goldens.json"]:
             return json.dumps(self.goldens)
+        if command == ["git", "ls-tree", "a" * 40, "--", "tools/readbacks/images.json"]:
+            return "tracked ledger" if self.images is not None else ""
+        if command == ["git", "show", f"{'a' * 40}:tools/readbacks/images.json"]:
+            return json.dumps(self.images)
         if command == ["rustc", "-Vv"]:
             return "rustc test\nhost: aarch64-apple-darwin"
         if command[:2] == ["cargo", "tree"]:
@@ -100,10 +105,18 @@ class CaptureFailures(unittest.TestCase):
         self.capture(lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout=""))
         manifest = json.loads((self.output / "manifest.json").read_text())
         self.assertEqual(manifest["goldens"], self.goldens)
+        self.assertEqual(manifest["images"], ci.initial_image_revisions())
         self.output = self.root / "corrupt"
         (self.checkout / "ultragfx/goldens/quad.bin").write_bytes(bytes([1, 2, 3, 5]))
         with self.assertRaisesRegex(ValueError, "committed golden inventory or bytes changed"):
             self.capture(lambda command, **kwargs: self.fail("corrupt goldens must fail before tests"))
+
+    def test_capture_uses_committed_images_despite_candidate_overlay(self):
+        self.images = dict(ci.initial_image_revisions(), **{"tmem-roles-lifetime": 1})
+        (self.harness / "images.json").write_text('{"tmem-roles-lifetime": 99}')
+        self.capture(lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout=""))
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertEqual(manifest["images"], self.images)
 
     def test_selected_configuration_captures_only_its_commands_and_requirements(self):
         for system, config in [(system, config) for system in ["Windows", "Darwin"]

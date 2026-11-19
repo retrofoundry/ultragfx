@@ -19,6 +19,9 @@ HEAD = "b" * 40
 
 class CaptureCase(unittest.TestCase):
     def setUp(self):
+        image_ledger = patch.object(ci, "committed_image_inventory", return_value=readbacks.initial_image_revisions())
+        image_ledger.start()
+        self.addCleanup(image_ledger.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -98,7 +101,8 @@ class ConfigurationGates(CaptureCase):
 
     def test_bootstrap_keeps_each_revisions_semantic_assertions_and_requires_both_to_pass(self):
         suites = ["ultragfx/src/tests/fog.rs", "ultragfx/src/tests/fog_mirror.rs",
-                  "ultragfx/src/tests/mod.rs", "ultragfx/src/tests/tmem_fixtures.rs", "ultragfx/tests/tmem_preimage.rs"]
+                  "ultragfx/src/tests/mod.rs", "ultragfx/src/tests/tmem_fixtures.rs", "ultragfx/tests/tmem_preimage.rs",
+                  "ultragfx/tests/common/tmem_semantics.rs"]
         fixture = "ultragfx/tests/fog-mirror/cases.json"
         for checkout, value in [(self.base, 1), (self.head, 2)]:
             for name in json.loads((ci.HERE / "harness-files.json").read_text()) + suites + [fixture]:
@@ -589,6 +593,100 @@ class GoldenDeclarations(CaptureCase):
             with self.subTest(base=base_frozen, candidate=frozen), self.assertRaisesRegex(ValueError, "golden inventory"):
                 readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20",
                                   base_golden_inventory=base_frozen, golden_inventory=frozen)
+
+
+class ImageDeclarations(CaptureCase):
+    def setUp(self):
+        super().setUp()
+        self.id = "tmem-roles-lifetime"
+        self.old = readbacks.initial_image_revisions()
+        self.new = dict(self.old, **{self.id: 1})
+        self.inventory["rows"][0]["id"] = self.id
+        for directory in [self.base, self.head]:
+            self.mutate(directory, lambda m: m.update(images=self.old,
+                inventory_sha256=readbacks.json_hash(self.inventory)))
+            self.mutate(directory, lambda m: [r.update(id=self.id) for r in m["rows"]])
+
+    def test_declaration_requires_a_change_and_undeclared_channels_remain_exact(self):
+        for system in ["Windows", "Darwin"]:
+            for declared in [False, True]:
+                for channel in [None, 0, 1, 2, 3]:
+                    with self.subTest(system=system, declared=declared, channel=channel):
+                        ledger = self.new if declared else self.old
+                        for directory in [self.base, self.head]:
+                            self.mutate(directory, lambda m: m["runtime"].update(os=system))
+                        self.mutate(self.head, lambda m: m.update(images=ledger))
+                        for config in self.inventory["configurations"]:
+                            pixels = bytearray([17, 33, 65, 255])
+                            if channel is not None:
+                                pixels[channel] -= 1
+                            path = self.head / f"{config}.bin"
+                            path.write_bytes(pixels)
+                            self.mutate(self.head, lambda m: [r.update(sha256=readbacks.file_hash(path))
+                                for r in m["rows"] if r["configuration"] == config])
+                        report = readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20",
+                            base_image_inventory=self.old, image_inventory=ledger)
+                        self.assertEqual(report["passed"], declared == (channel is not None))
+                        maxima = [int(c == channel) for c in range(4)]
+                        self.assertEqual(report["image_changes"], [dict(configuration=config, id=self.id,
+                            base=0, candidate=1, changed_bytes=int(channel is not None),
+                            changed_pixels=int(channel is not None), channel_maxima=maxima)
+                            for config in self.inventory["configurations"]] if declared else [])
+
+    def test_one_unchanged_configuration_fails_and_is_named_by_gate(self):
+        self.mutate(self.head, lambda m: m.update(images=self.new))
+        for config in ["default", "all-features"]:
+            path = self.head / f"{config}.bin"
+            path.write_bytes(bytes([18, 31, 65, 254]))
+            self.mutate(self.head, lambda m: [r.update(sha256=readbacks.file_hash(path))
+                for r in m["rows"] if r["configuration"] == config])
+        output = self.root / "gate"
+        arguments = ["ci.py", "--checkout", str(self.head), "--base-checkout", str(self.base),
+                     "--output", str(output), "--base-sha", BASE, "--artifact-name", "readbacks"]
+
+        def capture(checkout, destination, *args):
+            shutil.copytree(checkout, destination)
+            return json.loads((destination / "manifest.json").read_text())
+
+        log = io.StringIO()
+        with patch.object(sys, "argv", arguments), patch.object(ci, "INVENTORY", self.inventory), \
+                patch.object(ci, "capture", capture), patch.object(ci, "overlay", return_value={}), \
+                patch.object(ci, "committed_replacement_inventory", return_value=ci.replacements.inventory()), \
+                patch.object(ci, "committed_golden_inventory", return_value=readbacks.goldens()), \
+                patch.object(ci, "committed_image_inventory", side_effect=lambda checkout, sha: self.new if sha == HEAD else self.old), \
+                patch.object(ci, "fetch_base", side_effect=ValueError("missing base artifact")), \
+                patch.object(sys, "stdout", log):
+            self.assertEqual(ci.main(), 1)
+        report = json.loads((output / "comparison.json").read_text())
+        self.assertEqual([r["changed_pixels"] for r in report["image_changes"]], [1, 0, 1])
+        self.assertIn("declared IMAGE change: debug-ui/tmem-roles-lifetime: 0 pixels, 0 bytes, channel maxima [0, 0, 0, 0]; unchanged declaration fails the gate", log.getvalue())
+
+    def test_each_side_is_bound_to_its_ledger_and_missing_new_declarations_fail(self):
+        self.mutate(self.head, lambda m: m.update(images=self.new))
+        for old, new in [(self.new, self.new), (self.old, self.old)]:
+            with self.subTest(old=old, new=new), self.assertRaisesRegex(ValueError, "IMAGE revisions"):
+                readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20",
+                    base_image_inventory=old, image_inventory=new)
+        self.mutate(self.head, lambda m: m.pop("images"))
+        self.mutate(self.head, lambda m: m.update(harness_files={"tools/readbacks/images.json": "a" * 64}))
+        with self.assertRaisesRegex(ValueError, "IMAGE revisions"):
+            self.compare()
+
+    def test_expired_declaration_and_decode_rows_are_exact(self):
+        for directory in [self.base, self.head]:
+            self.mutate(directory, lambda m: m.update(images=self.new))
+        path = self.head / "default.bin"
+        path.write_bytes(bytes([17, 33, 65, 254]))
+        self.mutate(self.head, lambda m: m["rows"][0].update(sha256=readbacks.file_hash(path)))
+        report = readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20",
+            base_image_inventory=self.new, image_inventory=self.new)
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["image_changes"], [])
+        for ledger in [dict(self.new, decode=1), {self.id: 1}, dict(self.new, **{self.id: -1}),
+                       dict(self.new, **{self.id: True})]:
+            with self.subTest(ledger=ledger), self.assertRaisesRegex(ValueError, "invalid IMAGE"):
+                readbacks.compare(self.base, self.head, self.inventory, BASE, HEAD, "10", "20",
+                    base_image_inventory=self.new, image_inventory=ledger)
 
 
 if __name__ == "__main__":

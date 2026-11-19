@@ -13,7 +13,7 @@ import zipfile
 
 import replacements
 
-from readbacks import artifact_file, compare, file_hash, gpu_decode_inventory, gpu_decode_profile, json_hash, load_capture
+from readbacks import artifact_file, compare, file_hash, gpu_decode_inventory, gpu_decode_profile, initial_image_revisions, json_hash, load_capture
 
 
 HERE = Path(__file__).resolve().parent
@@ -317,6 +317,13 @@ def committed_golden_inventory(checkout, sha):
     return json.loads(command_output(["git", "show", f"{sha}:tools/readbacks/goldens.json"], checkout))
 
 
+def committed_image_inventory(checkout, sha):
+    path = "tools/readbacks/images.json"
+    if not command_output(["git", "ls-tree", sha, "--", path], checkout):
+        return initial_image_revisions()
+    return json.loads(command_output(["git", "show", f"{sha}:{path}"], checkout))
+
+
 def capture(checkout, output, base_sha, harness_checkout, inventory=None, replacement_inventory=None):
     inventory = INVENTORY if inventory is None else inventory
     checkout, output = checkout.resolve(), output.resolve()
@@ -326,6 +333,7 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None, replac
     freeze_lock(checkout)
     source_sha = command_output(["git", "rev-parse", "HEAD"], checkout)
     goldens = committed_golden_inventory(checkout, source_sha)
+    images = committed_image_inventory(checkout, source_sha)
     actual_goldens = {path.relative_to(checkout).as_posix(): file_hash(path)
                       for path in sorted((checkout / "ultragfx/goldens").glob("*.bin"))}
     if actual_goldens != goldens:
@@ -348,7 +356,7 @@ def capture(checkout, output, base_sha, harness_checkout, inventory=None, replac
         "harness_source_sha": command_output(["git", "rev-parse", "HEAD"], harness_checkout),
         "harness_sha256": json_hash(harness), "harness_files": harness,
         "inventory_sha256": json_hash(inventory), "checkout": str(checkout), "output": str(output),
-        "goldens": goldens, "full_dependency_graph_sha256": file_hash(output / "dependencies.txt"),
+        "goldens": goldens, "images": images, "full_dependency_graph_sha256": file_hash(output / "dependencies.txt"),
         "runtime": {
             "os": platform.system(), "release": platform.release(), "version": platform.version(),
             "machine": platform.machine(), "image_os": os.environ.get("ImageOS", "local"),
@@ -524,7 +532,7 @@ def download_artifact(repository, run_id, artifact_name, destination):
     archive.unlink()
 
 
-def fetch_base(repository, base_sha, artifact_name, destination, inventory=None, replacement_inventory=None, golden_inventory=None):
+def fetch_base(repository, base_sha, artifact_name, destination, inventory=None, replacement_inventory=None, golden_inventory=None, image_inventory=None):
     inventory = INVENTORY if inventory is None else inventory
     runs = gh_json(f"repos/{repository}/actions/workflows/validate.yml/runs?branch=main&event=push&status=success&head_sha={base_sha}&per_page=100")
     for run in runs["workflow_runs"]:
@@ -532,7 +540,7 @@ def fetch_base(repository, base_sha, artifact_name, destination, inventory=None,
             continue
         download_artifact(repository, str(run["id"]), artifact_name, destination)
         load_capture(destination, inventory, base_sha, str(run["id"]), replacement_inventory=replacement_inventory,
-                     golden_inventory=golden_inventory)
+                     golden_inventory=golden_inventory, image_inventory=image_inventory)
         return str(run["id"])
     raise ValueError(f"no complete main artifact for exact base {base_sha}")
 
@@ -545,18 +553,21 @@ def gate(args):
     manifest = capture(args.checkout, candidate, args.base_sha, args.checkout, inventory)
     require_gpu_decode = (args.checkout / GPU_DECODE_TEST).is_file()
     require_replacements = (args.checkout / replacements.SOURCE).is_file()
+    images = committed_image_inventory(args.checkout, manifest["source_sha"])
     if not args.base_checkout:
-        load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
+        load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements, image_inventory=images)
         return
     history = []
     base = output / "downloaded-base"
     base_replacements = committed_replacement_inventory(args.base_checkout, args.base_sha)
     base_goldens = committed_golden_inventory(args.base_checkout, args.base_sha)
+    base_images = committed_image_inventory(args.base_checkout, args.base_sha)
     try:
-        load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements)
-        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory, base_replacements, base_goldens)
+        load_capture(candidate, inventory, manifest["source_sha"], manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements, image_inventory=images)
+        run_id = fetch_base(args.repository, args.base_sha, args.artifact_name, base, inventory, base_replacements, base_goldens, base_images)
         report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"], run_id, manifest["run_id"], require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
-                         base_replacement_inventory=base_replacements, base_golden_inventory=base_goldens)
+                         base_replacement_inventory=base_replacements, base_golden_inventory=base_goldens,
+                         base_image_inventory=base_images, image_inventory=images)
         if not report["passed"]:
             (output / "cross-run-comparison.json").write_text(json.dumps(report, indent=2) + "\n")
             raise ValueError("cross-run RGBA delta; recapture both revisions on this runner")
@@ -570,7 +581,8 @@ def gate(args):
         try:
             report = compare(base, candidate, inventory, args.base_sha, manifest["source_sha"],
                              base_manifest["run_id"], manifest["run_id"], allow_incomplete=True, require_gpu_decode=require_gpu_decode, require_replacements=require_replacements,
-                             base_replacement_inventory=base_replacements, base_golden_inventory=base_goldens)
+                             base_replacement_inventory=base_replacements, base_golden_inventory=base_goldens,
+                             base_image_inventory=base_images, image_inventory=images)
         except (ValueError, KeyError, OSError) as error:
             report = {"passed": False, "complete": False, "error": str(error)}
     (output / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -578,6 +590,10 @@ def gate(args):
         print(f"declared replacement change: {change['id']} ({change['change']})")
     for change in report.get("golden_changes", []):
         print(f"declared golden change: {change['configuration']}/{change['id']}: "
+              f"{change['changed_pixels']} pixels, {change['changed_bytes']} bytes, channel maxima {change['channel_maxima']}"
+              + ("; unchanged declaration fails the gate" if change["changed_pixels"] == 0 else ""))
+    for change in report.get("image_changes", []):
+        print(f"declared IMAGE change: {change['configuration']}/{change['id']}: "
               f"{change['changed_pixels']} pixels, {change['changed_bytes']} bytes, channel maxima {change['channel_maxima']}"
               + ("; unchanged declaration fails the gate" if change["changed_pixels"] == 0 else ""))
     for test in report.get("base_missing_tests", []):
