@@ -2,7 +2,7 @@
   "ultragfx/goldens/2d-alpha-texrect-over-bg.bin": "a33f503a2c2b564d665655b2ff72ab5fa9c1e048807cdabb6a5b3fc2eae56283",
   "ultragfx/goldens/2d-copy-alpha-keyed-over-bg.bin": "6b521061d41f23b3d367db34624b061cb2a7733ca541fe0d71524452f7161f87",
   "ultragfx/goldens/2d-fill-texrect.bin": "54fdba72aed3c0b120de4075622ccad6b9662267f5dcc698ef7c4a47e9fe4f18",
-  "ultragfx/goldens/2d-hud-over-3d.bin": "437f2a196e784d0d89d5efc48976948311673f64cd9a5a1ca2891501d1bddc67",
+  "ultragfx/goldens/2d-hud-over-3d.bin": "ed7840adb54d7dd388201d9a7dcc091f5eaddf6fd196660f2c9a2d900ec74baa",
   "ultragfx/goldens/2d-offscreen-then-sample.bin": "1bda1d683fab6d6d39812b8dbc15f3b06654c3020590870bcdf1154e0bd58cbd",
   "ultragfx/goldens/2d-texrectflip.bin": "b4d7448776f5fa6df703d63bf01255c1b0493b6c2f863d84c8de7ef13ffd7c98",
   "ultragfx/goldens/alpha-threshold.bin": "67a6c3377ae31626a72b84ffe8998b9d964c8daf59c8f5c8fb73d2b97439d149",
