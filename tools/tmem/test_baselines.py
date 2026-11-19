@@ -19,9 +19,16 @@ GOLDEN_OVERRIDES = {
     '2d-texrectflip.bin': 'b4d7448776f5fa6df703d63bf01255c1b0493b6c2f863d84c8de7ef13ffd7c98',
     'fogworld.bin': '5d170dfd6a0c099c053502a8e9c273a95c7fd974574a2eb2c7e47e6c09592550',
     'i4-ramp.bin': 'f4f2c0ba9cbf4eba8c748bf35886a8689d49a3c67d7ae3f1b56826082a8fbdcf',
-    'i8-ramp.bin': 'af4e0045dfac3f4bc5d933731efb1537a3e3db91a4b7d944dfcb5020ffe5438d',
+    'i8-ramp.bin': '991af80709539bf2cc99e235617b7244578987e76cd6424eb9de59f6cda7a883',
     'ia4-ramp.bin': 'f4f2c0ba9cbf4eba8c748bf35886a8689d49a3c67d7ae3f1b56826082a8fbdcf',
-    'ia8-ramp.bin': 'af4e0045dfac3f4bc5d933731efb1537a3e3db91a4b7d944dfcb5020ffe5438d',
+    'ia8-ramp.bin': '991af80709539bf2cc99e235617b7244578987e76cd6424eb9de59f6cda7a883',
+    'ci4-grid.bin': '0af6d1a551dcd4b1ce41e8371dfd2ce5434f303af1d03d439f0b1f8963a30b6e',
+    'ci8-ramp.bin': '7df745eaa1e2d09af2d9be7071f6c1571ddf4ea1be27075b613d2ee74133b488',
+    'ia16-ramp.bin': 'a63b4a7da084abca4d4fd46e51397c877579728cbbdc0e2b8d7288de670747ce',
+    'mirror-repeat.bin': '56f1bd9cab9ce22a922837f523f35d1260036da91e8fc9686f188685e140391c',
+    'multi-material.bin': '446bb6b71869ef4831c21ceef629a0211ac8ca0df3b9fad7477a4c6993a80187',
+    'rgba16-quad.bin': 'ce3913ddcab8a8d0dc896a6b66f6342adfd46a47697dabd70eeaa00ce6f48013',
+    'wrap-repeat.bin': '92dfa57c4c7939135ad1e5b135c1c8956f0d9f02e7c8ddc98a1e67c51c6cf648',
 }
 
 

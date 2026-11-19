@@ -165,15 +165,15 @@
       "id": "replacement-roles",
       "width": 320,
       "height": 240,
-      "expected_sha256": "ebd1990259d3f7079b0bd93992312873de5f86a5a7e9850375187506446e747f",
-      "before_sha256": "ebd1990259d3f7079b0bd93992312873de5f86a5a7e9850375187506446e747f",
+      "expected_sha256": "7c4218c697af73369698c9e47c76a1a8c7a09ce646a4293976e977184248d5aa",
+      "before_sha256": "7c4218c697af73369698c9e47c76a1a8c7a09ce646a4293976e977184248d5aa",
       "mask_sha256": "e2cc2a1fa6131cf4d86faa3baf78851f35a36853e2467c257b3df9d89e85cce5"
     },
     {
       "id": "replacement-target-detail",
       "width": 320,
       "height": 240,
-      "expected_sha256": "121eed7c53b367c29440e48703a4166aae78e9cc4f1713e99d26c96adb5bc6cf",
+      "expected_sha256": "312420d73d503352a554f41869bcd11ae46624885749572f5b1e449457f09c39",
       "before_sha256": "6d45b6c8ba245cbd671931bdcd49b7be33f49b05e8c747209834405caffebc44",
       "mask_sha256": "b89e04ca19f4bea96c5f2af0cb0cb270c4f6b55df5d33ab8eaa9ee6aad154f70"
     },

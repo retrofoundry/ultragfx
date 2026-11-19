@@ -73,36 +73,41 @@ impl Combiner {
         let color = |input, channel| {
             Some(match input {
                 ColorIn::Zero | ColorIn::Combined | ColorIn::CombinedAlpha => 0.0,
-                ColorIn::One | ColorIn::LodFraction => 1.0,
-                ColorIn::Primitive => self.prim[channel],
-                ColorIn::Environment => self.env[channel],
-                ColorIn::Shade => shade[channel],
-                ColorIn::PrimitiveAlpha => self.prim[3],
-                ColorIn::EnvAlpha => self.env[3],
-                ColorIn::ShadeAlpha => shade[3],
-                ColorIn::PrimLodFrac => self.lod,
+                ColorIn::One | ColorIn::LodFraction => 256.0,
+                ColorIn::Primitive => self.prim[channel] * 255.0,
+                ColorIn::Environment => self.env[channel] * 255.0,
+                ColorIn::Shade => shade[channel] * 255.0,
+                ColorIn::PrimitiveAlpha => self.prim[3] * 255.0,
+                ColorIn::EnvAlpha => self.env[3] * 255.0,
+                ColorIn::ShadeAlpha => shade[3] * 255.0,
+                ColorIn::PrimLodFrac => self.lod * 256.0,
                 _ => return None,
             })
         };
         let alpha = |input| {
             Some(match input {
                 AlphaIn::Zero | AlphaIn::Combined => 0.0,
-                AlphaIn::One | AlphaIn::LodFraction => 1.0,
-                AlphaIn::Primitive => self.prim[3],
-                AlphaIn::Environment => self.env[3],
-                AlphaIn::Shade => shade[3],
-                AlphaIn::PrimLodFrac => self.lod,
+                AlphaIn::One | AlphaIn::LodFraction => 256.0,
+                AlphaIn::Primitive => self.prim[3] * 255.0,
+                AlphaIn::Environment => self.env[3] * 255.0,
+                AlphaIn::Shade => shade[3] * 255.0,
+                AlphaIn::PrimLodFrac => self.lod * 256.0,
                 _ => return None,
             })
         };
         let s = &self.selectors;
+        let finish = |v: f32| {
+            let folded = v - ((v + 128.0) / 512.0).floor() * 512.0;
+            folded.clamp(0.0, 255.0) / 255.0
+        };
         let mut rgba = [0.0; 4];
         for (channel, value) in rgba[..3].iter_mut().enumerate() {
-            *value = ((color(s.ca, channel)? - color(s.cb, channel)?) * color(s.cc, channel)?
-                + color(s.cd, channel)?)
-            .clamp(0.0, 1.0);
+            *value = finish(
+                (color(s.ca, channel)? - color(s.cb, channel)?) * color(s.cc, channel)? / 256.0
+                    + color(s.cd, channel)?,
+            );
         }
-        rgba[3] = ((alpha(s.aa)? - alpha(s.ab)?) * alpha(s.ac)? + alpha(s.ad)?).clamp(0.0, 1.0);
+        rgba[3] = finish((alpha(s.aa)? - alpha(s.ab)?) * alpha(s.ac)? / 256.0 + alpha(s.ad)?);
         Some(rgba)
     }
 }

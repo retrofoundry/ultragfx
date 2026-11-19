@@ -59,6 +59,7 @@ impl ColorIn {
                 | ColorIn::Environment
                 | ColorIn::Zero
                 | ColorIn::One
+                | ColorIn::CombinedAlpha
                 // TEXEL0_ALPHA as a color input: the shader's color_c slot implements it
                 // (`color_c_rgb` index 8 → vec3(texel_a)). On hardware this selector is only
                 // valid in the C (multiply) slot, which is where it appears.

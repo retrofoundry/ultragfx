@@ -377,16 +377,16 @@ fn assert_surface(surface: Surface) {
                     expected = if s % 16 == 0 {
                         [32, 128, 160, 128]
                     } else if s % 32 < 16 {
-                        [32, 64, 224, 128]
+                        [32, 64, 223, 128]
                     } else {
-                        [32, 192, 96, 128]
+                        [32, 191, 96, 128]
                     };
                 }
                 Surface::PointBands => {
                     expected = if (s + 31) % 32 < 16 {
-                        [0, 0, 255, 255]
+                        [0, 0, 254, 254]
                     } else {
-                        [0, 255, 0, 255]
+                        [0, 254, 0, 254]
                     };
                 }
                 Surface::Foliage => {

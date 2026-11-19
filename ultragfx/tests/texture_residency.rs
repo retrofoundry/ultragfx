@@ -807,7 +807,7 @@ async fn independent_role_changes() {
     for (role, source, resident, before_pixel, after_pixel, draw) in [
         ("texture1", 1, 2, 91, 239, 0),
         ("lod1", 1, 2, 37, 37, 0),
-        ("detail", 0, 3, 37, 239, 1),
+        ("detail", 0, 3, 37, 238, 1),
     ] {
         let fixture = one_role(role);
         let mut harness = Harness::new(&fixture).await;

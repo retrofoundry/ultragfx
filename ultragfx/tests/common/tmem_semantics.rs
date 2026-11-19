@@ -149,7 +149,7 @@ pub fn expected_pixels(name: &str) -> Vec<u8> {
             }
         }
         "tmem-roles-lifetime" => {
-            for (draw, value) in [37, 91, 173].into_iter().enumerate() {
+            for (draw, value) in [37, 91, 172].into_iter().enumerate() {
                 for y in 112..128 {
                     for x in 136 + draw * 16..152 + draw * 16 {
                         put(x, y, [value, value, value, 255]);
