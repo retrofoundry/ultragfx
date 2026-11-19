@@ -276,7 +276,11 @@ fn run_cycle(
     let d_a = alpha_abd(ad_idx, t0.a, t1.a, shade.a, combined.a, prim.a, env.a);
     let out_a = (a_a - b_a) * c_a / 256.0 + d_a;
 
-    let result = vec4<f32>(out_rgb, out_a);
+    var result = vec4<f32>(out_rgb, out_a);
+    // Preserve fractional samples in the higher-resolution presentation target.
+    if combiner.raster.x <= 1u {
+        result = floor(result + 0.5);
+    }
     let folded = result - floor((result + 128.0) / 512.0) * 512.0;
     return CycleResult(folded.a, folded.rgb, folded.a);
 }

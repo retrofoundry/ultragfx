@@ -467,7 +467,7 @@ fn replay_matches_color_acceptance_on_isolated_operations() {
                 }
                 12..=14 => {
                     case.uniform.alpha_flags = 4;
-                    case.uniform.prim[3] = [0.124, 0.125, 0.126][index - 12];
+                    case.uniform.prim[3] = [31.0 / 255.0, 32.0 / 255.0, 33.0 / 255.0][index - 12];
                 }
                 15 => {
                     case.uniform.primitive_depth = [1, 0x2345, 32, 0];

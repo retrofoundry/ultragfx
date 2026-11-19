@@ -97,6 +97,7 @@ impl Combiner {
         };
         let s = &self.selectors;
         let finish = |v: f32| {
+            let v = (v + 0.5).floor();
             let folded = v - ((v + 128.0) / 512.0).floor() * 512.0;
             folded.clamp(0.0, 255.0) / 255.0
         };

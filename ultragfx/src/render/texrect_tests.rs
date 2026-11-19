@@ -675,6 +675,12 @@ fn assert_combiner_console_words(cases: &[(&str, CombinerConsoleCommands, u16)])
         dl_builder::DlBuilder,
     };
 
+    struct Memory(Vec<u8>);
+    impl crate::Hardware for Memory {
+        fn rdram(&self) -> impl crate::Rdram + '_ {
+            RdramImage::new(&self.0)
+        }
+    }
     let (device, queue) = headless_device_forced_fallback();
     for (name, commands, expected) in cases {
         let mut builder = DlBuilder::new();
@@ -708,6 +714,42 @@ fn assert_combiner_console_words(cases: &[(&str, CombinerConsoleCommands, u16)])
         let rgb = (u16::from(r >> 3) << 11) | (u16::from(g >> 3) << 6) | (u16::from(b >> 3) << 1);
         // The captured low bit is coverage, not the combiner's alpha.
         assert_eq!(rgb, expected & !1, "{name} ({x},{y})");
+
+        let mut renderer = crate::Renderer::with_device(
+            device.clone(),
+            queue.clone(),
+            crate::PresentTarget::Headless {
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                width: 64,
+                height: 64,
+            },
+            crate::RendererConfig {
+                clear_policy: crate::ClearPolicy::Persist,
+                resolution_multiplier: 1,
+                sample_count: 1,
+                present_mode: wgpu::PresentMode::Fifo,
+                format: Some(wgpu::TextureFormat::Rgba8Unorm),
+                power_preference: wgpu::PowerPreference::LowPower,
+            },
+        );
+        renderer.set_guest_writeback_with_encoding(true, crate::FramebufferEncoding::BigEndian);
+        let mut memory = Memory(built.rdram);
+        memory.0.resize(0x200000, 0);
+        let mut diagnostics = Vec::new();
+        renderer.process_dl(
+            &memory,
+            built.entry.into(),
+            crate::Microcode::F3dex2,
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty(), "{name}: {diagnostics:?}");
+        for patch in renderer.take_guest_writes() {
+            let start = patch.address as usize;
+            memory.0[start..start + patch.bytes.len()].copy_from_slice(&patch.bytes);
+        }
+        let offset = 0x100000 + (y * 64 + x) as usize * 2;
+        let word = u16::from_be_bytes(memory.0[offset..offset + 2].try_into().unwrap());
+        assert_eq!(word & !1, expected & !1, "{name} guest ({x},{y})");
     }
 }
 
@@ -894,6 +936,96 @@ fn combiner_console_values() {
                 (0xe40480a8, 0x000400a0),
             ],
             0x8421,
+        ),
+    ]);
+}
+
+#[test]
+fn combiner_console_rounding() {
+    assert_combiner_console_words(&[
+        (
+            "batch4/01 C round before lower fold band3 k42",
+            [
+                (0xef100cf0, 0x0f0a4000),
+                (0xfa00002a, 0xe0e0e0ff),
+                (0xfb000000, 0x202020ff),
+                (0xfc677e60, 0xf5ff7d7e),
+                (0xf9000000, 0),
+                (0xe40580d0, 0x000500c8),
+            ],
+            0x0001,
+        ),
+        (
+            "batch3/02 alpha fraction to RGB band0 k30",
+            [
+                (0xef100cf0, 0x0f0a4000),
+                (0xfa000080, 0xffffff7f),
+                (0xfb000000, 0x8181811e),
+                (0xfcffd6a7, 0xffff7ffe),
+                (0xf9000000, 0),
+                (0xe40f8008, 0x000f0000),
+            ],
+            0x0843,
+        ),
+        (
+            "batch3/03 negative tie to RGB band1 k128",
+            [
+                (0xef100cf0, 0x0f0a4000),
+                (0xfa000080, 0xffffff03),
+                (0xfb000000, 0x80808080),
+                (0xfcfffaa7, 0xffff3f7e),
+                (0xf9000000, 0),
+                (0xe4008068, 0x00000060),
+            ],
+            0x8421,
+        ),
+        (
+            "batch3/04 alpha fraction to alpha band0 k9",
+            [
+                (0xef100cf0, 0x0c284000),
+                (0xfa000081, 0xffffff0f),
+                (0xfb000000, 0xffffff09),
+                (0xfcffd7ff, 0xff1b7fbb),
+                (0xf9000000, 0),
+                (0xe4050008, 0x00048000),
+            ],
+            0x0843,
+        ),
+        (
+            "batch3/05 negative tie to alpha band1 k128",
+            [
+                (0xef100cf0, 0x0c284000),
+                (0xfa000080, 0xffffff7f),
+                (0xfb000000, 0xffffff80),
+                (0xfcfffbff, 0xff1b3fbb),
+                (0xf9000000, 0),
+                (0xe4008068, 0x00000060),
+            ],
+            0x5ad7,
+        ),
+        (
+            "batch2/05 round before upper fold band1 k1",
+            [
+                (0xef000cf0, 0x0f0a4001),
+                (0xfa0000e0, 0xfffffffe),
+                (0xfb000000, 0xffffff94),
+                (0xfcffddff, 0xffbb77bb),
+                (0xf9000000, 1),
+                (0xe4010048, 0x00008040),
+            ],
+            0,
+        ),
+        (
+            "batch2/06 round before lower fold band1 k1",
+            [
+                (0xef000cf0, 0x0f0a4001),
+                (0xfa0000e0, 0xffffff94),
+                (0xfb000000, 0xffffff01),
+                (0xfcfffdff, 0xfffb3b9d),
+                (0xf9000000, 1),
+                (0xe4010048, 0x00008040),
+            ],
+            0,
         ),
     ]);
 }

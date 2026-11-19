@@ -30,6 +30,12 @@ alpha-dither seed (alpha noise taken as the magic square), float memory blends, 
 patterned RGB dither, current-pixel timing and affine interpolation at integer XY. Game blending permits
 one RGB8 rounding unit; interpolation permits one unit because GPUs round attribute
 interpolation differently, and thin triangles also for byte-vertex adaptation.
+The native combiner uses byte operands with ONE=256, divides products by 256,
+rounds half upward after each cycle and folds into -128..383 before reuse.
+Combined RGB and alpha read through RGB slot C as signed nine-bit values.
+The final output clamps to a byte. The model's interpolation and memory blending
+remain continuous; the saved hardware words and comparison tolerances are independent
+of these predictions.
 Thin cases check the selected edge samples, including covered pixels. The game
 masks select full interiors, not partial-coverage edges. Varying W and raw nine-bit
 shade wrap/clamp are outside this adapter: wrap/clamp planes are split into byte

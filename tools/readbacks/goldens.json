@@ -5,7 +5,7 @@
   "ultragfx/goldens/2d-hud-over-3d.bin": "437f2a196e784d0d89d5efc48976948311673f64cd9a5a1ca2891501d1bddc67",
   "ultragfx/goldens/2d-offscreen-then-sample.bin": "1bda1d683fab6d6d39812b8dbc15f3b06654c3020590870bcdf1154e0bd58cbd",
   "ultragfx/goldens/2d-texrectflip.bin": "b4d7448776f5fa6df703d63bf01255c1b0493b6c2f863d84c8de7ef13ffd7c98",
-  "ultragfx/goldens/alpha-threshold.bin": "da21f0de37102450b406d02e45586839c940dfcad2d9b4f9c9504e14453b5d5a",
+  "ultragfx/goldens/alpha-threshold.bin": "67a6c3377ae31626a72b84ffe8998b9d964c8daf59c8f5c8fb73d2b97439d149",
   "ultragfx/goldens/ci4-canary.bin": "dddb1e2ab2da7ea36ce33e4f97fdee59fe20a0e83cc9f457f58a7603e69a7481",
   "ultragfx/goldens/ci4-grid.bin": "0af6d1a551dcd4b1ce41e8371dfd2ce5434f303af1d03d439f0b1f8963a30b6e",
   "ultragfx/goldens/ci8-canary.bin": "e61108c58e57b3612b9df02dca3761b1dc664a6df40627b243480f40a6423132",
