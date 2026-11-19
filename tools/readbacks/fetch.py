@@ -26,7 +26,9 @@ def compare_runs(args, inventory):
     ci.download_artifact(args.repo, args.base_run_id, args.artifact_name, output / "base")
     ci.download_artifact(args.repo, args.candidate_run_id, args.artifact_name, output / "candidate")
     report = compare(output / "base", output / "candidate", inventory, args.base_sha, args.candidate_sha,
-                     args.base_run_id, args.candidate_run_id)
+                     args.base_run_id, args.candidate_run_id,
+                     base_image_inventory=ci.committed_image_inventory(ci.HERE.parents[1], args.base_sha),
+                     image_inventory=ci.committed_image_inventory(ci.HERE.parents[1], args.candidate_sha))
     report["candidate_run_conclusion"] = candidate_run["conclusion"]
     (output / "comparison.json").write_text(json.dumps(report, indent=2) + "\n")
     return report

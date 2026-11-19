@@ -65,6 +65,13 @@ class ExplicitRuns(CaptureCase):
         with self.assertRaisesRegex(ValueError, "exact base"):
             self.run_fetch()
 
+    def test_downloaded_images_are_checked_against_each_requested_commit(self):
+        old = ci.initial_image_revisions()
+        new = dict(old, **{"tmem-roles-lifetime": 1})
+        self.mutate(self.head, lambda m: m.update(images=new))
+        with patch.object(ci, "committed_image_inventory", side_effect=lambda checkout, sha: new if sha == HEAD else old):
+            self.assertTrue(self.run_fetch()["passed"])
+
     def test_failed_or_non_main_run_cannot_supply_base(self):
         self.base_run["head_branch"] = "feature"
         with self.assertRaisesRegex(ValueError, "successful main push"):
