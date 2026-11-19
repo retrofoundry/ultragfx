@@ -254,7 +254,10 @@ fn run_cycle(
 ) -> CycleResult {
     let t0 = texel0 * 255.0;
     let t1 = texel1 * 255.0;
-    let shade = shade_color * 255.0;
+    var shade = shade_color * 255.0;
+    if combiner.raster.x <= 1u {
+        shade = floor(shade);
+    }
     let prim = primitive * 255.0;
     let env = environment * 255.0;
     let shade3  = shade.rgb;
