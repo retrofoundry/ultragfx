@@ -72,7 +72,7 @@ const SUPPORT: [&[bool]; 8] = [
         true,
     ],
     &[
-        true, true, true, true, true, true, false, false, true, true, true, true, true, true, true,
+        true, true, true, true, true, true, false, true, true, true, true, true, true, true, true,
         false, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
         true, true,
     ],
@@ -209,12 +209,12 @@ fn combiner_rejects_unwired_cycle0() {
             diags,
             vec![Diagnostic {
                 at: 0x1234,
-                kind: DiagKind::UnwiredSelector { slots: 0x0501 }
+                kind: DiagKind::UnwiredSelector { slots: 0x0101 }
             }],
             "both active cycles must contribute diagnostic slots before TMEM checks"
         );
         let display = diags[0].kind.to_string();
-        for name in ["cycle 0 CA", "cycle 0 CC", "cycle 1 CA"] {
+        for name in ["cycle 0 CA", "cycle 1 CA"] {
             assert!(
                 display.contains(name),
                 "diagnostic must name {name}: {display}"
@@ -427,6 +427,7 @@ mod pixels {
             4 => [96.0, 128.0, 160.0],
             5 => [160.0, 192.0, 224.0],
             6 if slot == 0 || slot == 3 => [255.0; 3],
+            7 if slot == 2 => [combined_alpha; 3],
             8 if slot == 2 => [tex0[3]; 3],
             9 if slot == 2 => [tex1[3]; 3],
             10 if slot == 2 => [80.0; 3],
@@ -612,7 +613,7 @@ mod pixels {
                     cycles[cycle][slot] = encoding as u32;
                     let value = input_value(cycle, slot, encoding).map(|v| {
                         if slot == 1 || slot == 5 {
-                            255.0 - v
+                            (256.0 - v).clamp(0.0, 255.0)
                         } else {
                             v
                         }

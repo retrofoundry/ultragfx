@@ -671,7 +671,7 @@ fn replacement_literal_inventory() {
     for (id, draw, before, after) in [
         ("replacement-target-tex1", 0, 91, 239),
         ("replacement-target-lod1", 0, 37, 37),
-        ("replacement-target-detail", 1, 37, 239),
+        ("replacement-target-detail", 1, 37, 238),
     ] {
         rows.push((id, role_expected(draw, after), role_expected(draw, before)));
     }
@@ -709,7 +709,7 @@ async fn targeted_roles() {
     for (role, before_value, after_value, draw, id) in [
         ("texture1", 91, 239, 0, "replacement-target-tex1"),
         ("lod1", 37, 37, 0, "replacement-target-lod1"),
-        ("detail", 37, 239, 1, "replacement-target-detail"),
+        ("detail", 37, 238, 1, "replacement-target-detail"),
     ] {
         let fixture = one_role(role);
         let request = requests(&fixture)

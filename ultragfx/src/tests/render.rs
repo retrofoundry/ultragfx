@@ -409,6 +409,23 @@ fn combiner_uniform_packs_raw_words() {
 }
 
 #[test]
+fn fractional_shade_console_samples() {
+    let (device, queue, _) = headless_device();
+    // Batch5 constant-shade NTSC captures: bands2/3/7 and a whole-number anchor.
+    for (shade, low, high, captured) in [
+        (7.5, 0xfcffffff, 0xfffe7d3e, 0x0001u16),
+        (15.5, 0xfcffffff, 0xfffe7d3e, 0x0843),
+        (7.75, 0xfc41fe83, 0xfffffdfe, 0x0001),
+        (8.0, 0xfcffffff, 0xfffe7d3e, 0x0843),
+    ] {
+        let (top, bottom) =
+            render_and_read_center_channel(&device, &queue, low, high, shade / 255.0, 1.0);
+        assert_eq!(u16::from(top >> 3), captured >> 11, "shade {shade}");
+        assert_eq!(top, bottom);
+    }
+}
+
+#[test]
 fn modulate_is_texel_times_shade_and_decal_is_texel() {
     let (device, queue, _dual_source) = headless_device();
 

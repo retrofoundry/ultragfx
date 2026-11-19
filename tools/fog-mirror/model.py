@@ -1,5 +1,6 @@
 import json
 import hashlib
+import math
 from pathlib import Path
 import sys
 
@@ -21,6 +22,7 @@ def plane(triangle, x, y):
 def combiner(words, cycles, shade, prim, env, texel):
     l, h = words
     combined = [0.] * 4
+    shade, prim, env, texel = [[c * 255 for c in value] for value in (shade, prim, env, texel)]
     compare_alpha = None
     for cycle in ([1] if cycles == 0 else [0, 1]):
         if cycle == 0:
@@ -29,21 +31,22 @@ def combiner(words, cycles, shade, prim, env, texel):
         else:
             ca, cb, cc, cd = (l >> 5) & 15, (h >> 24) & 15, l & 31, (h >> 6) & 7
             aa, ab, ac, ad = (h >> 21) & 7, (h >> 3) & 7, (h >> 18) & 7, h & 7
-        values = [combined, texel, texel, prim, shade, env, [1.] * 4, [0.] * 4]
-        alpha_c = [1., texel[3], texel[3], prim[3], shade[3], env[3], 0., 0.]
-        color_c = values[:6] + [[0.] * 4, [0.] * 4] + [[values[k][3]] * 4 for k in (1, 2, 3, 4, 5)] + [[1.] * 4, [0.] * 4]
+        values = [combined, texel, texel, prim, shade, env, [256.] * 4, [0.] * 4]
+        signed = [(c + 256) % 512 - 256 for c in combined]
+        alpha_c = [256., texel[3], texel[3], prim[3], shade[3], env[3], 0., 0.]
+        color_c = [signed] + values[1:6] + [[0.] * 4, [signed[3]] * 4] + [[values[k][3]] * 4 for k in (1, 2, 3, 4, 5)] + [[256.] * 4, [0.] * 4]
         out = []
         for channel in range(3):
             a = values[ca][channel] if ca < 7 else 0.
             b = values[cb][channel] if cb < 6 else 0.
             c = color_c[cc][channel] if cc < len(color_c) else 0.
             d = values[cd][channel]
-            out.append(max(0., min(1., (a - b) * c + d)))
-        out.append(max(0., min(1., (values[aa][3] - values[ab][3]) * alpha_c[ac] + values[ad][3])))
-        combined = out
+            out.append((a - b) * c / 256 + d)
+        out.append((values[aa][3] - values[ab][3]) * alpha_c[ac] / 256 + values[ad][3])
+        combined = [(math.floor(c + 0.5) + 128) % 512 - 128 for c in out]
         if compare_alpha is None:
-            compare_alpha = out[3]
-    return combined, compare_alpha
+            compare_alpha = max(0, min(255, combined[3])) / 255
+    return [max(0, min(255, c)) / 255 for c in combined], compare_alpha
 
 
 MAGIC = [0, 6, 1, 7, 4, 2, 5, 3, 3, 5, 2, 4, 7, 1, 6, 0]

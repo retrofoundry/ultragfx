@@ -281,7 +281,8 @@ class CaptureFailures(unittest.TestCase):
             self.assertEqual(result["failed_tests"], ["tmem_layouts"])
             self.assertEqual(result["failed_targets"], ["`-p ultragfx --test tmem_fixture_replay`"])
         with self.assertRaisesRegex(ValueError, "failed configuration: default.*tmem_layouts.*test.log"):
-            ci.load_capture(self.output, ci.INVENTORY, "a" * 40, "1", golden_inventory=self.goldens)
+            ci.load_capture(self.output, ci.INVENTORY, "a" * 40, "1", golden_inventory=self.goldens,
+                            image_inventory=ci.initial_image_revisions())
 
     def test_subprocess_failure_retains_source_provenance(self):
         def runner(command, **kwargs):

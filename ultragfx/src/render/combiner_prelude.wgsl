@@ -153,7 +153,7 @@ fn color_a_rgb(idx: u32, t0: vec4<f32>, t1: vec4<f32>, shade: vec3<f32>, combine
     if i == 3u { return prim; }
     if i == 4u { return shade; }
     if i == 5u { return env; }
-    if i == 6u { return vec3<f32>(1.0); } // ONE
+    if i == 6u { return vec3<f32>(256.0); } // ONE
     // 7=NOISE, else ZERO
     return vec3<f32>(0.0);
 }
@@ -174,23 +174,24 @@ fn color_b_rgb(idx: u32, t0: vec4<f32>, t1: vec4<f32>, shade: vec3<f32>, combine
 // color_c: 5-bit. 0=COMBINED,1=TEXEL0,2=TEXEL1,3=PRIMITIVE,4=SHADE,5=ENVIRONMENT,
 //   6=KEY_SCALE,7=COMBINED_ALPHA,8=TEXEL0_ALPHA,9=TEXEL1_ALPHA,10=PRIM_ALPHA,
 //   11=SHADE_ALPHA,12=ENV_ALPHA,13=LOD_FRAC,14=PRIM_LOD_FRAC,15=K5,else ZERO
-fn color_c_rgb(idx: u32, t0: vec4<f32>, t1: vec4<f32>, shade: vec3<f32>, shade_a: f32, combined: vec3<f32>, prim: vec3<f32>, env: vec3<f32>, prim_a: f32, env_a: f32, lod_fraction: f32, prim_lod_frac: f32) -> vec3<f32> {
+fn color_c_rgb(idx: u32, t0: vec4<f32>, t1: vec4<f32>, shade: vec3<f32>, shade_a: f32, combined: vec4<f32>, prim: vec3<f32>, env: vec3<f32>, prim_a: f32, env_a: f32, lod_fraction: f32, prim_lod_frac: f32) -> vec3<f32> {
     let i = idx & 0x1Fu;
-    if i == 0u { return combined; }
+    if i == 0u { return combined.rgb; }
     if i == 1u { return t0.rgb; }
     if i == 2u { return t1.rgb; }
     if i == 3u { return prim; }
     if i == 4u { return shade; }
     if i == 5u { return env; }
-    // 6..15 -> wired subset: 8=TEXEL0_ALPHA, 9=TEXEL1_ALPHA, 10=PRIM_ALPHA, 11=SHADE_ALPHA,
+    // 6..15 -> wired subset: 7=COMBINED_ALPHA, 8=TEXEL0_ALPHA, 9=TEXEL1_ALPHA, 10=PRIM_ALPHA, 11=SHADE_ALPHA,
     // 12=ENV_ALPHA, 13=LOD_FRACTION, 14=PRIM_LOD_FRAC (color-C mux slots).
+    if i == 7u  { return vec3<f32>(combined.a); }
     if i == 8u  { return vec3<f32>(t0.a); }
     if i == 9u  { return vec3<f32>(t1.a); }
     if i == 10u { return vec3<f32>(prim_a); }
     if i == 11u { return vec3<f32>(shade_a); }
     if i == 12u { return vec3<f32>(env_a); }
-    if i == 13u { return vec3<f32>(lod_fraction); }
-    if i == 14u { return vec3<f32>(prim_lod_frac); }
+    if i == 13u { return vec3<f32>(lod_fraction * 256.0); }
+    if i == 14u { return vec3<f32>(prim_lod_frac * 256.0); }
     return vec3<f32>(0.0);
 }
 
@@ -203,7 +204,7 @@ fn color_d_rgb(idx: u32, t0: vec4<f32>, t1: vec4<f32>, shade: vec3<f32>, combine
     if i == 3u { return prim; }
     if i == 4u { return shade; }
     if i == 5u { return env; }
-    if i == 6u { return vec3<f32>(1.0); } // ONE
+    if i == 6u { return vec3<f32>(256.0); } // ONE
     return vec3<f32>(0.0);
 }
 
@@ -216,7 +217,7 @@ fn alpha_abd(idx: u32, t0_a: f32, t1_a: f32, shade_a: f32, combined_a: f32, prim
     if i == 3u { return prim_a; }
     if i == 4u { return shade_a; }
     if i == 5u { return env_a; }
-    if i == 6u { return 1.0; } // ONE
+    if i == 6u { return 256.0; } // ONE
     return 0.0;
 }
 
@@ -224,13 +225,13 @@ fn alpha_abd(idx: u32, t0_a: f32, t1_a: f32, shade_a: f32, combined_a: f32, prim
 //   6=PRIM_LOD_FRAC, else ZERO
 fn alpha_c(idx: u32, t0_a: f32, t1_a: f32, shade_a: f32, combined_a: f32, prim_a: f32, env_a: f32, lod_fraction: f32, prim_lod_frac: f32) -> f32 {
     let i = idx & 0x7u;
-    if i == 0u { return lod_fraction; } // 0 = LOD_FRACTION (the non-LOD default 1.0)
+    if i == 0u { return lod_fraction * 256.0; } // 0 = LOD_FRACTION
     if i == 1u { return t0_a; }
     if i == 2u { return t1_a; }
     if i == 3u { return prim_a; }
     if i == 4u { return shade_a; }
     if i == 5u { return env_a; }
-    if i == 6u { return prim_lod_frac; } // 6 = PRIM_LOD_FRAC (the primitive LOD fraction)
+    if i == 6u { return prim_lod_frac * 256.0; } // 6 = PRIM_LOD_FRAC
     return 0.0;
 }
 
@@ -247,28 +248,44 @@ struct CycleResult {
 fn run_cycle(
     ca_idx: u32, cb_idx: u32, cc_idx: u32, cd_idx: u32,
     aa_idx: u32, ab_idx: u32, ac_idx: u32, ad_idx: u32,
-    t0: vec4<f32>, t1: vec4<f32>, shade: vec4<f32>, combined: vec4<f32>,
-    prim: vec4<f32>, env: vec4<f32>,
+    texel0: vec4<f32>, texel1: vec4<f32>, shade_color: vec4<f32>, combined: vec4<f32>,
+    primitive: vec4<f32>, environment: vec4<f32>,
     lod_fraction: f32, prim_lod_frac: f32,
 ) -> CycleResult {
+    let t0 = texel0 * 255.0;
+    let t1 = texel1 * 255.0;
+    var shade = shade_color * 255.0;
+    if combiner.raster.x <= 1u {
+        shade = floor(shade);
+    }
+    let prim = primitive * 255.0;
+    let env = environment * 255.0;
     let shade3  = shade.rgb;
     let comb3   = combined.rgb;
     let prim3   = prim.rgb;
     let env3    = env.rgb;
+    // C reads a signed nine-bit intermediate; A/B retain the -128..383 fold.
+    let combined_c = combined - floor((combined + 256.0) / 512.0) * 512.0;
 
     let a_rgb = color_a_rgb(ca_idx, t0, t1, shade3, comb3, prim3, env3);
     let b_rgb = color_b_rgb(cb_idx, t0, t1, shade3, comb3, prim3, env3);
-    let c_rgb = color_c_rgb(cc_idx, t0, t1, shade3, shade.a, comb3, prim3, env3, prim.a, env.a, lod_fraction, prim_lod_frac);
+    let c_rgb = color_c_rgb(cc_idx, t0, t1, shade3, shade.a, combined_c, prim3, env3, prim.a, env.a, lod_fraction, prim_lod_frac);
     let d_rgb = color_d_rgb(cd_idx, t0, t1, shade3, comb3, prim3, env3);
-    let out_rgb = clamp((a_rgb - b_rgb) * c_rgb + d_rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    let out_rgb = (a_rgb - b_rgb) * c_rgb / 256.0 + d_rgb;
 
     let a_a = alpha_abd(aa_idx, t0.a, t1.a, shade.a, combined.a, prim.a, env.a);
     let b_a = alpha_abd(ab_idx, t0.a, t1.a, shade.a, combined.a, prim.a, env.a);
     let c_a = alpha_c(ac_idx, t0.a, t1.a, shade.a, combined.a, prim.a, env.a, lod_fraction, prim_lod_frac);
     let d_a = alpha_abd(ad_idx, t0.a, t1.a, shade.a, combined.a, prim.a, env.a);
-    let out_a = clamp((a_a - b_a) * c_a + d_a, 0.0, 1.0);
+    let out_a = (a_a - b_a) * c_a / 256.0 + d_a;
 
-    return CycleResult(out_a, out_rgb, out_a);
+    var result = vec4<f32>(out_rgb, out_a);
+    // Preserve fractional samples in the higher-resolution presentation target.
+    if combiner.raster.x <= 1u {
+        result = floor(result + 0.5);
+    }
+    let folded = result - floor((result + 128.0) / 512.0) * 512.0;
+    return CycleResult(folded.a, folded.rgb, folded.a);
 }
 
 struct LodResult {
@@ -765,7 +782,9 @@ fn eval_combiner(in: VsOut) -> CycleResult {
         result.compare_alpha = r0.alpha;
     }
 
-    return result;
+    return CycleResult(clamp(result.compare_alpha, 0.0, 255.0) / 255.0,
+        clamp(result.rgb, vec3<f32>(0.0), vec3<f32>(255.0)) / 255.0,
+        clamp(result.alpha, 0.0, 255.0) / 255.0);
 }
 
 // RT64 Random.hlsli initRand (16 rounds), followed by nextRandUint.

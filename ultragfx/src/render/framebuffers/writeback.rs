@@ -70,39 +70,46 @@ impl Combiner {
     }
 
     pub fn color(&self, shade: [f32; 4]) -> Option<[f32; 4]> {
+        let shade = shade.map(|v| (v * 255.0).floor());
         let color = |input, channel| {
             Some(match input {
                 ColorIn::Zero | ColorIn::Combined | ColorIn::CombinedAlpha => 0.0,
-                ColorIn::One | ColorIn::LodFraction => 1.0,
-                ColorIn::Primitive => self.prim[channel],
-                ColorIn::Environment => self.env[channel],
+                ColorIn::One | ColorIn::LodFraction => 256.0,
+                ColorIn::Primitive => self.prim[channel] * 255.0,
+                ColorIn::Environment => self.env[channel] * 255.0,
                 ColorIn::Shade => shade[channel],
-                ColorIn::PrimitiveAlpha => self.prim[3],
-                ColorIn::EnvAlpha => self.env[3],
+                ColorIn::PrimitiveAlpha => self.prim[3] * 255.0,
+                ColorIn::EnvAlpha => self.env[3] * 255.0,
                 ColorIn::ShadeAlpha => shade[3],
-                ColorIn::PrimLodFrac => self.lod,
+                ColorIn::PrimLodFrac => self.lod * 256.0,
                 _ => return None,
             })
         };
         let alpha = |input| {
             Some(match input {
                 AlphaIn::Zero | AlphaIn::Combined => 0.0,
-                AlphaIn::One | AlphaIn::LodFraction => 1.0,
-                AlphaIn::Primitive => self.prim[3],
-                AlphaIn::Environment => self.env[3],
+                AlphaIn::One | AlphaIn::LodFraction => 256.0,
+                AlphaIn::Primitive => self.prim[3] * 255.0,
+                AlphaIn::Environment => self.env[3] * 255.0,
                 AlphaIn::Shade => shade[3],
-                AlphaIn::PrimLodFrac => self.lod,
+                AlphaIn::PrimLodFrac => self.lod * 256.0,
                 _ => return None,
             })
         };
         let s = &self.selectors;
+        let finish = |v: f32| {
+            let v = (v + 0.5).floor();
+            let folded = v - ((v + 128.0) / 512.0).floor() * 512.0;
+            folded.clamp(0.0, 255.0) / 255.0
+        };
         let mut rgba = [0.0; 4];
         for (channel, value) in rgba[..3].iter_mut().enumerate() {
-            *value = ((color(s.ca, channel)? - color(s.cb, channel)?) * color(s.cc, channel)?
-                + color(s.cd, channel)?)
-            .clamp(0.0, 1.0);
+            *value = finish(
+                (color(s.ca, channel)? - color(s.cb, channel)?) * color(s.cc, channel)? / 256.0
+                    + color(s.cd, channel)?,
+            );
         }
-        rgba[3] = ((alpha(s.aa)? - alpha(s.ab)?) * alpha(s.ac)? + alpha(s.ad)?).clamp(0.0, 1.0);
+        rgba[3] = finish((alpha(s.aa)? - alpha(s.ab)?) * alpha(s.ac)? / 256.0 + alpha(s.ad)?);
         Some(rgba)
     }
 }
@@ -318,7 +325,11 @@ pub(super) fn rasterize(
                     edge(v[0].position, v[1].position),
                 ];
                 let shade = std::array::from_fn(|i| {
-                    (0..3).map(|j| weights[j] * v[j].color[i] / denom).sum()
+                    if v[0].color[i] == v[1].color[i] && v[0].color[i] == v[2].color[i] {
+                        v[0].color[i]
+                    } else {
+                        (0..3).map(|j| weights[j] * v[j].color[i] / denom).sum()
+                    }
                 });
                 pixel(
                     y * width + x,
@@ -421,6 +432,23 @@ pub(super) fn blend(
 mod tests {
     use super::*;
 
+    #[test]
+    fn fractional_shade_console_samples() {
+        for (shade, low, high, captured) in [
+            (7.5, 0xfcffffff, 0xfffe7d3e, 0x0001u16),
+            (15.5, 0xfcffffff, 0xfffe7d3e, 0x0843),
+            (7.75, 0xfc41fe83, 0xfffffdfe, 0x0001),
+            (8.0, 0xfcffffff, 0xfffe7d3e, 0x0843),
+        ] {
+            let mut uniform = crate::render::CombinerUniform::fill_rect(0xffffffff, 2);
+            uniform.combine_l = low;
+            uniform.combine_h = high;
+            let combiner = Combiner::new(&uniform, crate::hle::RenderMode::default()).unwrap();
+            let color = combiner.color([shade / 255.0; 4]).unwrap();
+            assert_eq!((color[0] * 255.0) as u16 >> 3, captured >> 11);
+        }
+    }
+
     fn draw() -> CoverageDraw {
         let uniform = crate::render::CombinerUniform::fill_rect(0xffffffff, 2);
         let mode = crate::hle::RenderMode::default();
@@ -497,6 +525,37 @@ mod tests {
     }
 
     #[test]
+    fn writeback_native_constant_shade_preserves_bytes() {
+        let mut draw = draw();
+        let combiner = draw.combiner.as_mut().unwrap();
+        combiner.selectors.cd = ColorIn::Shade;
+        combiner.selectors.ad = AlphaIn::Shade;
+        draw.scissor = (0, 0, 256, 128);
+        for byte in [8u8, 16, 85, 128, 170, 200, 248, 255] {
+            let shade = f32::from(byte) / 255.0;
+            let vertices = [[155.75, 67.0], [192.0, 14.5], [27.0, 38.0]].map(|position| {
+                Some(Vertex {
+                    position,
+                    color: [shade; 4],
+                })
+            });
+            assert!(admitted(&draw, &vertices));
+            let mut covered = 0;
+            rasterize(&draw, &vertices, (256, 128), |pixel, _, color, _| {
+                covered += 1;
+                assert_eq!(
+                    color.map(|c| (c * 255.0).round() as u8),
+                    [byte; 4],
+                    "byte {byte} at ({},{})",
+                    pixel % 256,
+                    pixel / 256
+                );
+            });
+            assert!(covered > 0);
+        }
+    }
+
+    #[test]
     fn writeback_native_shade_uses_guest_integer_coordinates() {
         let mut draw = draw();
         draw.combiner.as_mut().unwrap().selectors.cd = ColorIn::Shade;
@@ -517,7 +576,7 @@ mod tests {
             assert_eq!(count, 8);
             colors.push(color.map(|c| (c * 255.0).round() as u8));
         });
-        assert_eq!(colors, [[64, 0, 0, 255]]);
+        assert_eq!(colors, [[63, 0, 0, 255]]);
     }
 
     #[test]
